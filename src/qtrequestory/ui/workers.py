@@ -348,10 +348,19 @@ class JobRunner(QObject):
 
         Without this, Qt tears the pool down while a worker still touches
         Python objects, which on Windows shows up as a crash on exit.
+
+        Every job is marked finished afterwards, including one that was
+        submitted but never started: ``_start`` is deferred to the event loop,
+        which after a shutdown may never turn again, so such a job would keep
+        answering ``is_running()`` with True and ``MainWindow.closeEvent``
+        would ask the user about a sync that can no longer be in flight.
         """
         self._closing = True
         self.cancel_all()
-        return self._pool.waitForDone(timeout_ms)
+        done = self._pool.waitForDone(timeout_ms)
+        for job in self._jobs.values():
+            job.finished = True
+        return done
 
 
 def _relay_event(delivery: _Delivery, ev: Event) -> None:
