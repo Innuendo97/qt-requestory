@@ -37,7 +37,7 @@ src/qtrequestory/
 ├── core/
 │   ├── paths.py           AppPaths
 │   ├── config.py          Config, Environment, load/save/validate, import_environments_file, detect_editor
-│   ├── logsetup.py        configure_logging(paths, headless)
+│   ├── logsetup.py        configure_logging(paths, headless, level), resolve_level
 │   ├── events.py          Event dataclasses, EventSink, LoggingSink, CancelToken, Cancelled
 │   ├── daily.py           day/file-name helpers, list_local_daily_files, parse_entry_name
 │   ├── autoindex.py       parse_autoindex(html) -> RemoteIndex
@@ -130,12 +130,19 @@ def load_config(path) -> Config      # missing -> defaults, file NOT created (a 
                                      # corrupt -> renamed .broken-<ts> + defaults written back; unknown keys ignored; missing keys defaulted
 def save_config(cfg, path)           # tmp + os.replace
 def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650;
-                                     # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23
+                                     # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23;
+                                     # log_level: a name logging knows (via logsetup.resolve_level)
 def import_environments_file(path) -> list[Environment]   # JSON list [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
 def find_sidecar_environments(exe_dir) -> Path | None     # environments.json next to the exe
 def detect_editor() -> Path | None   # Notepad++ in ProgramFiles / ProgramFiles(x86) / PATH
 CONFIG_VERSION = 1; MIGRATIONS: dict[int, Callable[[dict], dict]] = {}
 ```
+`logsetup.resolve_level(level) -> (int, reason | None)` is shared by `configure_logging` and
+`validate`. `logging.getLevelName("VERBOSE")` returns the *string* `"Level VERBOSE"`, so
+`setLevel` raised `ValueError` on any hand-edited typo — before a window or a log file
+existed, in an exe built with `console=False`: the process died silently. An unknown name
+now falls back to `INFO`, and the reason is logged once the handlers are in place (so it
+lands in `app.log`) and reported by `validate`.
 
 ## `core/daily.py`
 

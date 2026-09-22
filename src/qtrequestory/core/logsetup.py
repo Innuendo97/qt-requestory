@@ -21,6 +21,36 @@ BACKUP_COUNT = 3
 
 SYNC_LOGGER = "qtrequestory.sync"
 
+#: What an unreadable ``log_level`` falls back to. Same value as the default in
+#: ``config.default_config()``: a misspelling must change nothing else.
+DEFAULT_LEVEL = logging.INFO
+
+
+def resolve_level(level: str | int) -> tuple[int, str | None]:
+    """``("debug", ...) -> (10, None)``; an unknown name -> ``(INFO, <reason>)``.
+
+    ``logging.getLevelName("VERBOSE")`` does NOT raise and does NOT return
+    None: it returns the *string* ``"Level VERBOSE"``, which ``setLevel`` then
+    rejects with ``ValueError``. ``config.json`` is a plain file people
+    hand-edit, so that value is one typo away — and ``cli.main`` configures
+    logging before there is a window or a log file, in an exe built with
+    ``console=False`` where the traceback goes nowhere. The user would just
+    double-click the icon and watch nothing happen.
+
+    The reason is returned rather than logged here so the caller can log it
+    once the handlers are installed, i.e. into the file where it can be read.
+    """
+    if isinstance(level, int):  # nothing in the tree passes one, but it used to work
+        return level, None
+    candidate = getattr(logging, str(level).upper(), None)
+    if isinstance(candidate, int):
+        return candidate, None
+    return DEFAULT_LEVEL, (
+        f"log_level '{level}' non riconosciuto: uso "
+        f"{logging.getLevelName(DEFAULT_LEVEL)}. Valori ammessi: "
+        "DEBUG, INFO, WARNING, ERROR, CRITICAL."
+    )
+
 
 def _rotating(path, level: int, fmt: str = LOG_FORMAT) -> logging.Handler:
     h = logging.handlers.RotatingFileHandler(
@@ -42,7 +72,7 @@ def configure_logging(paths: AppPaths, *, headless: bool, level: str = "INFO") -
     so a console handler is added only when a real stream exists.
     """
     paths.ensure()
-    lvl = logging.getLevelName(level.upper()) if isinstance(level, str) else level
+    lvl, bad_level = resolve_level(level)
     root = logging.getLogger()
     root.setLevel(lvl)
     for h in list(root.handlers):
@@ -58,6 +88,11 @@ def configure_logging(paths: AppPaths, *, headless: bool, level: str = "INFO") -
         sync_logger.removeHandler(h)
     sync_logger.addHandler(_rotating(paths.sync_log, logging.INFO))
     sync_logger.propagate = True
+
+    # Warned last, on purpose: now there is a file to warn INTO. Warning before
+    # this point, in a windowed exe with no console, would say it to nobody.
+    if bad_level is not None:
+        logging.getLogger(__name__).warning("%s", bad_level)
 
 
 def sync_logger() -> logging.Logger:
