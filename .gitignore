@@ -21,3 +21,6 @@ mirror/
 .vscode/
 .idea/
 Thumbs.db
+
+# Claude Code agent worktrees
+.claude/worktrees/
