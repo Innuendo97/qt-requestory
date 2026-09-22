@@ -349,3 +349,40 @@ def test_shutdown_does_not_claim_a_job_finished_when_the_pool_did_not_drain(qapp
     assert runner.shutdown(10) is False
     assert job.is_running()
     assert runner.is_running("sync")
+
+
+# ------------------------------------------------------------- pool sizing ---
+
+def test_the_pool_has_one_thread_per_name_that_can_be_live():
+    """Four threads for nine names meant a search could WAIT for a sync.
+
+    Exactly one job per name is ever live (``EXCLUSIVE`` refuses a second,
+    every other name supersedes the previous one), so the number of names is an
+    exact upper bound on concurrent jobs. Anything smaller means a 20-minute
+    download can hold the only free thread while the user presses [Cerca].
+    """
+    from qtrequestory.ui.workers import JOB_NAMES
+
+    runner = JobRunner()
+    try:
+        assert runner.max_thread_count() == len(JOB_NAMES) >= 9
+    finally:
+        runner.shutdown()
+
+
+def test_every_name_a_page_submits_is_declared():
+    """``JOB_NAMES`` is only honest if it is the whole list; a name missing
+    from it is a job that may queue behind a sync, and a status-bar message
+    with an internal identifier in it."""
+    from qtrequestory.ui.main_window import JOB_LABELS
+    from qtrequestory.ui.pages.about_page import LOG_JOB
+    from qtrequestory.ui.pages.preview_pane import PREVIEW_JOB
+    from qtrequestory.ui.pages.settings_page import CHECK_JOB, INDEX_JOB
+    from qtrequestory.ui.wizard_pages import REACHABILITY_JOB
+    from qtrequestory.ui.workers import JOB_NAMES, SCHEDULER_JOB
+
+    declared = set(JOB_NAMES)
+    assert {LOG_JOB, PREVIEW_JOB, CHECK_JOB, INDEX_JOB, REACHABILITY_JOB,
+            SCHEDULER_JOB} <= declared
+    assert {"sync", "search", "search_keys", "search_plan"} <= declared
+    assert set(JOB_LABELS) == declared, "every job name gets a label the user can read"

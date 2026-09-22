@@ -23,8 +23,25 @@ NAV_ABOUT = "Info"
 #: Right-hand segment before any sync ran; replaced by "svil: oggi 11:23 · …".
 STATUS_SYNC_SUMMARY_EMPTY = "Mai sincronizzato"
 STATUS_SYNC_SUMMARY_TOOLTIP = "Apri la pagina Sincronizzazione"
-#: {name} = the job name that was refused (a sync is already running).
+#: {name} = the LABEL of the refused operation, never its internal job name —
+#: see the ``JOB_*`` constants below and ``main_window.job_label``.
 STATUS_BUSY = "Operazione «{name}» già in corso."
+
+# -- operation labels --------------------------------------------------------
+# The names ``JobRunner.submit`` is called with are code ("check-envs",
+# "search_plan", "about-log"). They must never reach the status bar: the person
+# reading it works in Italian and has no way to find out what "scheduler" is.
+
+JOB_SYNC = "Sincronizzazione"
+JOB_INDEX = "Aggiornamento indice"
+JOB_SCHEDULER = "Sincronizzazione automatica"
+JOB_SEARCH = "Ricerca"
+JOB_SEARCH_KEYS = "Elenco template key"
+JOB_SEARCH_PLAN = "Controllo indice"
+JOB_PREVIEW = "Anteprima"
+JOB_CHECK_ENVS = "Verifica raggiungibilità"
+JOB_ABOUT_LOG = "Lettura del log"
+JOB_WIZARD_REACHABILITY = "Verifica raggiungibilità"
 #: {message} = the error text of a failed background job.
 STATUS_ERROR = "Errore: {message}"
 

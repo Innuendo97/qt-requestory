@@ -213,9 +213,28 @@ def test_clicking_the_sync_summary_opens_the_sync_page(qtbot, window):
     assert window.current_page_key() == "sync"
 
 
-def test_a_refused_job_is_reported_in_the_status_bar(window, runner):
-    runner.busy.emit("sync")
-    assert window.statusBar().currentMessage() == strings.STATUS_BUSY.format(name="sync")
+@pytest.mark.parametrize(("job", "label"), [
+    ("sync", strings.JOB_SYNC),
+    ("index", strings.JOB_INDEX),
+    ("scheduler", strings.JOB_SCHEDULER),
+])
+def test_a_refused_job_is_reported_in_the_status_bar(window, runner, job: str, label: str):
+    """The user reads this line, so it names the operation in their language.
+
+    It used to interpolate the internal job name, which put «scheduler» and
+    «check-envs» in front of an Italian colleague who has no idea what those
+    are — and no way to find out.
+    """
+    runner.busy.emit(job)
+    assert window.statusBar().currentMessage() == strings.STATUS_BUSY.format(name=label)
+    assert job not in window.statusBar().currentMessage() or job == label
+
+
+def test_an_unmapped_job_name_still_says_something(window, runner):
+    """A name with no label must not swallow the message: the raw name is a
+    poor answer, silence is a worse one."""
+    runner.busy.emit("qualcosa-di-nuovo")
+    assert "qualcosa-di-nuovo" in window.statusBar().currentMessage()
 
 
 # ---------------------------------------------------------- optional hooks ---

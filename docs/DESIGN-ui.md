@@ -1,7 +1,8 @@
 # qtRequestory — UI design (v1)
 
 Stack: **PySide6 (Qt Widgets)**, `PySide6-Essentials >= 6.7`, Qt `windows11` style (native
-look, system light/dark). UI language: **Italian**, all strings in `ui/strings.py`.
+look, system light/dark). UI language: **Italian**, all strings in the `ui/strings/`
+package (one module per page, re-exported: `from qtrequestory.ui import strings`).
 `qtrequestory.ui` is the only package that may import Qt. The UI talks to the core through
 plain Python APIs (`docs/DESIGN-core.md`) and receives progress as core events converted to
 Qt signals. Widgets are dumb; presenters hold state.
@@ -154,6 +155,9 @@ re-registers the task when one is registered · Avanzate: [Ricostruisci indice] 
 configurazione iniziale] · Config path
 [Apri cartella]. [Annulla] [Salva] (Salva enabled only when dirty; inline validation via
 `config.validate`). Emits `config_changed` consumed by Sync/Search.
+The form is taller than a 1366×768 laptop leaves for a page (~420 px), so it lives in a
+`QScrollArea` (`widgetResizable`, no horizontal bar) and the errors label + [Annulla] [Salva]
+row stay **outside** it: the only button that commits the page can never be below the fold.
 
 ## Info page
 
@@ -166,11 +170,21 @@ tail (last 500 lines, filter Tutti/Avvisi/Errori, [Aggiorna], [Copia tutto]).
 class CancelToken (core)                       # passed to core calls
 class WorkerSignals(QObject): started, progress(object), log(str), result(object), error(str, str), finished, cancelled
 class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions -> error
-class JobRunner(QObject): QThreadPool(maxThreadCount=3); submit(name, fn, ...) -> Job
-    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel token); "search"/"preview" supersede (older results dropped by request id)
-class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> queued signal
+class JobRunner(QObject): QThreadPool(maxThreadCount=len(workers.JOB_NAMES) == 10); submit(name, fn, ...) -> Job
+    # ONE thread per job name. At most one job per name is live (EXCLUSIVE refuses a second, every
+    # other name supersedes), so that count is an exact bound and nothing ever queues: with fewer
+    # threads a [Cerca] could wait for a 20-minute download to free one. JOB_NAMES lists them all.
+    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel
+    # token) -> JobRunner.busy(name); every other name supersedes (the older job is silenced by _Delivery).
+    # main_window.JOB_LABELS maps each name to Italian for the status bar: the user never reads "check-envs".
+class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.
+- `QtEventSink` lives on the GUI thread but `sink.event` is connected to `partial(_relay_event,
+  delivery)`, a plain callable with no receiver `QObject` — so that slot runs **DIRECT, on the
+  worker thread**, not queued. It is safe only because it touches no widget: all it does is
+  `_Delivery.send`, which emits `_forward` on a `QObject` that *does* live in the GUI thread and
+  is therefore queued there. Anything else connected to `sink.event` would run on the worker.
 - Single instance: `QLocalServer` named `qtrequestory-<username>` (overridable with
   `QTREQUESTORY_INSTANCE_KEY` — a pipe name is machine-global, so the test harness gives each
   pytest process its own); second launch sends `activate` and exits; primary raises its
@@ -192,6 +206,9 @@ page with three log lines + magnifier, accent `#0F6CBD`, exported `.ico` 16/24/3
 
 ## Testability
 
+- `ui/strings/` is a package, one module per page (`common`, `search`, `sync`, `settings`,
+  `wizard`, `about`), all re-exported from `qtrequestory.ui.strings`. Sizes are formatted in
+  exactly one place, `ui/pages/sync_format.format_size` (`whole_kb=True` for the results table).
 - `ui/contracts.py`: Protocols + dataclasses for everything the UI consumes from core
   (`ConfigApi`, `SyncApi`, `SchedulerApi`, `IndexApi`, `ExtractApi`) — the core modules
   satisfy them structurally; `tests/fakes/fake_core.py` implements them in memory (synthetic

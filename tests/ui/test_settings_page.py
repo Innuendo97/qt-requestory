@@ -61,6 +61,33 @@ def _answer(monkeypatch, button: QMessageBox.StandardButton) -> list[tuple]:
     return asked
 
 
+# -- reachable on a small screen ---------------------------------------------
+
+def test_the_form_scrolls_and_salva_stays_put(qtbot, page):
+    """The whole configuration is one tall form; [Salva] must not fall off it.
+
+    On a 1366x768 laptop the page gets roughly 420 px of height once the
+    title bar, the rail and the status bar have taken their share. The form
+    goes in a QScrollArea and the [Annulla]/[Salva] row stays OUTSIDE it, so
+    the one button that commits the page can never be scrolled away.
+    """
+    from PySide6.QtWidgets import QScrollArea
+
+    page.resize(1000, 420)
+    page.show()
+    qtbot.waitExposed(page)
+
+    scroll = page.findChild(QScrollArea)
+    assert scroll is not None, "the tall form is scrollable"
+    assert scroll.widgetResizable(), "the form must still use the full width"
+    assert page.minimumSizeHint().height() <= 420, "the page fits a small screen"
+
+    assert not scroll.widget().isAncestorOf(page.save_button), "pinned, not scrolled"
+    assert not scroll.widget().isAncestorOf(page.cancel_button)
+    assert page.save_button.isVisible()
+    assert page.save_button.geometry().bottom() <= page.height()
+
+
 # -- loading -----------------------------------------------------------------
 
 def test_the_form_shows_the_loaded_configuration(page, fake_core):

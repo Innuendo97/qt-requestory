@@ -55,6 +55,34 @@ STATUS_TIMEOUT_MS = 4000
 #: Item data: the icon name, so the rail can re-tint itself on a theme switch.
 ICON_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 
+#: ``JobRunner`` name -> what to call that operation in front of the user. The
+#: names are identifiers chosen by the pages ("check-envs", "search_plan",
+#: "about-log"); only ``EXCLUSIVE`` ones can currently be refused, but the map
+#: covers every name in ``workers.JOB_NAMES`` — a test pins the two together —
+#: so a new exclusive one is never a surprise in the status bar.
+JOB_LABELS = {
+    "sync": strings.JOB_SYNC,
+    "index": strings.JOB_INDEX,
+    "scheduler": strings.JOB_SCHEDULER,
+    "search": strings.JOB_SEARCH,
+    "search_keys": strings.JOB_SEARCH_KEYS,
+    "search_plan": strings.JOB_SEARCH_PLAN,
+    "preview": strings.JOB_PREVIEW,
+    "check-envs": strings.JOB_CHECK_ENVS,
+    "about-log": strings.JOB_ABOUT_LOG,
+    "wizard-reachability": strings.JOB_WIZARD_REACHABILITY,
+}
+
+
+def job_label(name: str) -> str:
+    """The Italian name of an operation; the raw job name if it has none.
+
+    Falling back to the name is deliberate: a message naming something the user
+    does not recognise is poor, but saying nothing at all about a refused
+    operation is worse.
+    """
+    return JOB_LABELS.get(name, name)
+
 
 class PageSpec(NamedTuple):
     """One entry of :data:`PAGES` — a plain ``(key, label, icon, factory, section)``.
@@ -346,7 +374,7 @@ class MainWindow(QMainWindow):
                 item.setIcon(icons.icon(item.data(ICON_NAME_ROLE)))
 
     def _on_job_refused(self, name: str) -> None:
-        self.set_status(strings.STATUS_BUSY.format(name=name))
+        self.set_status(strings.STATUS_BUSY.format(name=job_label(name)))
 
     def _broadcast_config(self, sender_key: str, cfg: object) -> None:
         """Impostazioni saved: let the OTHER pages reload.

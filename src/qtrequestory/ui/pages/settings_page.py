@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QTime, Signal
+from PySide6.QtCore import Qt, QTime, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTimeEdit,
     QVBoxLayout,
@@ -86,7 +87,21 @@ class SettingsPage(QWidget):
     # -- construction ------------------------------------------------------
 
     def _build(self) -> None:
-        layout = QVBoxLayout(self)
+        # The whole configuration is one tall form and it does not fit a
+        # 1366x768 laptop, where this page gets about 420 px of height. So the
+        # form scrolls and the [Annulla]/[Salva] row does NOT: the one button
+        # that commits the page must never be below the fold.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)  # the form keeps the full width
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form = QWidget()
+        self.scroll.setWidget(form)
+        outer.addWidget(self.scroll, 1)
+
+        layout = QVBoxLayout(form)
         self.browse_mirror_button = _button(
             strings.BTN_BROWSE, lambda: self._browse_folder(
                 self.mirror_edit, strings.SETTINGS_MIRROR_CAPTION)
@@ -153,15 +168,19 @@ class SettingsPage(QWidget):
         self.open_config_button = _button(strings.BTN_OPEN_FOLDER, self._open_config_folder)
         layout.addLayout(_row(self.config_path_label, self.open_config_button))
 
+        layout.addStretch(0)
+
+        # Pinned footer, outside the scroll area: the validation errors are
+        # about the save the user is attempting, so they belong next to it.
         self.errors_label = QLabel()
         self.errors_label.setWordWrap(True)
         self.errors_label.hide()
-        layout.addWidget(self.errors_label)
+        outer.addWidget(self.errors_label)
 
         self.cancel_button = _button(strings.BTN_CANCEL, self.reload)
         self.save_button = _button(strings.BTN_SAVE, self.save)
         self.save_button.setEnabled(False)
-        layout.addLayout(_row(self.cancel_button, self.save_button, stretch_at_start=True))
+        outer.addLayout(_row(self.cancel_button, self.save_button, stretch_at_start=True))
 
     def _path_field(self, layout: QVBoxLayout, label: str, *buttons: QPushButton) -> QLineEdit:
         """A labelled path field with its buttons, already wired to dirty tracking."""
