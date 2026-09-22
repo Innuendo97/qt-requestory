@@ -52,6 +52,16 @@ def test_the_folder_page_proposes_the_default_mirror_root(wizard, fake_core):
     assert wizard.folder_page.folder() == fake_core.config.load().mirror_root
 
 
+def test_the_default_never_overwrites_what_the_user_chose(wizard, tmp_path):
+    """[Indietro] onto page 1 must not put the proposal back."""
+    wizard.restart()
+    wizard.folder_page.set_path(tmp_path / "la-mia-cartella")
+
+    wizard.folder_page.initializePage()
+
+    assert wizard.folder_page.folder() == tmp_path / "la-mia-cartella"
+
+
 def test_a_writable_folder_passes_validation(wizard, tmp_path):
     wizard.folder_page.set_path(tmp_path / "logs")
     assert wizard.folder_page.validatePage() is True
