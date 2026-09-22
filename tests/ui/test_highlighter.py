@@ -178,5 +178,5 @@ def test_four_thousand_lines_highlight_without_pathological_backtracking(editor)
     editor.setPlainText(body)
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 5.0, f"highlighting 4000 lines took {elapsed:.1f}s"
+    assert elapsed < 1.0, f"highlighting 4000 lines took {elapsed:.2f}s"
     assert color_of(editor.document(), "true").isValid()

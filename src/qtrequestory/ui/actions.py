@@ -80,17 +80,20 @@ def copy_text(text: str) -> int:
 
 
 def open_output_folder(services: CoreServices, hit: SearchHit, text: str) -> Path:
-    """Show the output folder, making sure this body is in it first.
+    """Write this body to the output folder and show that folder.
 
-    Unlike :func:`open_hit_in_editor` an existing file is left alone: the point
-    of this action is to reach the folder, and rewriting a file the user may
-    have open in Notepad++ (with unsaved edits of their own) to achieve that
-    would be rude.
+    The write is unconditional, exactly like :func:`open_hit_in_editor`.
+    Skipping it when a file of that name is already there looks like a saving
+    but is a trap: ``output_name`` is ``<day>_<fdi>_<template key>.json`` with
+    no call id, so two calls of the same pratica, day and template — ordinary
+    content of a result list — share it, and the user would be shown the
+    *previous* call's body under a name that describes this one just as well.
+
+    Nothing is clobbered either: ``write_temp_file`` is given the call-id name
+    as ``alt_name`` and falls back to it rather than overwriting a file the
+    user may still have open.
     """
-    folder = services.extract.output_dir()
-    path = folder / services.extract.output_name(hit)
-    if not path.is_file():
-        path = services.extract.write_temp_file(hit, text)
+    path = services.extract.write_temp_file(hit, text)
     services.extract.open_folder(path.parent)
     return path.parent
 

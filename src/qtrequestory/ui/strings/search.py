@@ -44,6 +44,11 @@ PREVIEW_ERROR = "Impossibile leggere il body: {message}"
 
 #: {size} = the size of the copied text ("312 KB").
 PREVIEW_STATUS_COPIED = "Copiato negli appunti ({size})"
+#: The three units that {size} is built from; {value} is already rounded, and
+#: the megabytes carry the Italian decimal comma ("1,4 MB").
+PREVIEW_SIZE_BYTES = "{value} B"
+PREVIEW_SIZE_KB = "{value} KB"
+PREVIEW_SIZE_MB = "{value} MB"
 #: {path} = the file the user chose in the save dialog.
 PREVIEW_STATUS_SAVED = "Salvato in {path}"
 PREVIEW_STATUS_OPENED_EDITOR = "Aperto in Notepad++"

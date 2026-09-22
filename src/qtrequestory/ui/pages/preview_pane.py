@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QFontDatabase, QKeySequence, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -152,16 +152,18 @@ class PreviewPane(QWidget):
         self._report(strings.PREVIEW_STATUS_FOLDER.format(path=folder))
 
     def copy_selection_or_body(self) -> None:
-        """Ctrl+C: the selection if there is one, the whole body otherwise.
+        """Ctrl+C in the body: the selection if there is one, else the body.
 
         Overriding the default copy is deliberate. In a read-only viewer the
         user who presses Ctrl+C without selecting anything wants the body —
         that is the tool's whole purpose — and Qt's default would hand them an
         empty clipboard.
+
+        It reaches here from :class:`_BodyEdit`, so only a key press *in the
+        body* can trigger it: the find field keeps its own Ctrl+C, and there is
+        no way for the search term to come out of this.
         """
-        if self.find_edit.hasSelectedText():
-            self.find_edit.copy()
-        elif self.editor.textCursor().hasSelection():
+        if self.editor.textCursor().hasSelection():
             self.editor.copy()
         else:
             self.copy_body()
@@ -220,7 +222,8 @@ class PreviewPane(QWidget):
         return header
 
     def _build_editor(self) -> QPlainTextEdit:
-        self.editor = QPlainTextEdit()
+        self.editor = _BodyEdit()
+        self.editor.copy_requested.connect(self.copy_selection_or_body)
         self.editor.setReadOnly(True)
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.editor.setFont(_mono_font())
@@ -251,9 +254,12 @@ class PreviewPane(QWidget):
         return self.find_bar
 
     def _build_shortcuts(self) -> None:
-        """Active while anything in the pane has the focus."""
+        """Active while anything in the pane has the focus.
+
+        Ctrl+C is deliberately NOT here: it belongs to :class:`_BodyEdit`, see
+        that class for why.
+        """
         for sequence, slot in (
-            (QKeySequence.StandardKey.Copy, self.copy_selection_or_body),
             (QKeySequence.StandardKey.Save, self.save_as),
             (QKeySequence.StandardKey.Open, self.open_in_editor),
             (QKeySequence("Ctrl+Shift+O"), self.open_folder),
@@ -315,21 +321,52 @@ class PreviewPane(QWidget):
             self._status(message)
 
     def _find(self, flags: QTextDocument.FindFlag) -> bool:
-        """Search from the cursor, then once more from the far end (wrap)."""
+        """Search from the cursor, then once more from the far end (wrap).
+
+        A miss puts the cursor back where it was: wrapping is a *search*
+        strategy, and a term that is simply not in the body must not scroll the
+        reader away from the line they were looking at.
+        """
         needle = self.find_edit.text()
         if not needle:
             return False
         if self.editor.find(needle, flags):
             return True
-        cursor = self.editor.textCursor()
+        original = self.editor.textCursor()
+        cursor = QTextCursor(original)
         backward = bool(flags & QTextDocument.FindFlag.FindBackward)
         cursor.movePosition(QTextCursor.MoveOperation.End if backward
                             else QTextCursor.MoveOperation.Start)
         self.editor.setTextCursor(cursor)
         if self.editor.find(needle, flags):
             return True
+        self.editor.setTextCursor(original)
         self._report(strings.PREVIEW_FIND_NOT_FOUND.format(text=needle))
         return False
+
+
+class _BodyEdit(QPlainTextEdit):
+    """The body view, with Ctrl+C rebound to the pane.
+
+    Why a subclass instead of a ``QShortcut`` on the pane, like the other four
+    bindings: a shortcut with ``WidgetWithChildrenShortcut`` context would also
+    swallow Ctrl+C from the find field, so the pane would have to guess when
+    the user meant the search term and when they meant the body. Overriding the
+    editor's own key handling scopes the override to exactly the widget whose
+    default is wrong — and it is the only version that can be *tested* with a
+    real key press, because Qt matches shortcuts from window-system events,
+    which a synthetic ``keyClick`` is not.
+    """
+
+    #: Ctrl+C was pressed in the body; the pane decides selection vs. body.
+    copy_requested = Signal()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 # --------------------------------------------------------------- helpers ---
@@ -361,10 +398,11 @@ def _thousands(value: int) -> str:
 def _human_size(n_bytes: int) -> str:
     """Rounded size for the status bar ("312 KB", "1,4 MB")."""
     if n_bytes < 1024:
-        return f"{n_bytes} B"
+        return strings.PREVIEW_SIZE_BYTES.format(value=n_bytes)
     if n_bytes < 1024 * 1024:
-        return f"{round(n_bytes / 1024)} KB"
-    return f"{n_bytes / (1024 * 1024):.1f}".replace(".", ",") + " MB"
+        return strings.PREVIEW_SIZE_KB.format(value=round(n_bytes / 1024))
+    megabytes = f"{n_bytes / (1024 * 1024):.1f}".replace(".", ",")
+    return strings.PREVIEW_SIZE_MB.format(value=megabytes)
 
 
 def _mono_font() -> QFont:

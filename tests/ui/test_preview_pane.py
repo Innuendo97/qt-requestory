@@ -12,10 +12,12 @@ the fake ``CoreServices``.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QShortcut, QTextCursor
 from PySide6.QtWidgets import QFileDialog
 
@@ -302,7 +304,11 @@ def test_a_body_that_cannot_be_read_reports_instead_of_showing_half_a_json(
 
 def test_the_pane_binds_the_documented_shortcuts(pane):
     bound = {shortcut.key().toString() for shortcut in pane.findChildren(QShortcut)}
-    assert {"Ctrl+C", "Ctrl+S", "Ctrl+O", "Ctrl+Shift+O", "Ctrl+F"} <= bound
+    assert {"Ctrl+S", "Ctrl+O", "Ctrl+Shift+O", "Ctrl+F"} <= bound
+    assert "Ctrl+C" not in bound, (
+        "Ctrl+C is the body editor's own key handling, so it cannot swallow "
+        "the find field's copy — see _BodyEdit"
+    )
 
 
 def test_escape_closes_the_find_bar_and_only_the_find_bar(pane):
@@ -318,6 +324,45 @@ def test_ctrl_c_without_a_selection_copies_the_whole_body(qtbot, pane, hit):
     QGuiApplication.clipboard().setText("vecchio")
 
     pane.copy_selection_or_body()
+
+    assert QGuiApplication.clipboard().text() == full
+
+
+def test_a_real_ctrl_c_on_the_body_reaches_the_clipboard(qtbot, pane, hit):
+    """The end-to-end key press: pressing Ctrl+C in the body really does beat
+    Qt's own read-only copy, which would have left the clipboard untouched."""
+    full = show(qtbot, pane, hit)
+    pane.editor.setFocus()
+    QGuiApplication.clipboard().setText("vecchio")
+
+    qtbot.keyClick(pane.editor, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+
+    assert QGuiApplication.clipboard().text() == full
+
+
+def test_a_real_ctrl_c_in_the_find_field_copies_the_search_term(qtbot, pane, hit):
+    """The other half of the same property: the override is scoped to the body,
+    so the find field keeps the copy every text field has."""
+    show(qtbot, pane, hit)
+    pane.show_find()
+    pane.find_edit.setText("documents")
+    pane.find_edit.selectAll()
+
+    qtbot.keyClick(pane.find_edit, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+
+    assert QGuiApplication.clipboard().text() == "documents"
+
+
+def test_a_hidden_find_field_never_hijacks_ctrl_c(qtbot, pane, hit):
+    """The find bar keeps its text after Esc; the body must still win."""
+    full = show(qtbot, pane, hit)
+    pane.show_find()
+    pane.find_edit.setText("documents")
+    pane.find_edit.selectAll()
+    pane.hide_find()
+    pane.editor.setFocus()
+
+    qtbot.keyClick(pane.editor, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
 
     assert QGuiApplication.clipboard().text() == full
 
@@ -368,10 +413,16 @@ def test_find_wraps_around_at_the_end_of_the_body(qtbot, pane, hit):
 def test_a_term_that_is_not_there_reports_and_keeps_the_cursor(qtbot, pane, hit, status_messages):
     show(qtbot, pane, hit)
     pane.show_find()
+    pane.find_edit.setText("documents")
+    pane.find_next()
+    parked = pane.editor.textCursor().position()
     pane.find_edit.setText("zzz-non-esiste")
 
     assert pane.find_next() is False
     assert status_messages[-1] == strings.PREVIEW_FIND_NOT_FOUND.format(text="zzz-non-esiste")
+    assert pane.editor.textCursor().position() == parked, (
+        "a miss must not scroll the reader away from the line they were on"
+    )
 
 
 def test_hiding_the_find_bar_gives_the_focus_back_to_the_body(pane):
@@ -387,16 +438,40 @@ def test_copy_text_returns_the_number_of_characters():
     assert QGuiApplication.clipboard().text() == "città"
 
 
-def test_open_output_folder_reuses_an_already_written_file(fake_core, hit):
-    """Rewriting would clobber the copy the user may already have open."""
+def test_open_output_folder_writes_this_hits_body_every_time(fake_core, hit, other_hit):
+    """Two calls of the same day, FDI and template key share an output name.
+
+    ``output_name_for`` carries no call id, so that collision is ordinary
+    content of a result list. Skipping the write when "the file is already
+    there" would open the folder on the *previous* call's body under a name
+    that describes this one just as well — the one thing this tool must never
+    do. The core already protects a file the user has open: ``write_temp_file``
+    falls back to the call-id name instead of overwriting.
+    """
+    twin = dataclasses.replace(hit, entry_id=other_hit.entry_id, call_id=other_hit.call_id)
+    assert fake_core.extract.output_name(twin) == fake_core.extract.output_name(hit)
     text = fake_core.extract.pretty_json(fake_core.index.read_body(hit))
-    first = fake_core.extract.write_temp_file(hit, text)
-    first.write_text("SENTINELLA", encoding="utf-8")
+    twin_text = fake_core.extract.pretty_json(fake_core.index.read_body(twin))
+    assert text != twin_text
 
     actions.open_output_folder(fake_core, hit, text)
+    actions.open_output_folder(fake_core, twin, twin_text)
 
-    assert first.read_text(encoding="utf-8") == "SENTINELLA"
-    assert fake_core.extract.folders == [fake_core.extract.output_dir()]
+    folder = fake_core.extract.output_dir()
+    assert fake_core.extract.folders == [folder, folder]
+    assert {path.read_text(encoding="utf-8") for path in folder.glob("*.json")} == {text, twin_text}
+
+
+def test_open_output_folder_does_not_overwrite_a_file_of_its_own_name(fake_core, hit, other_hit):
+    """The collision is resolved by the core, under the call-id name."""
+    twin = dataclasses.replace(hit, entry_id=other_hit.entry_id, call_id=other_hit.call_id)
+    text = fake_core.extract.pretty_json(fake_core.index.read_body(hit))
+    twin_text = fake_core.extract.pretty_json(fake_core.index.read_body(twin))
+
+    first = fake_core.extract.write_temp_file(hit, text)
+    actions.open_output_folder(fake_core, twin, twin_text)
+
+    assert first.read_text(encoding="utf-8") == text, "the open file keeps its own body"
 
 
 def test_open_hit_in_editor_returns_what_the_opener_reports(fake_core, hit):
