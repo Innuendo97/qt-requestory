@@ -131,7 +131,7 @@ def mirror(tmp_path: Path) -> Mirror:
         (entry_name(FDI_A, KEY_SINT, "1a2b3c0200000011"), synthetic_body(FDI_A, KEY_SINT, request_date="2026-09-15T08:00:00.000Z")),
         (entry_name(FDI_B, KEY_EMAIL, "1a2b3c0100000012"), None),
         (entry_name(FDI_C, KEY_CTE, "1a2b3c0200000013"), synthetic_body(FDI_C, KEY_CTE, request_date="2026-09-15T09:00:00.000Z")),
-    ], crlf=False, orphan_body_at=2)
+    ], crlf=False, orphan_body_at=0)
     # coll, much older
     add("coll", date(2026, 8, 3), [
         (entry_name(FDI_C, KEY_CTE, "1a2b3c0200000001"), synthetic_body(FDI_C, KEY_CTE, request_date="2026-08-03T07:26:09.78Z")),
