@@ -111,8 +111,23 @@ def _decimal(value: float) -> str:
     return text[:-2] if text.endswith(",0") else text
 
 
-def format_size(n_bytes: float) -> str:
-    """"512 B" / "2,5 KB" / "80,4 MB" / "1,5 GB" (DESIGN-ui wording)."""
+def format_size(n_bytes: float, *, whole_kb: bool = False) -> str:
+    """"512 B" / "2,5 KB" / "80,4 MB" / "1,5 GB" (DESIGN-ui wording).
+
+    **The only size formatter in the UI.** There used to be three, with three
+    different roundings, so one click showed the same body as "1.434 KB" in the
+    Ricerca table and "1,4 MB" in the status bar — the user has no way to know
+    those are the same number.
+
+    ``whole_kb`` is what the results table needs and nothing else does: whole
+    kilobytes all the way up, rounded UP so a 300-byte body never reads "0 KB",
+    with the Italian thousands separator. One unit down the whole column is
+    what makes rows comparable at a glance; the sort is on the raw byte count
+    either way.
+    """
+    if whole_kb:
+        kb = -(-int(max(0, n_bytes)) // 1024)  # ceil, so a small body is 1 KB
+        return strings.SYNC_UNIT_KB.format(n=f"{kb:,}".replace(",", "."))
     n = max(0.0, float(n_bytes))
     if n < KB:
         return strings.SYNC_UNIT_B.format(n=int(n))
