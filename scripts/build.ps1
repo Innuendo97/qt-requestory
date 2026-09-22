@@ -129,6 +129,12 @@ function Assert-ExitCode {
     }
 }
 
+# Everything below assumes the repository root is the working directory: pytest
+# resolves testpaths/pythonpath from it, and PyInstaller writes build\ and dist\
+# relative to it. Running the script from anywhere else must not scatter them.
+Push-Location $Repo
+try {
+
 # ---------------------------------------------------------------- 1. venv ---
 
 Write-Step 'Checking the build interpreter'
@@ -159,6 +165,13 @@ else {
 }
 
 # ------------------------------------------------------------- 3. package ---
+
+# The Windows version resource is stamped from qtrequestory.__version__ rather
+# than written down a second time. qtRequestory.spec does this too, so a bare
+# `pyinstaller qtRequestory.spec` still works; doing it here as well costs
+# nothing and puts the version being built on screen before the build starts.
+Write-Step 'Generating the version resource'
+Invoke-Native -File $Python -Arguments @((Join-Path $PSScriptRoot 'make_version_info.py')) -What 'make_version_info.py'
 
 Write-Step 'Building with PyInstaller'
 # `python -m PyInstaller`, not `pyinstaller`: the console script on PATH may well
@@ -224,7 +237,9 @@ try {
     Write-Host "    onefile unpacks the whole payload into %TEMP% on every run, including every scheduled --sync."
 }
 finally {
-    $env:QTREQUESTORY_HOME = $previousHome
+    # Assigning $null would leave the variable set to the empty string.
+    if ($null -eq $previousHome) { Remove-Item Env:\QTREQUESTORY_HOME -ErrorAction SilentlyContinue }
+    else { $env:QTREQUESTORY_HOME = $previousHome }
     Remove-Item -Recurse -Force $sandbox -ErrorAction SilentlyContinue
 }
 
@@ -237,3 +252,8 @@ Write-Host ("    {0:N0} bytes ({1:N2} MB), built {2}" -f $size, ($size / 1MB), (
 Write-Host ''
 Write-Host '    Next: copy it to %LOCALAPPDATA%\qtRequestory\bin\ and run "qtRequestory.exe --task install".'
 Write-Host '    Never schedule the copy in dist\ - the next build replaces it.'
+
+}
+finally {
+    Pop-Location
+}
