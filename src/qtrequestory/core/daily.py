@@ -89,6 +89,23 @@ def list_local_daily_files(root: Path, env: str) -> list[LocalDailyFile]:
     return found
 
 
+def count_local_files(root: Path) -> int:
+    """Number of mirrored daily files across EVERY env folder under ``root``.
+
+    Used by the first-run wizard to size the initial index build before the
+    user has picked environments. Dot-folders (``.qtrequestory``, where the
+    index itself lives) are skipped; a missing root counts as 0.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return 0
+    return sum(
+        len(list_local_daily_files(root, child.name))
+        for child in root.iterdir()
+        if child.is_dir() and not child.name.startswith(".")
+    )
+
+
 # -------------------------------------------------------- entry name parse ---
 
 @dataclass(frozen=True)
