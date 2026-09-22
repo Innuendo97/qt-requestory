@@ -24,9 +24,12 @@ where = ["src"]
 # Without this the SVG icons are left out of the wheel (and out of the
 # PyInstaller collect_data_files that reads it), and the built application shows
 # a rail with no icons at all. LICENSE.md is the Fluent UI attribution the MIT
-# licence of those icons requires us to ship next to them.
+# licence of those icons requires us to ship next to them. icons/app.ico is the
+# generated Windows icon resource (scripts/make_icon.py): nothing reads it at
+# runtime, but it must travel with the sources so a build never has to
+# regenerate it.
 [tool.setuptools.package-data]
-"qtrequestory.ui" = ["icons/*.svg", "icons/LICENSE.md"]
+"qtrequestory.ui" = ["icons/*.svg", "icons/*.ico", "icons/LICENSE.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
