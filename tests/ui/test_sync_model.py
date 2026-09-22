@@ -293,7 +293,7 @@ def test_the_task_status_line_says_active_next_and_last():
 
 
 def test_an_unregistered_task_says_only_that():
-    from qtrequestory.core.scheduler import NOT_REGISTERED
+    from qtrequestory.ui.contracts import NOT_REGISTERED
 
     assert fmt.format_task_status(NOT_REGISTERED) == strings.SYNC_AUTO_OFF
 

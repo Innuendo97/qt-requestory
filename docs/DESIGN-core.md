@@ -120,7 +120,8 @@ class LoggingSink: __init__(logger); __call__(ev)      # headless: formats every
     def env(self, name) -> Environment
     def enabled_environments(self) -> list[Environment]
 def default_config() -> Config                        # environments = []  (NO hostnames in code)
-def load_config(path) -> Config      # missing -> defaults (written); corrupt -> renamed .broken-<ts> + defaults; unknown keys ignored; missing keys defaulted
+def load_config(path) -> Config      # missing -> defaults, file NOT created (a cancelled first-run wizard must stay a first run);
+                                     # corrupt -> renamed .broken-<ts> + defaults written back; unknown keys ignored; missing keys defaulted
 def save_config(cfg, path)           # tmp + os.replace
 def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650
 def import_environments_file(path) -> list[Environment]   # JSON list [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
@@ -258,6 +259,10 @@ class IndexStale(Exception): env; day
 def coverage(conn, env) -> Coverage | None
 def list_template_keys(conn, env, prefix="", limit=500) -> list[str]   # ordered by last day desc, count desc
 def list_fdi_prefix(conn, env, prefix, limit=20) -> list[str]
+def pick_best(hits, *, prefer_most_documents=False) -> tuple[SearchHit|None, list[SearchHit]]
+    # the entry to extract + the other matches of the SAME day ("altre N entry");
+    # by FDI alone the fullest documents[] wins (the entry holding the whole pratica),
+    # ties keep the query order, ndocs=None ranks last.  Used by cli --find.
 ```
 SQL: `env=:env AND day BETWEEN … AND (fdi >= :p AND fdi < :p_hi) AND template_key = :key`
 `ORDER BY day DESC, (request_date IS NULL), request_date DESC, seq DESC LIMIT :limit`.
@@ -275,6 +280,17 @@ def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor
 ```
 Output contract (non-negotiable): the file content is the pure body, starts with
 `{\n    "documents": [`, no wrapper, no comments, UTF-8 without BOM, accents intact.
+
+Two differences from the legacy `nginx/find-call.py`, for the user-facing README:
+
+- The extracted file ends with **a single trailing newline** and uses LF; the old
+  script wrote CRLF and no final newline (it opened the file in text mode). The body
+  is byte-for-byte the same otherwise — Postman, curl and every JSON parser read the
+  two identically.
+- Extracting the **same entry twice no longer overwrites** the first file: the second
+  one is written as `..._<call_id>.json`, so a file still open in the editor is never
+  replaced under the user's hands. The old script wiped its whole output folder on
+  every run; here the folder is pruned by age (`output_retention_hours`, default 24 h).
 
 ## `core/scheduler.py`
 
@@ -310,11 +326,21 @@ CLI (`cli.main(argv) -> int`), first thing: if `sys.stdout is None` install devn
 ```
 qtRequestory.exe                                   GUI
 qtRequestory.exe --sync [--env X]... [--force] [--dry-run]     exit 0/1/2/3
-qtRequestory.exe --index [--rebuild]
+qtRequestory.exe --index [--rebuild] [--env X]...              exit 0/1/3
 qtRequestory.exe --find -e ENV (-f FDI | -k KEY | both) [--days N | --from D --to D] [--out PATH] [--no-open]
 qtRequestory.exe --task install|remove|status|run
-qtRequestory.exe --config PATH
+qtRequestory.exe --config PATH                     # every mode; only config.json moves, logs stay in the app dir
+qtRequestory.exe --version
 ```
+Every mode: `app_paths()` (+ `--config` -> `AppPaths.config_override`), `load_config`,
+`configure_logging(paths, headless=<not GUI>, level=config.log_level)`. `--sync`/`--index`
+call the jobs with `LoggingSink(sync_logger())` and a fresh `CancelToken` and return
+`report.exit_code`; SIGINT sets the token, so the job unwinds and exits 3. `--find` is the
+legacy `nginx/find-call.py` on top of the index (first hit of the newest matching day, the
+"altre N entry" hint for the rest of that day, `pretty_json` + `write_temp_file`/`--out`,
+editor unless `--no-open`, exit 1 when nothing matches). `--task status` exits 1 when no task
+is registered. Qt is imported ONLY inside the GUI branch (`tests/test_cli.py` checks it in a
+subprocess).
 
 ## Testing (pytest; fixtures are 100% synthetic — no real data ever)
 

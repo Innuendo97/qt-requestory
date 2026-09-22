@@ -312,3 +312,18 @@ def test_shutdown_leaves_no_job_claiming_to_still_be_running(qapp):
     assert runner.shutdown(2000) is True
     assert not runner.is_running("sync")
     assert not job.is_running()
+
+
+def test_shutdown_does_not_claim_a_job_finished_when_the_pool_did_not_drain(qapp, monkeypatch):
+    """A timed-out ``waitForDone`` means a worker IS still running.
+
+    Marking the jobs finished anyway made ``is_running`` lie about a thread
+    still inside the core, which is the one case a caller must be able to trust.
+    """
+    runner = JobRunner()
+    job = runner.submit("sync", lambda: None)
+    monkeypatch.setattr(runner._pool, "waitForDone", lambda _ms: False)
+
+    assert runner.shutdown(10) is False
+    assert job.is_running()
+    assert runner.is_running("sync")

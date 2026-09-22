@@ -21,6 +21,13 @@ qtrequestory = "qtrequestory.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Without this the SVG icons are left out of the wheel (and out of the
+# PyInstaller collect_data_files that reads it), and the built application shows
+# a rail with no icons at all. LICENSE.md is the Fluent UI attribution the MIT
+# licence of those icons requires us to ship next to them.
+[tool.setuptools.package-data]
+"qtrequestory.ui" = ["icons/*.svg", "icons/LICENSE.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

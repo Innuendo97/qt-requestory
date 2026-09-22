@@ -20,11 +20,20 @@ OUTPUT_DIR_NAME = "qtrequestory-calls"
 
 @dataclass(frozen=True)
 class AppPaths:
+    """Where the application keeps its files.
+
+    ``config_override`` exists for the CLI's ``--config PERCORSO``: the logs and
+    the UI state stay in the app directory, only the configuration file moves.
+    Everything downstream (``facade.ConfigService``, the UI) reads
+    ``config_file``, so the override reaches every mode without extra wiring.
+    """
+
     app_dir: Path
+    config_override: Path | None = None
 
     @property
     def config_file(self) -> Path:
-        return self.app_dir / "config.json"
+        return self.config_override if self.config_override is not None else self.app_dir / "config.json"
 
     @property
     def logs_dir(self) -> Path:

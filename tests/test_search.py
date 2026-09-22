@@ -19,6 +19,7 @@ from qtrequestory.core.index.search import (
     list_template_keys,
     output_name_for,
     output_name_with_id,
+    pick_best,
     read_body,
     search,
 )
@@ -317,3 +318,57 @@ def test_output_name_for(indexed):
     assert output_name_with_id(hit) == f"20260918_{FDI_A}_{KEY_SINT}_1a2b3c0200000033.json"
     nofdi = search(conn, mirror.root, SearchQuery("coll", template_key="MOD_TEST_R"))[0]
     assert output_name_for(nofdi) == "20260918_nofdi_MOD_TEST_R.json"
+
+
+# ------------------------------------------------------------- pick_best ---
+
+def test_pick_best_keeps_the_newest_day_and_hands_back_the_rest_of_it(indexed):
+    conn, mirror = indexed
+    hits = search(conn, mirror.root, SearchQuery("coll", fdi_prefix=FDI_A))
+
+    best, others = pick_best(hits)
+    assert best is hits[0]
+    assert _names(others) == _names(hits[1:3]), "only the same day is 'altre N entry'"
+    assert all(o.day == best.day for o in others)
+
+
+def test_pick_best_prefers_the_most_complete_body_of_the_day(indexed):
+    """The legacy rule for an FDI-only search, and the reason --find exists.
+
+    One pratica appears once per principal template key; the entry with the most
+    ``documents`` is the one carrying the whole pratica, and that is what the
+    user wants to replay. Without this, --find hands out whichever entry the
+    file happened to end with.
+    """
+    conn, mirror = indexed
+    hits = search(conn, mirror.root, SearchQuery("coll", fdi_prefix=FDI_A))
+    assert [h.ndocs for h in hits[:3]] == [5, 3, 2]
+
+    best, others = pick_best(hits, prefer_most_documents=True)
+    assert best.template_key == KEY_EMAIL and best.ndocs == 5
+    assert [o.ndocs for o in others] == [3, 2]
+
+
+def test_pick_best_most_documents_keeps_the_query_order_on_a_tie(indexed):
+    conn, mirror = indexed
+    hits = search(conn, mirror.root, SearchQuery("coll", fdi_prefix=FDI_A))
+    tied = [h for h in hits if h.day == D18]
+    for h in tied:
+        object.__setattr__(h, "ndocs", 4)
+
+    best, others = pick_best(tied, prefer_most_documents=True)
+    assert best is tied[0] and others == tied[1:]
+
+
+def test_pick_best_ranks_an_unknown_ndocs_last(indexed):
+    conn, mirror = indexed
+    hits = search(conn, mirror.root, SearchQuery("coll", fdi_prefix=FDI_A))
+    day = [h for h in hits if h.day == D18]
+    object.__setattr__(day[0], "ndocs", None)  # a body that failed to parse
+
+    best, _ = pick_best(day, prefer_most_documents=True)
+    assert best is day[1]
+
+
+def test_pick_best_of_nothing():
+    assert pick_best([]) == (None, [])

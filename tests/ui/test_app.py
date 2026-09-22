@@ -6,6 +6,7 @@ happens before and after the event loop is what matters here.
 from __future__ import annotations
 
 import builtins
+import os
 import sys
 import types
 
@@ -13,14 +14,24 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from qtrequestory.ui import app as app_module
-from qtrequestory.ui.app import SingleInstance, instance_key, run_gui, show_first_run_wizard
+from qtrequestory.ui.app import (
+    INSTANCE_KEY_ENV_VAR,
+    SingleInstance,
+    instance_key,
+    run_gui,
+    show_first_run_wizard,
+)
 from qtrequestory.ui.main_window import MainWindow
 
 
 @pytest.fixture
 def key(request) -> str:
-    """A pipe name unique to this test, so the suite never talks to a real app."""
-    return f"qtrequestory-test-{request.node.name}"
+    """A pipe name unique to this test AND this process.
+
+    Pipe names are machine-global: with only the test name in it, two pytest
+    runs on the same box steal the name from each other and this file flakes.
+    """
+    return f"qtrequestory-test-{os.getpid()}-{request.node.name}"
 
 
 @pytest.fixture
@@ -43,8 +54,16 @@ def stub_exec(monkeypatch):
 # --------------------------------------------------------- single instance ---
 
 def test_the_instance_key_is_per_user(monkeypatch):
+    monkeypatch.delenv(INSTANCE_KEY_ENV_VAR, raising=False)
     monkeypatch.setenv("USERNAME", "mrossi")
     assert instance_key() == "qtrequestory-mrossi"
+
+
+def test_the_instance_key_can_be_overridden_for_a_test_run(monkeypatch):
+    """Two pytest runs on one machine must not share the pipe (see the fixture)."""
+    monkeypatch.setenv("USERNAME", "mrossi")
+    monkeypatch.setenv(INSTANCE_KEY_ENV_VAR, "qtrequestory-test-1234")
+    assert instance_key() == "qtrequestory-test-1234"
 
 
 def test_a_second_instance_activates_the_first_and_does_not_start(qtbot, key):
@@ -176,6 +195,35 @@ def test_a_cancelled_wizard_quits_without_a_window(qtbot, fake_core, monkeypatch
 
     assert run_gui(fake_core) == 0
     assert stub_exec == [], "the event loop is never entered"
+
+
+def test_a_cancelled_wizard_leaves_the_next_launch_a_first_run(
+    qtbot, fake_core, monkeypatch, key, stub_exec, tmp_path
+):
+    """Against the REAL config service: cancelling must leave no config behind.
+
+    ``load_config`` used to write the defaults on a first run, so the second
+    launch found a ``config.json`` and the wizard was never offered again — the
+    user was stuck with an unconfigured tool and no way back short of deleting
+    the file by hand.
+    """
+    import dataclasses
+
+    from qtrequestory.core.facade import ConfigService
+    from qtrequestory.core.paths import AppPaths
+
+    paths = AppPaths(tmp_path / "home").ensure()
+    config = ConfigService(paths)
+    services = dataclasses.replace(fake_core, config=config, paths=paths)
+    monkeypatch.setattr(app_module, "instance_key", lambda: key)
+    monkeypatch.setattr(app_module, "wizard_available", lambda: True)
+    monkeypatch.setattr(app_module, "show_first_run_wizard", lambda *a, **kw: None)
+
+    assert config.is_first_run() is True
+    assert run_gui(services) == 0
+
+    assert not paths.config_file.exists()
+    assert ConfigService(paths).is_first_run() is True
 
 
 def test_the_wizard_can_ask_for_a_first_sync(qtbot, fake_core, monkeypatch, key, stub_exec):

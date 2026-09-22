@@ -99,13 +99,25 @@ def test_env_lookup_and_enabled(tmp_path: Path):
 # ------------------------------------------------------------ first run ---
 
 
-def test_first_run_writes_defaults(tmp_path: Path):
+def test_first_run_yields_defaults_without_creating_the_file(tmp_path: Path):
+    """Reading must not answer the "did the user ever configure this?" question.
+
+    ``load_config`` creating the file is how a cancelled first-run wizard used
+    to disappear forever: the next launch found a config.json and never asked
+    again.
+    """
     path = tmp_path / "config.json"
     assert is_first_run(path) is True
     cfg = load_config(path)
-    assert path.exists()
-    assert cfg.environments == []
+    assert not path.exists()
     assert cfg == default_config()
+    assert cfg.environments == []
+    assert is_first_run(path) is True
+
+
+def test_saving_is_what_ends_the_first_run(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_config(load_config(path), path)
     assert is_first_run(path) is False
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk["schema_version"] == cfgmod.CONFIG_VERSION
