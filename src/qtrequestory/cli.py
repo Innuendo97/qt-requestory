@@ -44,6 +44,8 @@ TASK_ACTIONS = ("install", "remove", "status", "run")
 #: ``--find`` prints the same shape the legacy ``nginx/find-call.py`` printed,
 #: because the people using it read those three lines without thinking.
 NOTHING_FOUND = "nessuna chiamata trovata nella finestra indicata"
+NOT_INDEXED = ("l'indice non contiene ancora nulla per '{env}': "
+               "esegui --sync (o --index se i log sono già in locale)")
 
 
 def _guard_std_streams() -> None:
@@ -224,6 +226,11 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
     hit, others = pick_best(hits, prefer_most_documents=bool(fdi and not key))
     if hit is None:
         print(NOTHING_FOUND)
+        # Unlike the legacy script, --find reads an index rather than the files
+        # themselves: "nothing found" on an environment that was never indexed
+        # would be a lie, so say which of the two it is.
+        if index.coverage(env) is None:
+            print(NOT_INDEXED.format(env=env))
         return EXIT_ERRORS
 
     extract = facade.ExtractService(lambda: config)
@@ -239,12 +246,14 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
     _print_others(others)
     print(f"scritto: {out}")
     if not args.no_open:
-        print(f"aperto in {_EDITOR_LABEL[extract.open_in_editor([out])]}")
+        print(f"aperto {_EDITOR_LABEL[extract.open_in_editor([out])]}")
     return 0
 
 
-#: ``ExtractApi.open_in_editor`` answers "editor"/"default"; the user reads Italian.
-_EDITOR_LABEL = {"editor": "Notepad++", "default": "app predefinita"}
+#: ``ExtractApi.open_in_editor`` answers "editor"/"default"; the user reads
+#: Italian. Not "Notepad++" like the legacy script said: the editor is
+#: configurable, and naming the wrong program is worse than naming none.
+_EDITOR_LABEL = {"editor": "nell'editor", "default": "con l'app predefinita"}
 
 
 def _documents(hit: SearchHit) -> str:

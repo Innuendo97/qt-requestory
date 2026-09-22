@@ -259,6 +259,10 @@ class IndexStale(Exception): env; day
 def coverage(conn, env) -> Coverage | None
 def list_template_keys(conn, env, prefix="", limit=500) -> list[str]   # ordered by last day desc, count desc
 def list_fdi_prefix(conn, env, prefix, limit=20) -> list[str]
+def pick_best(hits, *, prefer_most_documents=False) -> tuple[SearchHit|None, list[SearchHit]]
+    # the entry to extract + the other matches of the SAME day ("altre N entry");
+    # by FDI alone the fullest documents[] wins (the entry holding the whole pratica),
+    # ties keep the query order, ndocs=None ranks last.  Used by cli --find.
 ```
 SQL: `env=:env AND day BETWEEN … AND (fdi >= :p AND fdi < :p_hi) AND template_key = :key`
 `ORDER BY day DESC, (request_date IS NULL), request_date DESC, seq DESC LIMIT :limit`.

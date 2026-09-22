@@ -294,6 +294,22 @@ def test_find_exits_1_when_nothing_matches(indexed: Path, capsys):
     assert "nessuna chiamata trovata" in capsys.readouterr().out
 
 
+def test_find_says_when_the_environment_was_never_indexed(home: Path, capsys):
+    """"Nothing found" would be a lie on an index that holds nothing at all."""
+    assert cli.main(["--find", "-e", "coll", "-f", FDI_A[:8], "--no-open"]) == 1
+    out = capsys.readouterr().out
+    assert cli.NOTHING_FOUND in out
+    assert "esegui --sync" in out
+
+
+def test_find_does_not_blame_the_index_when_it_has_data(indexed: Path, capsys):
+    assert cli.main(["--find", "-e", "coll", "-f", "ffffffff",
+                     "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"]) == 1
+    out = capsys.readouterr().out
+    assert cli.NOTHING_FOUND in out
+    assert "esegui --sync" not in out
+
+
 def test_find_writes_where_out_says(indexed: Path, tmp_path: Path, capsys):
     target = tmp_path / "altrove" / "chiamata.json"
     assert cli.main(["--find", "-e", "coll", "-k", KEY_CTE, "--out", str(target),
