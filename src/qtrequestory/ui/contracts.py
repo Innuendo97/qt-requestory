@@ -38,6 +38,7 @@ from qtrequestory.core.config import (
     ScheduleSettings,
     SyncSettings,
     parse_hhmm,
+    sanitised_schedule,
 )
 from qtrequestory.core.daily import EntryName, LocalDailyFile, parse_entry_name
 from qtrequestory.core.events import (
@@ -79,8 +80,8 @@ __all__ = [
     "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "ScheduleSettings",
     "SchedulerError", "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec",
     "TaskStatus",
-    # the two core helpers the UI is allowed to call directly (pure parsing)
-    "parse_entry_name", "parse_hhmm",
+    # the core helpers the UI is allowed to call directly (pure functions, no I/O)
+    "parse_entry_name", "parse_hhmm", "sanitised_schedule",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",

@@ -348,6 +348,27 @@ def test_the_checkbox_starts_from_the_task_the_system_already_has(qtbot, fake_co
     assert "domani 09:00" in widget.auto_status.text()
 
 
+def test_a_refused_schtasks_call_leaves_the_checkbox_telling_the_truth(qtbot, page, fake_core,
+                                                                      runner):
+    """``scheduler`` is exclusive (Impostazioni re-registers through the same
+    name), and a refused submit runs nothing: the box must not stay ticked on a
+    registration that never happened."""
+    import threading
+
+    from qtrequestory.ui.workers import SCHEDULER_JOB
+
+    gate = threading.Event()
+    busy = runner.submit(SCHEDULER_JOB, lambda: gate.wait(3.0))
+
+    page.auto_check.setChecked(True)
+
+    assert fake_core.scheduler.register_calls == 0
+    assert not page.auto_check.isChecked()
+    gate.set()
+    with qtbot.waitSignal(busy.signals.finished, timeout=TIMEOUT):
+        pass
+
+
 def test_the_status_line_describes_the_schedule_that_is_configured(qtbot, page, fake_core):
     """Not the one that used to be compiled in: a user who moved the start to
     07:30 must read 07:30 here, or the line is worse than no line at all."""
@@ -365,8 +386,9 @@ def test_the_status_line_describes_the_schedule_that_is_configured(qtbot, page, 
 
     line = page.auto_status.text()
     assert strings.SYNC_AUTO_ON in line
-    assert "Ogni giorno alle 07:30, riprova ogni 2 ore fino alle 13:30." in line
+    assert "Ogni giorno alle 07:30, riprova ogni 2 ore fino alle 13:30" in line
     assert "login" not in line
+    assert ". " not in line, "the sentence is framed by ' · ', not closed mid-line"
 
 
 def test_saving_a_new_schedule_repaints_the_status_line(qtbot, page, fake_core):
@@ -384,7 +406,7 @@ def test_saving_a_new_schedule_repaints_the_status_line(qtbot, page, fake_core):
         fake_core.config.load(), schedule=ScheduleSettings(start_time="06:00", repeat_for_h=0)
     )
     page.on_config_changed(fake_core.config.load())
-    assert "Ogni giorno alle 06:00, e al login." in page.auto_status.text()
+    assert "Ogni giorno alle 06:00, e al login" in page.auto_status.text()
 
 
 def test_an_exe_mismatch_is_shown_with_a_way_out(qtbot, page, fake_core):

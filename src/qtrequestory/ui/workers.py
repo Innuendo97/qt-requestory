@@ -42,12 +42,20 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgress, LogMessage
 
-__all__ = ["CancelToken", "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals"]
+__all__ = [
+    "SCHEDULER_JOB", "CancelToken", "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals",
+]
 
 log = logging.getLogger(__name__)
 
 #: Minimum seconds between two forwarded ``FileProgress`` events of one job.
 PROGRESS_INTERVAL_S = 0.1
+
+#: The job name every ``schtasks`` call uses. Named here rather than in a page
+#: because two pages drive the scheduled task — Sincronizzazione (the checkbox)
+#: and Impostazioni (a save re-registers it) — and they must share one name to
+#: be mutually exclusive (see :attr:`JobRunner.EXCLUSIVE`).
+SCHEDULER_JOB = "scheduler"
 
 _next_id = itertools.count(1).__next__
 
@@ -257,16 +265,19 @@ class JobRunner(QObject):
     """The one thread pool of the application, shared by every page.
 
     Four threads, one per name that can be live at the same time: ``sync`` and
-    ``index`` (both exclusive) plus ``search`` and ``preview``. A fifth name
-    would simply queue behind them — which is fine, but the four that the UI
-    actually overlaps must never wait for each other. The runner is created by
-    ``run_gui`` and passed to every page factory.
+    ``index`` (both exclusive) plus ``search`` and ``preview``. ``scheduler``
+    (also exclusive) is the fifth name and simply queues behind them — which is
+    fine, it is a short ``schtasks`` call nothing waits on — but the four that
+    the UI actually overlaps must never wait for each other. The runner is
+    created by ``run_gui`` and passed to every page factory.
     """
 
     #: A submit with one of these names is refused while one is still running,
-    #: because a second one would fight over the same lock/database. Everything
-    #: else supersedes instead.
-    EXCLUSIVE = frozenset({"sync", "index"})
+    #: because a second one would fight over the same lock/database — or, for
+    #: ``scheduler``, because ``schtasks`` ignores the cancel token, so two
+    #: calls in flight could land in either order and leave the task in the
+    #: state of the *first* one. Everything else supersedes instead.
+    EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB})
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)

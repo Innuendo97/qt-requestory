@@ -43,8 +43,11 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
    environments.json oppure inserisci nome e URL". [Verifica raggiungibilità] optional,
    never blocking: "Gli ambienti sono raggiungibili solo da rete aziendale o VPN Cisco: se
    ora non lo sono, va bene lo stesso."
-3. **Automazione** — [x] Sincronizza automaticamente ogni giorno alle 09:00 (riprova ogni ora
-   fino alle 18:00 e al logon; solo se la rete è raggiungibile; nessuna password salvata).
+3. **Automazione** — [x] Sincronizza automaticamente i log, with the schedule that would be
+   registered spelled out underneath by `schedule_text.schedule_sentence` from the saved
+   `schedule` block ("Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login.
+   Solo se la rete è raggiungibile; nessuna password salvata.") — never a second copy of the
+   hours, because Impostazioni can have changed them.
    If `detect_legacy_task()`: "(!) È presente il vecchio task NginxLogSync basato su
    PowerShell: verrà sostituito." Notepad++ path (detected, [Sfoglia…]). [x] Avvia la prima
    sincronizzazione al termine.
@@ -155,7 +158,7 @@ class CancelToken (core)                       # passed to core calls
 class WorkerSignals(QObject): started, progress(object), log(str), result(object), error(str, str), finished, cancelled
 class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions -> error
 class JobRunner(QObject): QThreadPool(maxThreadCount=3); submit(name, fn, ...) -> Job
-    # named singleton jobs: "sync" refused if running; "search"/"preview" supersede (older results dropped by request id)
+    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel token); "search"/"preview" supersede (older results dropped by request id)
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> queued signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.

@@ -32,7 +32,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Callable
 
-from qtrequestory.core.config import ScheduleSettings, parse_hhmm
+from qtrequestory.core.config import ScheduleSettings, parse_hhmm, sanitised_schedule
 from qtrequestory.core.paths import executable_path
 
 TASK_NAME = "qtRequestory Sync"
@@ -49,8 +49,8 @@ class SchedulerError(Exception):
     """schtasks failed; the message carries its (localised) output."""
 
 
-#: Used when ``ScheduleSettings.start_time`` cannot be parsed (a hand-edited
-#: config): the task must still be registered, or the mirror silently stops.
+#: The legacy task's start time; also what ``config.sanitised_schedule`` falls
+#: back to when the stored one cannot be parsed.
 DEFAULT_START_TIME = time(9, 0)
 
 
@@ -73,16 +73,21 @@ def spec_from_config(schedule: ScheduleSettings, exe: Path) -> TaskSpec:
 
     The one place that turns the four stored values into a ``TaskSpec``, so the
     scheduled task and what Impostazioni shows can never describe different
-    things. An unparsable ``start_time`` falls back to :data:`DEFAULT_START_TIME`
-    rather than raising: ``config.validate`` is what tells the user about it,
-    and a task that refuses to register would cost whole days of logs.
+    things.
+
+    No value is trusted: ``config.sanitised_schedule`` repairs a hand-edited
+    file first (bad time -> the default, counts clamped into range), because
+    ``config.validate`` only *reports* those and a task that refuses to register
+    would cost whole days of logs. The UI builds its sentence from the same
+    function, so what runs and what is shown cannot differ.
     """
+    runnable = sanitised_schedule(schedule)
     return TaskSpec(
         exe=exe,
-        start_time=parse_hhmm(schedule.start_time) or DEFAULT_START_TIME,
-        repeat_every_h=schedule.repeat_every_h,
-        repeat_for_h=schedule.repeat_for_h,
-        run_at_logon=schedule.run_at_logon,
+        start_time=parse_hhmm(runnable.start_time) or DEFAULT_START_TIME,
+        repeat_every_h=runnable.repeat_every_h,
+        repeat_for_h=runnable.repeat_for_h,
+        run_at_logon=runnable.run_at_logon,
     )
 
 

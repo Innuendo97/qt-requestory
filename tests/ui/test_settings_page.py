@@ -216,6 +216,36 @@ def test_the_four_schedule_fields_show_the_saved_schedule(page, fake_core):
     assert not page.is_dirty()
 
 
+@pytest.mark.parametrize("stored", ["09:00", "7:30", "23:05"])
+def test_a_start_time_the_core_accepts_loads_as_it_is(qtbot, fake_core, runner, window, stored):
+    """``config.validate`` accepts a one-digit hour, and the task registers it.
+
+    ``QTime.fromString(…, "HH:mm")`` does not: reading the field through Qt's
+    parser would show 09:00 for a stored "7:30", light [Salva] without a single
+    edit, disagree with the Sincronizzazione line — and rewrite the user's hour
+    on the next save.
+    """
+    from qtrequestory.ui.contracts import ScheduleSettings, parse_hhmm
+
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.load(), schedule=ScheduleSettings(start_time=stored)
+    )
+    page = SettingsPage(fake_core, runner, window)
+    qtbot.addWidget(page)
+
+    hour, minute = (int(part) for part in stored.split(":"))
+    assert page.schedule_start.time() == QTime(hour, minute)
+    assert f"{hour:02d}:{minute:02d}" in page.schedule_summary.text()
+    assert not page.is_dirty(), "loading a valid configuration is not an edit"
+
+    page.save_button.click()
+    assert fake_core.config.saved == [], "nothing was edited, so nothing is written"
+
+    page.set_window_days(90)  # an unrelated edit must not move the start time
+    page.save_button.click()
+    assert parse_hhmm(fake_core.config.saved[-1].schedule.start_time) == parse_hhmm(stored)
+
+
 @pytest.mark.parametrize(
     "edit",
     [

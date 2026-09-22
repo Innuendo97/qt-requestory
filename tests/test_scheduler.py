@@ -207,6 +207,28 @@ class TestSpecFromConfig:
         spec = spec_from_config(ScheduleSettings(start_time="mezzogiorno"), Path("q.exe"))
         assert spec.start_time == TaskSpec(exe=Path("q.exe")).start_time
 
+    @pytest.mark.parametrize(
+        "stored, expected",
+        [
+            (ScheduleSettings(repeat_every_h=0), (1, 9)),      # PT0H: schtasks refuses the XML
+            (ScheduleSettings(repeat_every_h=99), (12, 9)),
+            (ScheduleSettings(repeat_every_h=-3), (1, 9)),
+            (ScheduleSettings(repeat_for_h=99), (1, 23)),
+            (ScheduleSettings(repeat_for_h=-1), (1, 0)),
+        ],
+    )
+    def test_hand_edited_counts_are_clamped_to_the_validated_range(self, stored, expected):
+        """Same story as the start time: the file can hold anything, and an
+        ``<Interval>PT0H</Interval>`` would make ``register`` raise instead of
+        scheduling a slightly different — but working — task."""
+        spec = spec_from_config(stored, Path("q.exe"))
+        assert (spec.repeat_every_h, spec.repeat_for_h) == expected
+
+    def test_a_clamped_schedule_still_produces_XML_schtasks_can_parse(self):
+        spec = spec_from_config(ScheduleSettings(repeat_every_h=0), Path("q.exe"))
+        root = ET.fromstring(build_task_xml(spec, USER, "d"))
+        assert _text(root, "Triggers/CalendarTrigger/Repetition/Interval") == "PT1H"
+
     def test_the_xml_of_a_single_daily_run_has_no_repetition_and_no_logon(self):
         schedule = ScheduleSettings(start_time="06:15", repeat_for_h=0, run_at_logon=False)
         root = ET.fromstring(

@@ -71,6 +71,8 @@ SETTINGS_SCHEDULE_LOGON_HINT = (
     "Se il PC è spento all'ora di avvio, il login è ciò che recupera la giornata: "
     "sul server i log restano disponibili per circa un giorno."
 )
+#: {schedule} = the shared sentence, which carries no final full stop of its own.
+SETTINGS_SCHEDULE_SUMMARY = "{schedule}."
 #: {message} = why schtasks refused to update the already registered task.
 SETTINGS_SCHEDULE_UPDATE_FAILED = "Impossibile aggiornare l'attività pianificata: {message}"
 

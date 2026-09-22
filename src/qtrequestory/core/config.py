@@ -39,6 +39,12 @@ SIDECAR_NAME = "environments.json"
 HIDDEN_DIR_NAME = ".qtrequestory"
 TIME_FORMAT = "%H:%M"
 
+#: Hours between two attempts of the scheduled task, and how long it keeps
+#: retrying. ``validate`` reports a value outside these; ``sanitised_schedule``
+#: clamps to them. 12 and 23 keep the retry window inside its own day.
+REPEAT_EVERY_RANGE = (1, 12)
+REPEAT_FOR_RANGE = (0, 23)
+
 T = TypeVar("T")
 
 
@@ -438,15 +444,47 @@ def _schedule_errors(schedule: ScheduleSettings) -> list[str]:
         errors.append(
             f"schedule.start_time '{schedule.start_time}' non è un orario valido (atteso HH:MM)"
         )
-    if not 1 <= schedule.repeat_every_h <= 12:
+    every_low, every_high = REPEAT_EVERY_RANGE
+    if not every_low <= schedule.repeat_every_h <= every_high:
         errors.append(
-            f"schedule.repeat_every_h deve essere tra 1 e 12 (trovato {schedule.repeat_every_h})"
+            f"schedule.repeat_every_h deve essere tra {every_low} e {every_high} "
+            f"(trovato {schedule.repeat_every_h})"
         )
-    if not 0 <= schedule.repeat_for_h <= 23:
+    for_low, for_high = REPEAT_FOR_RANGE
+    if not for_low <= schedule.repeat_for_h <= for_high:
         errors.append(
-            f"schedule.repeat_for_h deve essere tra 0 e 23 (trovato {schedule.repeat_for_h})"
+            f"schedule.repeat_for_h deve essere tra {for_low} e {for_high} "
+            f"(trovato {schedule.repeat_for_h})"
         )
     return errors
+
+
+def sanitised_schedule(schedule: ScheduleSettings) -> ScheduleSettings:
+    """The schedule as the scheduled task will really run it.
+
+    ``validate`` *reports* a bad value; this *repairs* it, because the file can
+    be hand-edited and the task must still be registered — a mirror that stops
+    syncing loses days that cannot be recovered. The start time falls back to
+    the default (and is canonicalised, ``"7:30"`` -> ``"07:30"``) and the two
+    counts are clamped into range, which also keeps XML ``schtasks`` refuses
+    (``<Interval>PT0H</Interval>``) from ever being built.
+
+    One function, so that what gets registered and what the UI says about it
+    cannot diverge: ``scheduler.spec_from_config`` and the sentence the pages
+    show both start here.
+    """
+    start = parse_hhmm(schedule.start_time) or parse_hhmm(ScheduleSettings().start_time)
+    assert start is not None  # the dataclass default is always a valid HH:MM
+    return ScheduleSettings(
+        start_time=start.strftime(TIME_FORMAT),
+        repeat_every_h=_clamp(schedule.repeat_every_h, *REPEAT_EVERY_RANGE),
+        repeat_for_h=_clamp(schedule.repeat_for_h, *REPEAT_FOR_RANGE),
+        run_at_logon=schedule.run_at_logon,
+    )
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
 
 
 # ------------------------------------------------- environments sidecar ---

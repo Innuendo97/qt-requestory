@@ -16,36 +16,39 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import ScheduleSettings, parse_hhmm
+from qtrequestory.ui.contracts import ScheduleSettings, parse_hhmm, sanitised_schedule
 
 __all__ = ["schedule_sentence"]
 
-#: Shown when ``start_time`` cannot be parsed. The same value as
-#: ``ScheduleSettings().start_time`` and ``scheduler.DEFAULT_START_TIME``: what
-#: the task would actually run at.
-FALLBACK_START = time(9, 0)
 TIME_FORMAT = "%H:%M"
 
 
 def schedule_sentence(schedule: ScheduleSettings) -> str:
-    """``"Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login."``
+    """``"Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login"``
 
-    An unparsable ``start_time`` (a hand-edited ``config.json``) falls back to
-    the default instead of raising: ``config.validate`` is what reports it, and
-    neither page may go blank over a bad character.
+    Without the final full stop: the Sincronizzazione status line puts the
+    sentence between ``·`` separators, where a full stop mid-line reads like a
+    mistake, while Impostazioni and the wizard close it themselves through
+    their own string. Punctuation belongs to whoever frames the sentence.
+
+    What is described is what the task will really do: the values go through
+    ``config.sanitised_schedule`` first — the same repair ``spec_from_config``
+    applies — so a hand-edited ``"repeat_every_h": 0`` reads as the hourly retry
+    it will actually become, and no page goes blank over a bad character.
     """
-    start = parse_hhmm(schedule.start_time) or FALLBACK_START
+    runnable = sanitised_schedule(schedule)
+    start = parse_hhmm(runnable.start_time) or time(9, 0)
     parts = [strings.SYNC_SCHEDULE_DAILY.format(time=start.strftime(TIME_FORMAT))]
-    if schedule.repeat_for_h > 0:
+    if runnable.repeat_for_h > 0:
         template = (
-            strings.SYNC_SCHEDULE_REPEAT_HOURLY if schedule.repeat_every_h == 1
+            strings.SYNC_SCHEDULE_REPEAT_HOURLY if runnable.repeat_every_h == 1
             else strings.SYNC_SCHEDULE_REPEAT_EVERY
         )
-        parts.append(template.format(n=schedule.repeat_every_h,
-                                     end=_end_of_window(start, schedule.repeat_for_h)))
-    if schedule.run_at_logon:
+        parts.append(template.format(n=runnable.repeat_every_h,
+                                     end=_end_of_window(start, runnable.repeat_for_h)))
+    if runnable.run_at_logon:
         parts.append(strings.SYNC_SCHEDULE_LOGON)
-    return "".join(parts) + strings.SYNC_SCHEDULE_STOP
+    return "".join(parts)
 
 
 def _end_of_window(start: time, hours: int) -> str:

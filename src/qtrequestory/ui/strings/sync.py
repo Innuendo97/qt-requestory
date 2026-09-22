@@ -152,5 +152,6 @@ SYNC_SCHEDULE_REPEAT_EVERY = ", riprova ogni {n} ore fino alle {end}"
 #: {time} = HH:mm; wraps the end time when the window crosses midnight.
 SYNC_SCHEDULE_END_NEXT_DAY = "{time} del giorno dopo"
 SYNC_SCHEDULE_LOGON = ", e al login"
-#: The full stop that closes the sentence (here so the whole wording is in one file).
-SYNC_SCHEDULE_STOP = "."
+# No full stop here: the sentence ends without one because this page shows it
+# between " · " separators. Impostazioni and the wizard close it with their own
+# string (``SETTINGS_SCHEDULE_SUMMARY``, ``WIZARD_P3_AUTOSYNC_NOTE``).

@@ -529,6 +529,33 @@ def test_validate_checks_the_schedule(tmp_path: Path, schedule: ScheduleSettings
         assert any(field_name in e for e in errors), errors
 
 
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        (ScheduleSettings(), ScheduleSettings()),
+        (ScheduleSettings(start_time="7:30"), ScheduleSettings(start_time="07:30")),
+        (ScheduleSettings(start_time="mezzogiorno"), ScheduleSettings()),
+        (ScheduleSettings(repeat_every_h=0), ScheduleSettings(repeat_every_h=1)),
+        (ScheduleSettings(repeat_every_h=99), ScheduleSettings(repeat_every_h=12)),
+        (ScheduleSettings(repeat_for_h=-4), ScheduleSettings(repeat_for_h=0)),
+        (ScheduleSettings(repeat_for_h=99), ScheduleSettings(repeat_for_h=23)),
+        (ScheduleSettings(run_at_logon=False), ScheduleSettings(run_at_logon=False)),
+    ],
+)
+def test_sanitised_schedule_is_what_the_task_will_really_do(stored, expected):
+    """``validate`` reports a bad value; this repairs it, because the task has to
+    be registered anyway and the UI must describe what will actually run."""
+    assert cfgmod.sanitised_schedule(stored) == expected
+
+
+def test_a_sanitised_schedule_always_validates_clean(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.schedule = ScheduleSettings(start_time="boh", repeat_every_h=-5, repeat_for_h=48)
+    assert validate(cfg) != []
+    cfg.schedule = cfgmod.sanitised_schedule(cfg.schedule)
+    assert validate(cfg) == []
+
+
 def test_parse_hhmm_accepts_exactly_what_validate_accepts():
     assert cfgmod.parse_hhmm("09:00") == time(9, 0)
     assert cfgmod.parse_hhmm("7:05") == time(7, 5)

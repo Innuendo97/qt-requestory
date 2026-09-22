@@ -53,7 +53,7 @@ from qtrequestory.ui.contracts import (
 from qtrequestory.ui.pages import progress_model as pm
 from qtrequestory.ui.pages import sync_format as fmt
 from qtrequestory.ui.pages.env_card import EnvCard
-from qtrequestory.ui.workers import Job, JobRunner
+from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
 
 __all__ = ["SyncPage", "SyncPresenter"]
 
@@ -439,9 +439,13 @@ class SyncPage(QWidget):
     def _run_scheduler(self, register: bool) -> None:
         """``schtasks`` is a subprocess call: never on the GUI thread."""
         scheduler = self._services.scheduler
-        job = self._runner.submit("scheduler",
+        job = self._runner.submit(SCHEDULER_JOB,
                                   scheduler.register if register else scheduler.unregister)
         if job is None:
+            # Refused (Impostazioni is re-registering) or the application is
+            # closing: nothing will run, so the checkbox must not keep showing
+            # the change the user just asked for.
+            self.refresh_scheduler()
             return
         self.scheduler_job = job
         self._set_scheduler_busy(True)

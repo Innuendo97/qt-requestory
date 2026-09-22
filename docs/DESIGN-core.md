@@ -119,6 +119,8 @@ class LoggingSink: __init__(logger); __call__(ev)      # headless: formats every
 @dataclass(frozen=True) class ScheduleSettings   # the scheduled task, edited in Impostazioni;
                                                  # defaults = the previously hard-coded TaskSpec
 def parse_hhmm(value) -> time | None             # shared by validate, scheduler and the UI wording
+def sanitised_schedule(s) -> ScheduleSettings    # what the task will really run: bad time -> default,
+                                                 # counts clamped; used by spec_from_config AND the UI sentence
 @dataclass class Config: (fields above; paths as Path; compaction_time as datetime.time)
     index_path / state_path / lock_path / resolved_output_dir  (properties)
     def env(self, name) -> Environment
@@ -302,7 +304,8 @@ Two differences from the legacy `nginx/find-call.py`, for the user-facing README
 ```python
 TASK_NAME = "qtRequestory Sync"; LEGACY_TASK_NAME = "NginxLogSync"
 @dataclass(frozen=True) class TaskSpec: exe: Path; args: str = "--sync"; start_time: time = time(9,0); repeat_every_h=1; repeat_for_h=9; run_at_logon=True; exec_limit_h=3
-def spec_from_config(schedule: ScheduleSettings, exe) -> TaskSpec   # the saved schedule is what gets registered
+def spec_from_config(schedule: ScheduleSettings, exe) -> TaskSpec   # the saved schedule (through
+                                                                    # config.sanitised_schedule) is what gets registered
 @dataclass(frozen=True) class TaskStatus: registered; command: Path|None; args; exe_matches: bool; state; next_run; last_run; last_result: int|None
 def build_task_xml(spec, user_id, description) -> str
 def register(spec, runner=run_schtasks) ; def unregister(runner) ; def status(current_exe, runner) -> TaskStatus

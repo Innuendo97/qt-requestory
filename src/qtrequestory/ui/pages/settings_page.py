@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import CoreServices, ScheduleSettings
+from qtrequestory.ui.contracts import CoreServices, ScheduleSettings, parse_hhmm
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.schedule_text import schedule_sentence
 from qtrequestory.ui.pages.settings_presenter import (
@@ -45,18 +45,17 @@ from qtrequestory.ui.pages.settings_presenter import (
     form_of,
     normalised,
 )
-from qtrequestory.ui.workers import Job, JobRunner
+from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
 
 #: The three "Periodo predefinito" buttons (DESIGN-ui §Impostazioni page).
 WINDOW_CHOICES = (7, 30, 90)
 #: Exclusive job name: an index run refuses a second one while it works.
 INDEX_JOB = "index"
 CHECK_JOB = "check-envs"
-#: The same name the Sincronizzazione page uses on purpose: ``schtasks`` takes
-#: no cancel token, so the two pages must not drive it at the same time.
-SCHEDULER_JOB = "scheduler"
 #: What ``QTimeEdit`` shows and what ``ScheduleSettings.start_time`` stores.
 TIME_FORMAT = "HH:mm"
+#: Shown when the stored start time cannot be parsed at all (hand-edited file).
+DEFAULT_START = parse_hhmm(ScheduleSettings().start_time)
 
 
 class SettingsPage(QWidget):
@@ -266,20 +265,25 @@ class SettingsPage(QWidget):
     def set_schedule(self, schedule: ScheduleSettings) -> None:
         """Load the four fields; an unparsable stored time shows the default.
 
-        ``QTime.fromString`` answers an invalid ``QTime`` for a hand-edited
-        value, and ``setTime`` would silently keep whatever was in the box —
-        which would then be saved back as if the user had chosen it.
+        The time goes through ``parse_hhmm`` — the core's own parser — and NOT
+        through ``QTime.fromString``, which is stricter: it rejects ``"7:30"``
+        while ``config.validate`` accepts it and the task registers 07:30. The
+        form would then show 09:00, disagree with the Sincronizzazione line, be
+        dirty without a single edit, and rewrite the user's hour on the next
+        save. One parser, one answer.
         """
-        start = QTime.fromString(schedule.start_time, TIME_FORMAT)
-        if not start.isValid():
-            start = QTime.fromString(ScheduleSettings().start_time, TIME_FORMAT)
-        self.schedule_start.setTime(start)
+        start = parse_hhmm(schedule.start_time) or DEFAULT_START
+        self.schedule_start.setTime(QTime(start.hour, start.minute))
         self.schedule_every.setValue(schedule.repeat_every_h)
         self.schedule_for.setValue(schedule.repeat_for_h)
         self.schedule_logon.setChecked(schedule.run_at_logon)
 
     def _on_edited(self) -> None:
-        self.schedule_summary.setText(schedule_sentence(self.schedule_values()))
+        self.schedule_summary.setText(
+            strings.SETTINGS_SCHEDULE_SUMMARY.format(
+                schedule=schedule_sentence(self.schedule_values())
+            )
+        )
         self.save_button.setEnabled(self.is_dirty())
 
     # -- saving ------------------------------------------------------------
@@ -313,7 +317,7 @@ class SettingsPage(QWidget):
         if not self._services.scheduler.status().registered:
             return
         job = self._runner.submit(SCHEDULER_JOB, self._services.scheduler.register)
-        if job is None:  # the application is closing: nothing would ever run
+        if job is None:  # closing, or the Sincronizzazione page is driving schtasks
             return
         self.scheduler_job = job
         job.signals.error.connect(
