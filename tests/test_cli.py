@@ -155,7 +155,7 @@ def test_a_headless_mode_never_imports_qt(tmp_path: Path, argv: list[str]):
 
 
 def test_task_status_never_imports_qt_either(home: Path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "scheduler_service", lambda: _FakeScheduler())
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: _FakeScheduler())
     before = {m for m in sys.modules if m.startswith("PySide6")}
     cli.main(["--task", "status"])
     assert {m for m in sys.modules if m.startswith("PySide6")} == before
@@ -405,7 +405,7 @@ def test_an_option_of_another_mode_is_refused_not_ignored(home: Path, argv: list
 
 def test_task_install_registers_and_warns_about_an_unstable_location(home: Path, monkeypatch, capsys):
     fake = _FakeScheduler(unstable="L'eseguibile si trova in Downloads: spostalo.")
-    monkeypatch.setattr(cli, "scheduler_service", lambda: fake)
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: fake)
 
     assert cli.main(["--task", "install"]) == 0
     assert fake.calls == ["register"]
@@ -415,7 +415,7 @@ def test_task_install_registers_and_warns_about_an_unstable_location(home: Path,
 
 def test_task_install_reports_a_scheduler_failure(home: Path, monkeypatch, capsys):
     fake = _FakeScheduler(error=scheduler.SchedulerError("schtasks: accesso negato"))
-    monkeypatch.setattr(cli, "scheduler_service", lambda: fake)
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: fake)
 
     assert cli.main(["--task", "install"]) == 1
     assert "accesso negato" in capsys.readouterr().out
@@ -423,7 +423,7 @@ def test_task_install_reports_a_scheduler_failure(home: Path, monkeypatch, capsy
 
 def test_task_remove_and_run(home: Path, monkeypatch, capsys):
     fake = _FakeScheduler()
-    monkeypatch.setattr(cli, "scheduler_service", lambda: fake)
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: fake)
 
     assert cli.main(["--task", "remove"]) == 0
     assert cli.main(["--task", "run"]) == 0
@@ -436,7 +436,7 @@ def test_task_status_prints_the_fields_in_italian(home: Path, monkeypatch, capsy
         exe_matches=True, state="Pronto", next_run="23/09/2026 09:00:00",
         last_run="22/09/2026 09:00:00", last_result=0,
     ))
-    monkeypatch.setattr(cli, "scheduler_service", lambda: fake)
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: fake)
 
     assert cli.main(["--task", "status"]) == 0
     out = capsys.readouterr().out
@@ -448,7 +448,7 @@ def test_task_status_prints_the_fields_in_italian(home: Path, monkeypatch, capsy
 
 
 def test_task_status_says_when_nothing_is_registered(home: Path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "scheduler_service", lambda: _FakeScheduler())
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: _FakeScheduler())
     assert cli.main(["--task", "status"]) == 1
     assert "Registrata: no" in capsys.readouterr().out
 

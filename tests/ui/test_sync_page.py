@@ -348,6 +348,45 @@ def test_the_checkbox_starts_from_the_task_the_system_already_has(qtbot, fake_co
     assert "domani 09:00" in widget.auto_status.text()
 
 
+def test_the_status_line_describes_the_schedule_that_is_configured(qtbot, page, fake_core):
+    """Not the one that used to be compiled in: a user who moved the start to
+    07:30 must read 07:30 here, or the line is worse than no line at all."""
+    import dataclasses
+
+    from qtrequestory.ui.contracts import ScheduleSettings
+
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.load(),
+        schedule=ScheduleSettings(start_time="07:30", repeat_every_h=2, repeat_for_h=6,
+                                  run_at_logon=False),
+    )
+    fake_core.scheduler.set_status(registered=True, exe_matches=True, state="Pronto")
+    page.refresh_scheduler()
+
+    line = page.auto_status.text()
+    assert strings.SYNC_AUTO_ON in line
+    assert "Ogni giorno alle 07:30, riprova ogni 2 ore fino alle 13:30." in line
+    assert "login" not in line
+
+
+def test_saving_a_new_schedule_repaints_the_status_line(qtbot, page, fake_core):
+    """Impostazioni broadcasts ``config_changed``; the line must follow it
+    without waiting for the page to be rebuilt."""
+    import dataclasses
+
+    from qtrequestory.ui.contracts import ScheduleSettings
+
+    fake_core.scheduler.set_status(registered=True, exe_matches=True, state="Pronto")
+    page.refresh_scheduler()
+    assert "09:00" in page.auto_status.text()
+
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.load(), schedule=ScheduleSettings(start_time="06:00", repeat_for_h=0)
+    )
+    page.on_config_changed(fake_core.config.load())
+    assert "Ogni giorno alle 06:00, e al login." in page.auto_status.text()
+
+
 def test_an_exe_mismatch_is_shown_with_a_way_out(qtbot, page, fake_core):
     fake_core.scheduler.exe = Path(r"C:\vecchio\qtRequestory.exe")
     fake_core.scheduler.set_status(registered=True, exe_matches=False,

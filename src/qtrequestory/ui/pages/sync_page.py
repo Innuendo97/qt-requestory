@@ -276,7 +276,7 @@ class SyncPage(QWidget):
         return next((c for c in self._cards if c.env_name == env_name), None)
 
     def on_config_changed(self, cfg: Config | None = None) -> None:
-        """Impostazioni saved: the set of environments may have changed.
+        """Impostazioni saved: the environments — or the schedule — may have changed.
 
         The broadcast payload is only a notification: every service reads the
         configuration back through ``ConfigService.current``, so reloading is
@@ -285,6 +285,7 @@ class SyncPage(QWidget):
         self.rebuild_cards()
         self._rebuild_menu()
         self.presenter.emit_summary()
+        self.refresh_scheduler()  # the status line describes the saved schedule
 
     def retune(self) -> None:
         """Light/dark switched: the pills were coloured for the old palette."""
@@ -418,7 +419,9 @@ class SyncPage(QWidget):
         self._set_scheduler_busy(False)
         with QSignalBlocker(self.auto_check):  # a repaint is not a user decision
             self.auto_check.setChecked(task.registered)
-        self.auto_status.setText(fmt.format_task_status(task))
+        self.auto_status.setText(
+            fmt.format_task_status(task, self._services.config.load().schedule)
+        )
         mismatch = task.registered and not task.exe_matches
         self.exe_warning.setText(
             strings.SYNC_AUTO_EXE_MISMATCH.format(path=task.command) if mismatch else "")

@@ -114,7 +114,7 @@ SYNC_LOCK_HELD = "Sincronizzazione in corso dal task pianificato…"
 # -- automatic synchronisation -----------------------------------------------
 
 SYNC_AUTO_TITLE = "Sincronizzazione automatica"
-SYNC_AUTO_ON = "Attiva · ogni giorno 09:00, riprova ogni ora fino alle 18:00 e al logon"
+SYNC_AUTO_ON = "Attiva"
 SYNC_AUTO_OFF = "Non attiva"
 #: {next} = the localised next-run string schtasks prints.
 SYNC_AUTO_NEXT = "Prossimo avvio: {next}"
@@ -134,3 +134,23 @@ SYNC_AUTO_UNSTABLE_TEXT = (
 SYNC_AUTO_UNSTABLE_OK = "Registra lo stesso"
 #: {error} = the message of the SchedulerError.
 SYNC_AUTO_FAILED = "Impossibile aggiornare l'attività pianificata: {error}"
+
+# -- the schedule in words ---------------------------------------------------
+#
+# Assembled by ``ui/pages/schedule_text.py`` and shown BOTH in the status line
+# above and under the Impostazioni fields, so the schedule is described in one
+# place only. The pieces are separate constants because the sentence changes
+# shape: no repetition window, no logon trigger, or an end time that falls on
+# the following day.
+
+#: {time} = the configured start, HH:mm.
+SYNC_SCHEDULE_DAILY = "Ogni giorno alle {time}"
+#: {end} = when the retry window closes. Used when it repeats every hour.
+SYNC_SCHEDULE_REPEAT_HOURLY = ", riprova ogni ora fino alle {end}"
+#: {n} = hours between two attempts (2 or more), {end} = when the window closes.
+SYNC_SCHEDULE_REPEAT_EVERY = ", riprova ogni {n} ore fino alle {end}"
+#: {time} = HH:mm; wraps the end time when the window crosses midnight.
+SYNC_SCHEDULE_END_NEXT_DAY = "{time} del giorno dopo"
+SYNC_SCHEDULE_LOGON = ", e al login"
+#: The full stop that closes the sentence (here so the whole wording is in one file).
+SYNC_SCHEDULE_STOP = "."

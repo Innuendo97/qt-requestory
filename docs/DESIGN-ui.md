@@ -79,7 +79,8 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
   "file i di N · MB/total · rate · ETA" (total from `RemoteIndexRead.bytes_to_download`);
   indexing phase shown in the same strip.
 - Auto-sync checkbox → `scheduler.register/unregister` in a worker; status line from
-  `scheduler.status`; if `exe_matches` is False: "Il task punta a un eseguibile diverso
+  `scheduler.status` plus the configured schedule in words (`schedule_text.schedule_sentence`,
+  the same sentence Impostazioni shows); if `exe_matches` is False: "Il task punta a un eseguibile diverso
   (<path>). [Aggiorna]". If `is_unstable_location(exe)`: warn before registering.
 - If the lock is held by the scheduled run: button disabled, "Sincronizzazione in corso dal
   task pianificato…", poll every 2 s.
@@ -134,7 +135,11 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 Cartella dei log locali [Sfoglia…][Apri] (change → "Vuoi indicizzare i log presenti nella
 nuova cartella ora?") · Ambienti table (abilitato/nome/URL, Aggiungi/Rimuovi/Verifica/Importa
 da file…) · Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
-temporanei · Avanzate: [Ricostruisci indice] [Riesegui configurazione iniziale] · Config path
+temporanei · Sincronizzazione automatica: Ora di avvio (`QTimeEdit`), Riprova ogni (1–12 h),
+per (0–23 h, 0 = nessuna ripetizione), [x] Esegui anche al login, plus the live summary
+sentence of `ui/pages/schedule_text.py` (shared with the Sincronizzazione status line); a save
+re-registers the task when one is registered · Avanzate: [Ricostruisci indice] [Riesegui
+configurazione iniziale] · Config path
 [Apri cartella]. [Annulla] [Salva] (Salva enabled only when dirty; inline validation via
 `config.validate`). Emits `config_changed` consumed by Sync/Search.
 

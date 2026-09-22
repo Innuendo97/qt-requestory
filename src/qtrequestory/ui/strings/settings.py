@@ -19,6 +19,7 @@ SETTINGS_WINDOW_LABEL = "Periodo predefinito"
 SETTINGS_OUTPUT_LABEL = "Cartella file temporanei"
 SETTINGS_OUTPUT_CAPTION = "Seleziona la cartella dei file temporanei"
 SETTINGS_OUTPUT_HINT = "Lascia vuoto per usare la cartella temporanea di sistema."
+SETTINGS_SCHEDULE_LABEL = "Sincronizzazione automatica"
 SETTINGS_ADVANCED_LABEL = "Avanzate"
 
 # -- environments ------------------------------------------------------------
@@ -48,6 +49,30 @@ SETTINGS_EDITOR_FOUND = "Notepad++ trovato in {path}"
 
 #: {days} = 7, 30 or 90.
 SETTINGS_WINDOW_DAYS = "{days} giorni"
+
+# -- automatic synchronisation -----------------------------------------------
+#
+# The four fields of the scheduled task. The sentence that summarises them is
+# NOT here: it is shared with the Sincronizzazione page and lives in
+# ``strings/sync.py`` (``SYNC_SCHEDULE_*``), assembled by
+# ``ui/pages/schedule_text.py``, so the two pages cannot describe the same task
+# differently.
+
+SETTINGS_SCHEDULE_START = "Ora di avvio"
+SETTINGS_SCHEDULE_EVERY = "Riprova ogni"
+SETTINGS_SCHEDULE_FOR = "per"
+#: QSpinBox suffixes; the singular avoids "ogni 1 ore".
+SETTINGS_SCHEDULE_HOUR_ONE = " ora"
+SETTINGS_SCHEDULE_HOURS = " ore"
+#: Shown instead of a bare 0 in the "per" box: 0 hours means a single daily run.
+SETTINGS_SCHEDULE_NO_REPEAT = "nessuna ripetizione"
+SETTINGS_SCHEDULE_LOGON = "Esegui anche al login"
+SETTINGS_SCHEDULE_LOGON_HINT = (
+    "Se il PC è spento all'ora di avvio, il login è ciò che recupera la giornata: "
+    "sul server i log restano disponibili per circa un giorno."
+)
+#: {message} = why schtasks refused to update the already registered task.
+SETTINGS_SCHEDULE_UPDATE_FAILED = "Impossibile aggiornare l'attività pianificata: {message}"
 
 # -- advanced ----------------------------------------------------------------
 

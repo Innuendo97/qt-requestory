@@ -452,6 +452,40 @@ class TestSchedulerService:
         assert verbs[:3] == ["/Create", "/Run", "/Delete"]
         assert ["/Create", "/TN", TASK_NAME] == calls[0][:3]
 
+    def test_register_uses_the_schedule_saved_in_the_configuration(self, tmp_path: Path):
+        """Impostazioni writes the block; the task must be built from it, not
+        from the values ``TaskSpec`` happens to default to."""
+        import subprocess
+        import xml.etree.ElementTree as ET
+
+        from qtrequestory.core.config import ScheduleSettings
+
+        ns = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+        cfg = dataclasses.replace(
+            default_config(),
+            schedule=ScheduleSettings(start_time="07:30", repeat_every_h=2, repeat_for_h=0,
+                                      run_at_logon=False),
+        )
+        exe = tmp_path / "qtRequestory.exe"
+        exe.write_bytes(b"MZ")
+        written: list[str] = []
+
+        def runner(args: list[str]):
+            if args[:1] == ["/Create"]:
+                written.append(Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16"))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        facade.SchedulerService(
+            runner=runner, exe_provider=lambda: exe, config_source=lambda: cfg
+        ).register()
+
+        root = ET.fromstring(written[0].lstrip("﻿").split("?>", 1)[1])
+        trigger = root.find(f"{{{ns}}}Triggers/{{{ns}}}CalendarTrigger")
+        assert trigger is not None
+        assert (trigger.find(f"{{{ns}}}StartBoundary").text or "").endswith("T07:30:00")
+        assert trigger.find(f"{{{ns}}}Repetition") is None
+        assert root.find(f"{{{ns}}}Triggers/{{{ns}}}LogonTrigger") is None
+
     def test_exe_path_and_unstable_location(self, tmp_path: Path):
         calls: list = []
         svc = self._service(tmp_path, calls)

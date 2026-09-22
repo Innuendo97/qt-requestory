@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import Config, CoreServices, Environment
+from qtrequestory.ui.contracts import Config, CoreServices, Environment, ScheduleSettings
 
 __all__ = [
     "FormValues", "SettingsPresenter", "check_reachable", "form_of", "normalised",
@@ -39,6 +39,10 @@ class FormValues:
     editor_path: str = ""
     window_days: int = 30
     output_dir: str = ""
+    #: The four automatic-synchronisation fields, already in the core's own
+    #: shape: a frozen dataclass of scalars, so comparing two forms (dirty
+    #: tracking) and handing it to ``config.validate`` both work unchanged.
+    schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
 
 
 def normalised(text: str) -> str:
@@ -61,6 +65,7 @@ def form_of(cfg: Config) -> FormValues:
         editor_path=str(cfg.editor_path) if cfg.editor_path is not None else "",
         window_days=cfg.default_window_days,
         output_dir=str(cfg.output_dir) if cfg.output_dir is not None else "",
+        schedule=cfg.schedule,
     )
 
 
@@ -108,6 +113,7 @@ class SettingsPresenter(QObject):
             editor_path=_optional_path(form.editor_path),
             default_window_days=form.window_days,
             output_dir=_optional_path(form.output_dir),
+            schedule=form.schedule,
         )
 
     def is_dirty(self, form: FormValues) -> bool:

@@ -9,15 +9,17 @@ Dialogs are monkeypatched, never opened: a modal in a test suite is a hang.
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from qtrequestory.ui import strings
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.settings_page import SettingsPage
-from qtrequestory.ui.pages.settings_presenter import normalised
+from qtrequestory.ui.pages.settings_presenter import form_of, normalised
 
 
 class StubWindow:
@@ -194,6 +196,138 @@ def test_saving_without_moving_the_mirror_asks_nothing(page, fake_core, monkeypa
 
     assert asked == []
     assert fake_core.index.updates == []
+
+
+# -- automatic synchronisation -----------------------------------------------
+
+def _set_schedule(page, start: str, every: int, hours: int, logon: bool) -> None:
+    page.schedule_start.setTime(QTime.fromString(start, "HH:mm"))
+    page.schedule_every.setValue(every)
+    page.schedule_for.setValue(hours)
+    page.schedule_logon.setChecked(logon)
+
+
+def test_the_four_schedule_fields_show_the_saved_schedule(page, fake_core):
+    cfg = fake_core.config.load()
+    assert page.schedule_start.time().toString("HH:mm") == cfg.schedule.start_time
+    assert page.schedule_every.value() == cfg.schedule.repeat_every_h
+    assert page.schedule_for.value() == cfg.schedule.repeat_for_h
+    assert page.schedule_logon.isChecked() == cfg.schedule.run_at_logon
+    assert not page.is_dirty()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda p: p.schedule_start.setTime(QTime(7, 30)),
+        lambda p: p.schedule_every.setValue(3),
+        lambda p: p.schedule_for.setValue(0),
+        lambda p: p.schedule_logon.setChecked(False),
+    ],
+)
+def test_editing_any_schedule_field_enables_the_save_button(page, edit):
+    edit(page)
+    assert page.is_dirty()
+    assert page.save_button.isEnabled()
+
+
+def test_the_summary_says_in_words_what_the_fields_mean(page):
+    """The user should not have to add 6 to 07:30 in their head to find out
+    when the retry window closes."""
+    _set_schedule(page, "07:30", 2, 6, False)
+    assert page.schedule_summary.text() == (
+        "Ogni giorno alle 07:30, riprova ogni 2 ore fino alle 13:30."
+    )
+    page.schedule_logon.setChecked(True)
+    assert page.schedule_summary.text().endswith(", e al login.")
+
+
+def test_the_spin_boxes_cannot_be_driven_out_of_the_valid_range(page):
+    """The validation in ``config.validate`` is the safety net; the widgets are
+    the first line, so an invalid schedule cannot even be typed."""
+    assert (page.schedule_every.minimum(), page.schedule_every.maximum()) == (1, 12)
+    assert (page.schedule_for.minimum(), page.schedule_for.maximum()) == (0, 23)
+    page.schedule_for.setValue(99)
+    assert page.schedule_for.value() == 23
+    page.schedule_every.setValue(0)
+    assert page.schedule_every.value() == 1
+
+
+def test_no_repetition_is_spelled_out_instead_of_a_bare_zero(page):
+    page.schedule_for.setValue(0)
+    assert page.schedule_for.text() == strings.SETTINGS_SCHEDULE_NO_REPEAT
+
+
+def test_saving_writes_the_schedule(page, fake_core):
+    _set_schedule(page, "07:30", 2, 6, False)
+
+    page.save_button.click()
+
+    saved = fake_core.config.saved[-1].schedule
+    assert (saved.start_time, saved.repeat_every_h, saved.repeat_for_h, saved.run_at_logon) == (
+        "07:30", 2, 6, False,
+    )
+    assert not page.save_button.isEnabled()
+
+
+def test_an_invalid_schedule_blocks_the_save_and_says_why(qapp, fake_core):
+    """The widgets cannot produce one, but a hand-edited ``config.json`` can:
+    the rules live in the core, and the page shows what it reports."""
+    from qtrequestory.ui.contracts import ScheduleSettings
+    from qtrequestory.ui.pages.settings_presenter import FormValues, SettingsPresenter
+
+    presenter = SettingsPresenter(fake_core)
+    form = dataclasses.replace(
+        form_of(fake_core.config.load()),
+        schedule=ScheduleSettings(start_time="25:00", repeat_every_h=99),
+    )
+
+    errors = presenter.save(form)
+
+    assert fake_core.config.saved == []
+    assert any("start_time" in e for e in errors) and any("repeat_every_h" in e for e in errors)
+
+
+def test_a_registered_task_is_re_registered_with_the_new_schedule(page, fake_core, qtbot):
+    """Saving a schedule that never reaches Task Scheduler is the one failure
+    the user cannot see: the form would show 07:30 and the task keep 09:00."""
+    fake_core.scheduler.set_status(registered=True, exe_matches=True)
+    _set_schedule(page, "07:30", 2, 6, False)
+
+    page.save_button.click()
+
+    assert page.scheduler_job is not None
+    with qtbot.waitSignal(page.scheduler_job.signals.finished, timeout=5000):
+        pass
+    assert fake_core.scheduler.register_calls == 1
+
+
+def test_a_task_that_is_not_registered_is_left_alone(page, fake_core, qtbot):
+    assert fake_core.scheduler.status().registered is False
+    _set_schedule(page, "07:30", 2, 6, False)
+
+    page.save_button.click()
+    qtbot.wait(150)
+
+    assert fake_core.scheduler.register_calls == 0
+    assert page.scheduler_job is None
+
+
+def test_a_failed_re_registration_is_a_status_line_not_a_dialog(page, fake_core, window, qtbot):
+    from qtrequestory.ui.contracts import SchedulerError
+
+    fake_core.scheduler.set_status(registered=True, exe_matches=True)
+
+    def boom() -> None:
+        raise SchedulerError("schtasks: accesso negato")
+
+    fake_core.scheduler.register = boom
+    _set_schedule(page, "07:30", 2, 6, False)
+
+    page.save_button.click()
+
+    qtbot.waitUntil(lambda: any("accesso negato" in s for s in window.status), timeout=5000)
+    assert strings.SETTINGS_SAVED in window.status, "the configuration itself was saved"
 
 
 # -- environments ------------------------------------------------------------

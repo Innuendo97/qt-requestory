@@ -15,6 +15,7 @@ from qtrequestory.core.config import (
     Config,
     Environment,
     IndexSettings,
+    ScheduleSettings,
     SyncSettings,
     default_config,
     detect_editor,
@@ -42,6 +43,8 @@ def _sample_config(tmp_path: Path) -> Config:
         compaction_time=time(18, 30),
         sync=SyncSettings(index_timeout_s=5, download_timeout_s=10, chunk_size=1024, retries=3),
         index=IndexSettings(parse_json=False),
+        schedule=ScheduleSettings(start_time="07:30", repeat_every_h=2, repeat_for_h=6,
+                                  run_at_logon=False),
         log_level="DEBUG",
     )
 
@@ -64,6 +67,19 @@ def test_default_config_values_match_spec():
     )
     assert cfg.index == IndexSettings(parse_json=True)
     assert cfg.log_level == "INFO"
+
+
+def test_the_default_schedule_is_the_one_the_task_used_to_hard_code():
+    """09:00, hourly for 9 h, plus the logon trigger.
+
+    These four values were compiled into ``TaskSpec``; an installation that
+    upgrades must keep the very same schedule, so the defaults are not a taste
+    decision but a compatibility requirement.
+    """
+    assert default_config().schedule == ScheduleSettings()
+    assert ScheduleSettings() == ScheduleSettings(
+        start_time="09:00", repeat_every_h=1, repeat_for_h=9, run_at_logon=True
+    )
 
 
 def test_config_module_contains_no_hostnames():
@@ -439,3 +455,82 @@ def test_detect_editor_default_candidates_do_not_crash(monkeypatch: pytest.Monke
     monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path))
     monkeypatch.setattr(cfgmod.shutil, "which", lambda *_: None)
     assert detect_editor() is None
+
+
+# ------------------------------------------------------------ schedule ---
+
+#: How the block reads in ``config.json``.
+SCHEDULE_RAW = {"start_time": "07:30", "repeat_every_h": 2, "repeat_for_h": 6,
+                "run_at_logon": False}
+
+
+def test_a_config_written_before_the_schedule_existed_still_loads(tmp_path: Path):
+    """The block is additive: no migration, no schema bump, same behaviour.
+
+    Every installation out there has a ``config.json`` without it, and the
+    defaults ARE what those installations are already doing.
+    """
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "default_window_days": 7}), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.schedule == ScheduleSettings()
+    assert validate(cfg) == []
+
+
+def test_the_schedule_roundtrips_through_the_file(tmp_path: Path):
+    path = tmp_path / "config.json"
+    cfg = _sample_config(tmp_path)
+    save_config(cfg, path)
+    assert json.loads(path.read_text(encoding="utf-8"))["schedule"] == SCHEDULE_RAW
+    assert load_config(path).schedule == cfg.schedule
+
+
+def test_a_hand_edited_schedule_field_falls_back_instead_of_blocking_the_app(tmp_path: Path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"schema_version": 1,
+                    "schedule": {"start_time": 900, "repeat_every_h": "2", "bogus": 1}}),
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="qtrequestory.core.config"):
+        cfg = load_config(path)
+    assert cfg.schedule.start_time == "09:00"   # 900 is not a string: defaulted
+    assert cfg.schedule.repeat_every_h == 2     # "2" is a number: coerced
+    assert cfg.schedule.repeat_for_h == 9       # missing: defaulted
+    assert "schedule.start_time" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "schedule, expected",
+    [
+        (ScheduleSettings(), []),
+        (ScheduleSettings(start_time="00:00", repeat_every_h=12, repeat_for_h=0), []),
+        (ScheduleSettings(start_time="23:59", repeat_every_h=1, repeat_for_h=23), []),
+        (ScheduleSettings(start_time="9:00"), []),          # HH:MM accepts a one-digit hour
+        (ScheduleSettings(start_time="25:00"), ["start_time"]),
+        (ScheduleSettings(start_time="09.00"), ["start_time"]),
+        (ScheduleSettings(start_time=""), ["start_time"]),
+        (ScheduleSettings(repeat_every_h=0), ["repeat_every_h"]),
+        (ScheduleSettings(repeat_every_h=13), ["repeat_every_h"]),
+        (ScheduleSettings(repeat_every_h=-1), ["repeat_every_h"]),
+        (ScheduleSettings(repeat_for_h=24), ["repeat_for_h"]),
+        (ScheduleSettings(repeat_for_h=-1), ["repeat_for_h"]),
+        (ScheduleSettings(start_time="x", repeat_every_h=99, repeat_for_h=99),
+         ["start_time", "repeat_every_h", "repeat_for_h"]),
+    ],
+)
+def test_validate_checks_the_schedule(tmp_path: Path, schedule: ScheduleSettings,
+                                      expected: list[str]):
+    cfg = _sample_config(tmp_path)
+    cfg.schedule = schedule
+    errors = validate(cfg)
+    assert len(errors) == len(expected), errors
+    for field_name in expected:
+        assert any(field_name in e for e in errors), errors
+
+
+def test_parse_hhmm_accepts_exactly_what_validate_accepts():
+    assert cfgmod.parse_hhmm("09:00") == time(9, 0)
+    assert cfgmod.parse_hhmm("7:05") == time(7, 5)
+    assert cfgmod.parse_hhmm("24:00") is None
+    assert cfgmod.parse_hhmm("nonsense") is None
