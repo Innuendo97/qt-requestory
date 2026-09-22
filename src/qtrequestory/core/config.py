@@ -153,8 +153,14 @@ def _warn_unknown(raw: dict, known: Iterable[str], where: str) -> None:
         log.warning("config: chiavi sconosciute ignorate in %s: %s", where, ", ".join(unknown))
 
 
-def _optional_path(value: Any) -> Path | None:
-    return Path(value) if value else None
+def _optional_path(value: Any, key: str) -> Path | None:
+    """``None``/empty -> None; a non-string (e.g. ``"mirror_root": 5``) is warned and dropped."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        log.warning("config: valore non valido per %s (%r), atteso un percorso", key, value)
+        return None
+    return Path(value)
 
 
 def _parse_time(value: Any, fallback: time) -> time:
@@ -180,7 +186,8 @@ def _coerce(value: Any, fallback: T, key: str) -> T:
     # `bool("false")` turn into True.
     if isinstance(value, kind) and not (kind is int and isinstance(value, bool)):
         return value
-    if kind is not bool:
+    # Only numeric fields get a cast: ``str(5)`` would silently accept a bad log_level.
+    if kind is int:
         try:
             return kind(value)  # type: ignore[call-arg]
         except (TypeError, ValueError):
@@ -232,11 +239,11 @@ def _from_raw(raw: dict[str, Any]) -> Config:
     _warn_unknown(raw, [f.name for f in dataclasses.fields(Config)], "config.json")
     return Config(
         schema_version=_coerce(raw.get("schema_version"), d.schema_version, "schema_version"),
-        mirror_root=_optional_path(raw.get("mirror_root")) or d.mirror_root,
+        mirror_root=_optional_path(raw.get("mirror_root"), "mirror_root") or d.mirror_root,
         environments=_environments_from_raw(raw.get("environments")),
         default_window_days=_coerce(raw.get("default_window_days"), d.default_window_days, "default_window_days"),
-        editor_path=_optional_path(raw.get("editor_path")),
-        output_dir=_optional_path(raw.get("output_dir")),
+        editor_path=_optional_path(raw.get("editor_path"), "editor_path"),
+        output_dir=_optional_path(raw.get("output_dir"), "output_dir"),
         output_retention_hours=_coerce(
             raw.get("output_retention_hours"), d.output_retention_hours, "output_retention_hours"
         ),
@@ -283,13 +290,23 @@ def _write_defaults(path: Path) -> Config:
     return cfg
 
 
-def _migrate(raw: dict[str, Any], path: Path) -> dict[str, Any]:
-    """Run MIGRATIONS from the file's version up to CONFIG_VERSION, in order.
+def _file_schema_version(raw: dict[str, Any]) -> int:
+    """Version the file claims; ``ValueError`` (-> corrupt path) if this app never wrote it."""
+    version = _coerce(raw.get("schema_version"), CONFIG_VERSION, "schema_version")
+    if version < 1:
+        raise ValueError(f"schema_version {version} non valida")
+    return version
+
+
+def _migrate(raw: dict[str, Any], version: int, path: Path) -> dict[str, Any]:
+    """Run MIGRATIONS from ``version`` up to CONFIG_VERSION, in order.
 
     The pre-migration file is kept as ``config.json.bak-v<N>`` so a downgrade of
     the app can recover it; the migrated dict is written back immediately.
+    A gap in ``MIGRATIONS`` raises ``ConfigError``: every 1..CONFIG_VERSION-1 was
+    once written by this app, so a gap is a developer error and must not
+    silently discard the user's settings.
     """
-    version = _coerce(raw.get("schema_version"), CONFIG_VERSION, "schema_version")
     if version > CONFIG_VERSION:
         log.warning(
             "config: schema_version %d più recente di quella supportata (%d); il file viene letto così com'è",
@@ -321,12 +338,12 @@ def load_config(path: Path) -> Config:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(raw, dict):
             raise ValueError("il contenuto non è un oggetto JSON")
+        version = _file_schema_version(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         broken = _set_aside_broken(path)
         log.warning("config: %s corrotto (%s); rinominato in %s e ripristinati i predefiniti", path, exc, broken.name)
         return _write_defaults(path)
-    raw = _migrate(raw, path)
-    return _from_raw(raw)
+    return _from_raw(_migrate(raw, version, path))
 
 
 # ------------------------------------------------------------- validation ---

@@ -243,6 +243,38 @@ def test_newer_schema_version_is_kept_and_warned(tmp_path: Path, caplog):
     assert "99" in caplog.text
 
 
+def test_wrong_typed_path_falls_back_to_default(tmp_path: Path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "mirror_root": 5, "editor_path": ["x"]}))
+    with caplog.at_level(logging.WARNING, logger="qtrequestory.core.config"):
+        cfg = load_config(path)
+    assert cfg.mirror_root == paths.default_mirror_root()
+    assert cfg.editor_path is None
+    assert "mirror_root" in caplog.text
+    assert "editor_path" in caplog.text
+
+
+def test_non_string_log_level_falls_back_to_default(tmp_path: Path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "log_level": 5}))
+    with caplog.at_level(logging.WARNING, logger="qtrequestory.core.config"):
+        cfg = load_config(path)
+    assert cfg.log_level == "INFO"
+    assert "log_level" in caplog.text
+
+
+@pytest.mark.parametrize("version", [0, -3])
+def test_schema_version_below_one_is_treated_as_corrupt(tmp_path: Path, caplog, version: int):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": version, "default_window_days": 5}))
+    with caplog.at_level(logging.WARNING, logger="qtrequestory.core.config"):
+        cfg = load_config(path)
+    assert cfg == default_config()
+    assert len(list(tmp_path.glob("config.json.broken-*"))) == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == cfgmod.CONFIG_VERSION
+    assert "schema_version" in caplog.text
+
+
 # ------------------------------------------------------------ validation ---
 
 
