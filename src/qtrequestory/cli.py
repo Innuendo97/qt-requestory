@@ -33,7 +33,7 @@ from qtrequestory import __version__
 from qtrequestory.core import facade, opener, scheduler
 from qtrequestory.core.config import Config, load_config
 from qtrequestory.core.events import CancelToken, EventSink, LoggingSink
-from qtrequestory.core.index.search import SearchHit, SearchQuery
+from qtrequestory.core.index.search import SearchHit, SearchQuery, pick_best
 from qtrequestory.core.jobs import EXIT_CANCELLED, EXIT_ERRORS, JobReport, run_index_job, run_sync_job
 from qtrequestory.core.logsetup import configure_logging, sync_logger
 from qtrequestory.core.paths import AppPaths, app_paths
@@ -218,11 +218,14 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
     index = facade.IndexService(lambda: config)
     hits = index.search(SearchQuery(env=env, fdi_prefix=fdi, template_key=key,
                                     day_from=day_from, day_to=day_to))
-    if not hits:
+    # Searching by FDI alone: the entry with the most documents is the one
+    # holding the whole pratica (see ``pick_best``). With an explicit key the
+    # user has already said which entry they want, so the query order stands.
+    hit, others = pick_best(hits, prefer_most_documents=bool(fdi and not key))
+    if hit is None:
         print(NOTHING_FOUND)
         return EXIT_ERRORS
 
-    hit = hits[0]
     extract = facade.ExtractService(lambda: config)
     text = extract.pretty_json(index.read_body(hit))
     if args.out:
@@ -233,7 +236,7 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
 
     print(f"trovato in {hit.file_path.name}: {hit.name}.json "
           f"(requestDate {hit.request_date or '?'}, {_documents(hit)} documenti)")
-    _print_others([h for h in hits[1:] if h.day == hit.day])
+    _print_others(others)
     print(f"scritto: {out}")
     if not args.no_open:
         print(f"aperto in {_EDITOR_LABEL[extract.open_in_editor([out])]}")

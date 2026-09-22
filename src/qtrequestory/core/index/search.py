@@ -197,6 +197,32 @@ def read_body(hit: SearchHit) -> bytes:
     return body
 
 
+def pick_best(hits: list[SearchHit], *, prefer_most_documents: bool = False) -> tuple[SearchHit | None, list[SearchHit]]:
+    """The one entry to extract, plus the other matches of the SAME day.
+
+    ``search`` already delivers the newest day first, so the choice is confined
+    to that day: an older copy of the same pratica is never what the user meant,
+    and the legacy ``nginx/find-call.py`` stopped at the first day with a match
+    for exactly that reason.
+
+    ``prefer_most_documents`` reproduces its other rule, the one that makes an
+    FDI search useful: one pratica appears once per principal template key, and
+    the entry with the most ``documents`` is the one carrying the whole pratica
+    — the body worth replaying. The rest of the day's matches come back so the
+    caller can list them ("altre N entry", isolate one with -k). Ties keep the
+    query order (request_date desc, then position in the file), and an entry
+    whose body could not be parsed (``ndocs is None``) ranks last instead of
+    winning by accident.
+    """
+    if not hits:
+        return None, []
+    day = [h for h in hits if h.day == hits[0].day]
+    if prefer_most_documents:
+        # Stable: equal ndocs keep the order `search` delivered them in.
+        day = sorted(day, key=lambda h: -1 if h.ndocs is None else h.ndocs, reverse=True)
+    return day[0], day[1:]
+
+
 def output_name_for(hit: SearchHit) -> str:
     """``<YYYYMMDD>_<fdi|nofdi>_<TEMPLATE_KEY>.json``."""
     return output_name(hit.day, hit.fdi, hit.template_key)

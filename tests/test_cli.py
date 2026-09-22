@@ -27,7 +27,7 @@ from qtrequestory.core.events import CancelToken, LoggingSink
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import TaskStatus
-from tests.conftest import FDI_A, FDI_B, KEY_CTE, KEY_EMAIL, Mirror
+from tests.conftest import FDI_A, FDI_B, KEY_CTE, KEY_EMAIL, KEY_SINT, Mirror
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -257,6 +257,27 @@ def test_find_names_the_file_after_day_fdi_and_key(indexed: Path, capsys):
               "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"])
     out = capsys.readouterr().out
     assert f"20260918_{FDI_A}_{KEY_CTE}.json" in out
+
+
+def test_find_by_fdi_takes_the_entry_with_the_whole_pratica(indexed: Path, capsys):
+    """The legacy rule: most ``documents`` wins, not the last entry in the file.
+
+    On 2026-09-18 the FDI has three entries; the ``search`` order puts the
+    5-document one second, so "the first hit" would hand out a partial body.
+    """
+    cli.main(["--find", "-e", "coll", "-f", FDI_A[:8],
+              "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"])
+    out = capsys.readouterr().out
+    assert f"trovato in 20260918.txt: {FDI_A}_{KEY_EMAIL}" in out
+    assert "5 documenti" in out
+
+
+def test_find_with_a_key_keeps_the_query_order(indexed: Path, capsys):
+    """An explicit key already names the entry: no document-count reshuffle."""
+    cli.main(["--find", "-e", "coll", "-k", KEY_SINT,
+              "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"])
+    out = capsys.readouterr().out
+    assert f"{FDI_B}_{KEY_SINT}" in out.splitlines()[1]
 
 
 def test_find_reports_the_other_entries_of_the_same_day(indexed: Path, capsys):
