@@ -212,6 +212,12 @@ throttled `FileProgress` (~10/s); verify `written == size` (else `FileFailed` "t
 Never delete local files. `mark_success` only when `failed == 0` and not dry_run.
 Cancel → `.part` removed, status `cancelled`, state untouched, exit 3.
 
+The UI facade adds one network call the engine has no use for:
+`facade.SyncService.check_reachable(env: Environment, timeout=5.0) -> bool` — one GET of
+`env.url`, True only when `parse_autoindex` finds a daily or loose file (a captive portal
+answers 200 with no log at all). It takes the `Environment`, never a name: its two callers
+probe rows that are still being edited and are not in `config.json` yet. Never raises.
+
 ## Index
 
 SQLite at `<mirror>\.qtrequestory\index.sqlite`, WAL, `busy_timeout`, `PRAGMA user_version`.

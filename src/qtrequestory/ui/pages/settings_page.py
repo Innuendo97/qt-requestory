@@ -376,7 +376,9 @@ class SettingsPage(QWidget):
         )
 
     def _check_environments(self) -> None:
-        envs = [e.name for e in self.env_table.environments()]
+        # The rows as they are on screen, URLs included: a URL corrected but not
+        # yet saved is exactly the one worth probing.
+        envs = [e for e in self.env_table.environments() if e.name]
         if not envs:
             self.check_label.setText(strings.SETTINGS_CHECK_NONE)
             return

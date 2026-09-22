@@ -17,6 +17,7 @@ from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from qtrequestory.ui import strings
+from qtrequestory.ui.contracts import Environment
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.settings_page import SettingsPage
 from qtrequestory.ui.pages.settings_presenter import form_of, normalised
@@ -371,6 +372,23 @@ def test_verifica_reports_every_environment(page, fake_core, qtbot):
     text = page.check_label.text()
     assert strings.SETTINGS_CHECK_REACHABLE.format(name="coll") in text
     assert strings.SETTINGS_CHECK_UNREACHABLE.format(name="svil") in text
+
+
+def test_verifica_probes_the_url_on_screen_not_the_one_already_saved(
+    page, fake_core, qtbot, monkeypatch
+):
+    """A URL corrected in the table is probed before [Salva] — that correction
+    is the whole reason the user presses [Verifica]."""
+    probed: list[Environment] = []
+    monkeypatch.setattr(fake_core.sync, "check_reachable",
+                        lambda env, timeout=5.0: probed.append(env) or True)
+    edited = [Environment("coll", "https://example.invalid/coll-corretto/", True)]
+    page.env_table.set_environments(edited)
+
+    page.check_button.click()
+
+    qtbot.waitUntil(lambda: bool(probed), timeout=3000)
+    assert probed == edited
 
 
 def test_a_malformed_environments_file_is_reported_and_changes_nothing(

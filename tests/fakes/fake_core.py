@@ -295,8 +295,19 @@ class FakeSyncApi:
     def env_status(self, env_name: str) -> EnvStatus:
         return self._status(env_name)
 
-    def check_reachable(self, env_name: str, timeout: float = 5.0) -> bool:
-        return self._outcomes.get(env_name, "ok") != "unreachable"
+    def check_reachable(self, env: Environment, timeout: float = 5.0) -> bool:
+        """Faithful about the case that matters: an environment nobody knows.
+
+        The real service probes ``env.url``, so an environment that exists only
+        in a half-filled wizard table — pointing at a host that is not there —
+        answers False. This fake used to answer True for any name it had not
+        been told about, which is exactly how a first-run wizard that reported
+        every environment unreachable got through the whole suite. An unknown
+        name is therefore unreachable here too, until a knob says otherwise
+        (``set_ok`` / ``set_reachable`` work for any name).
+        """
+        outcome = self._outcomes.get(env.name, "ok" if env.name in ENVS else "unreachable")
+        return outcome != "unreachable"
 
     def run(
         self,

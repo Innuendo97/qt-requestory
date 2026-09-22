@@ -190,9 +190,18 @@ class SyncService:
             last_downloaded=st.last_downloaded,
         )
 
-    def check_reachable(self, env_name: str, timeout: float = REACHABLE_TIMEOUT_S) -> bool:
+    def check_reachable(self, env: Environment, timeout: float = REACHABLE_TIMEOUT_S) -> bool:
         """GET the autoindex with a short timeout: True only if it answers with
         something that looks like the listing.
+
+        The **environment being probed is passed in**, never a name looked up in
+        the saved configuration. "Verifica raggiungibilità" is offered exactly
+        where nothing has been saved yet: in the first-run wizard, before
+        [Fine] writes ``config.json``, and in Impostazioni on a row just typed
+        or corrected before [Salva]. Resolving a name against the stored
+        configuration there found an empty ``environments`` list and reported
+        every row unreachable — the check was useless in the only two places
+        that offer it.
 
         A captive portal or a proxy error page answers 200 with HTML that holds
         no log file at all; the sync engine treats that as unreachable, and the
@@ -203,11 +212,6 @@ class SyncService:
         of a network error. This method promises never to raise; the malformed
         URL is reported where it belongs, by ``config.validate``.
         """
-        cfg = self._config_source()
-        try:
-            env = cfg.env(env_name)
-        except KeyError:
-            return False
         try:
             html = self._http_factory().get_text(env.url, timeout=timeout)
         except (HttpUnreachable, ValueError):

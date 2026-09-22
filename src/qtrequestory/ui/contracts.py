@@ -145,9 +145,15 @@ class SyncApi(Protocol):
         """
         ...
 
-    def check_reachable(self, env_name: str, timeout: float = 5.0) -> bool:
+    def check_reachable(self, env: Environment, timeout: float = 5.0) -> bool:
         """One short HTTP GET of the autoindex. Never raises; blocking, so call
-        it from a worker."""
+        it from a worker.
+
+        Takes the whole ``Environment``, not its name: both callers — the
+        first-run wizard and Impostazioni — probe rows that are still being
+        edited and have never been saved, so there is no configuration to
+        resolve a name against. Pass the row under the user's cursor.
+        """
         ...
 
     def run(

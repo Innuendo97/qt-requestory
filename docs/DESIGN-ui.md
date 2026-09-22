@@ -42,7 +42,12 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
    exe) when present, otherwise empty with the hint "Chiedi al collega il file
    environments.json oppure inserisci nome e URL". [Verifica raggiungibilità] optional,
    never blocking: "Gli ambienti sono raggiungibili solo da rete aziendale o VPN Cisco: se
-   ora non lo sono, va bene lo stesso."
+   ora non lo sono, va bene lo stesso." The check passes each **row of the table** to
+   `sync.check_reachable(env)` — the whole `Environment`, URL included. It cannot pass a
+   name: the wizard saves `config.json` only on [Fine], so a probe that resolved names
+   against the stored configuration would find `environments == []` and report every row
+   unreachable. The same holds in Impostazioni for a row added or a URL corrected before
+   [Salva].
 3. **Automazione** — [x] Sincronizza automaticamente i log, with the schedule that would be
    registered spelled out underneath by `schedule_text.schedule_sentence` from the saved
    `schedule` block ("Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login.
@@ -137,7 +142,8 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 
 Cartella dei log locali [Sfoglia…][Apri] (change → "Vuoi indicizzare i log presenti nella
 nuova cartella ora?") · Ambienti table (abilitato/nome/URL, Aggiungi/Rimuovi/Verifica/Importa
-da file…) · Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
+da file…; [Verifica] probes the rows on screen, not what is on disk — see the wizard)
+· Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
 temporanei · Sincronizzazione automatica: Ora di avvio (`QTimeEdit`), Riprova ogni (1–12 h),
 per (0–23 h, 0 = nessuna ripetizione), [x] Esegui anche al login, plus the live summary
 sentence of `ui/pages/schedule_text.py` (shared with the Sincronizzazione status line); a save

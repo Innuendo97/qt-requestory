@@ -101,13 +101,19 @@ def _optional_path(text: str) -> Path | None:
     return Path(text) if text else None
 
 
-def check_reachable(sync, envs: Sequence[str], cancel) -> list[tuple[str, bool]]:
-    """One blocking probe per environment; runs in a worker, stops on cancel."""
+def check_reachable(sync, envs: Sequence[Environment], cancel) -> list[tuple[str, bool]]:
+    """One blocking probe per environment; runs in a worker, stops on cancel.
+
+    Whole ``Environment`` rows travel to the worker, not their names: the URL
+    the user just typed or corrected is the one to probe, and it is not in
+    ``config.json`` until [Salva]. (They are frozen dataclasses read off the
+    table on the GUI thread, so the worker still touches no widget.)
+    """
     results: list[tuple[str, bool]] = []
-    for name in envs:
+    for env in envs:
         if cancel.is_set():
             break
-        results.append((name, sync.check_reachable(name)))
+        results.append((env.name, sync.check_reachable(env)))
     return results
 
 

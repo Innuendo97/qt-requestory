@@ -388,6 +388,29 @@ def test_the_reachability_check_reports_every_environment(wizard, qtbot, fake_co
     assert f"svil: {strings.WIZARD_P2_UNREACHABLE}" in text
 
 
+def test_the_reachability_check_probes_the_url_in_the_table_not_the_saved_config(
+    wizard, qtbot, fake_core, monkeypatch
+):
+    """Nothing is saved during the wizard, so a name is not enough to probe.
+
+    This is the bug the check shipped with: ``check_reachable`` resolved the
+    name against ``config.json``, which the wizard writes only on [Fine], so
+    every row came back "non raggiungibile" on a perfectly reachable network.
+    """
+    probed: list[Environment] = []
+    monkeypatch.setattr(fake_core.sync, "check_reachable",
+                        lambda env, timeout=5.0: probed.append(env) or True)
+    page = wizard.environments_page
+    typed = [Environment("nuovo", "https://example.invalid/appena-scritto/", True)]
+    page.table.set_environments(typed)
+
+    job = page.check_reachability()
+
+    with qtbot.waitSignal(job.signals.result, timeout=3000):
+        pass
+    assert probed == typed
+
+
 def test_the_reachability_check_never_blocks_avanti(wizard, fake_core):
     page = wizard.environments_page
     page.table.set_environments(GOOD_ENVS)
@@ -403,16 +426,18 @@ def test_a_cancelled_reachability_check_stops_between_environments(fake_core):
     from qtrequestory.ui.wizard_pages import _probe_reachability
 
     token = CancelToken()
-    asked: list[str] = []
+    asked: list[Environment] = []
 
-    def check(name: str) -> bool:
-        asked.append(name)
+    def check(env: Environment) -> bool:
+        asked.append(env)
         token.cancel()
         return True
 
-    outcome = _probe_reachability(check, ["coll", "svil", "prod"], cancel=token)
+    envs = [Environment(name, f"https://example.invalid/{name}/")
+            for name in ("coll", "svil", "prod")]
+    outcome = _probe_reachability(check, envs, cancel=token)
 
-    assert asked == ["coll"]
+    assert asked == envs[:1], "the whole row is probed, URL included"
     assert outcome == {"coll": True}
 
 

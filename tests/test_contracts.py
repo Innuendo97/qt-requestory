@@ -144,6 +144,51 @@ def test_signatures_match_the_protocol_exactly(proto, real_services: CoreService
             assert _params(getattr(impl, name)) == expected, f"{type(impl).__name__}.{name}"
 
 
+# ------------------------------------------------ behavioural conformance ---
+
+class TestUnknownEnvironmentConformance:
+    """Where the fake stopped being a faithful stand-in, and what it cost.
+
+    ``FakeSyncApi.check_reachable`` used to answer ``True`` for any name it had
+    never been told about, while the real service answered ``False`` for an
+    environment the saved configuration did not know. Every UI test therefore
+    saw a green "raggiungibile" where the shipped application said the
+    opposite, and the first-run wizard reported every environment unreachable
+    without a single test going red.
+
+    Signature conformance cannot catch that, so the divergence is pinned here,
+    on the one question both implementations must answer the same way: an
+    environment nobody has configured, pointing nowhere.
+    """
+
+    #: A port nothing listens on: the real probe fails immediately, no timeout.
+    UNKNOWN = Environment("ignoto", "http://127.0.0.1:1/AutoDeploy/Input/")
+
+    def test_both_refuse_an_environment_the_configuration_does_not_know(
+        self, real_services: CoreServices, fake_services: CoreServices
+    ):
+        for sync in (real_services.sync, fake_services.sync):
+            assert sync.check_reachable(self.UNKNOWN, timeout=1.0) is False, type(sync).__name__
+
+    def test_both_answer_without_raising_and_without_consulting_the_config(
+        self, real_services: CoreServices, fake_services: CoreServices
+    ):
+        """The contract promises the probe never raises — not even for a name
+        that has no entry anywhere — because it runs from a worker whose only
+        error path is a status line."""
+        for sync in (real_services.sync, fake_services.sync):
+            assert isinstance(sync.check_reachable(self.UNKNOWN, timeout=1.0), bool)
+
+    def test_env_status_of_an_unknown_environment_agrees_too(
+        self, real_services: CoreServices, fake_services: CoreServices
+    ):
+        """The other method the wizard calls with a name nothing has saved: it
+        must describe an empty mirror, not explode."""
+        for sync in (real_services.sync, fake_services.sync):
+            status = sync.env_status(self.UNKNOWN.name)
+            assert (status.env, status.last_success, status.n_local_files) == ("ignoto", None, 0)
+
+
 def test_contracts_reexport_the_real_core_dataclasses():
     """The UI must never define its own copy of a core dataclass."""
     from qtrequestory.core import scheduler as sched
@@ -297,8 +342,37 @@ class TestReachability:
             Environment("svil", stub_server.url + "/missing/"),
         ])
         svc = facade.SyncService(lambda: cfg)
-        assert svc.check_reachable("coll") is True
-        assert svc.check_reachable("svil", timeout=1.0) is False
+        assert svc.check_reachable(cfg.env("coll")) is True
+        assert svc.check_reachable(cfg.env("svil"), timeout=1.0) is False
+
+    def test_it_probes_the_environment_it_is_given_not_the_saved_one(
+        self, tmp_path: Path, stub_server: StubServer
+    ):
+        """The first-run wizard has saved nothing yet.
+
+        "Verifica raggiungibilita" ran before [Fine], so a probe that resolved
+        the name against the stored configuration found an empty
+        ``environments`` list and answered "non raggiungibile" for every row.
+        The URL under the user's cursor is the only thing worth probing, so it
+        is what the caller passes.
+        """
+        stub_server.add("/nuovo/", autoindex_html([("20260918.txt", "18-Sep-2026 18:30", 42)]))
+        cfg = dataclasses.replace(_config(tmp_path), environments=[])  # nothing saved yet
+        svc = facade.SyncService(lambda: cfg)
+        assert svc.check_reachable(Environment("nuovo", stub_server.url + "/nuovo/")) is True
+
+    def test_an_edited_url_is_probed_and_not_the_one_still_on_disk(
+        self, tmp_path: Path, stub_server: StubServer
+    ):
+        """Impostazioni: the same for a URL corrected but not yet saved."""
+        stub_server.add("/corretto/", autoindex_html([("20260918.txt", "18-Sep-2026 18:30", 42)]))
+        cfg = dataclasses.replace(_config(tmp_path), environments=[
+            Environment("coll", stub_server.url + "/sbagliato/"),
+        ])
+        svc = facade.SyncService(lambda: cfg)
+        assert svc.check_reachable(cfg.env("coll"), timeout=1.0) is False
+        edited = Environment("coll", stub_server.url + "/corretto/")
+        assert svc.check_reachable(edited) is True
 
     def test_a_url_urllib_cannot_open_is_not_reachable(self, tmp_path: Path):
         """An environments.json imported from a colleague may hold anything.
@@ -313,8 +387,8 @@ class TestReachability:
             Environment("ftp", "ftp://127.0.0.1:1/AutoDeploy/Input/"),
         ])
         svc = facade.SyncService(lambda: cfg)
-        assert svc.check_reachable("noscheme", timeout=1.0) is False
-        assert svc.check_reachable("ftp", timeout=1.0) is False
+        assert svc.check_reachable(cfg.env("noscheme"), timeout=1.0) is False
+        assert svc.check_reachable(cfg.env("ftp"), timeout=1.0) is False
 
     def test_a_login_page_is_not_reachable(self, tmp_path: Path, stub_server: StubServer):
         """A captive portal answers 200 with HTML that holds no log file at all;
@@ -322,7 +396,7 @@ class TestReachability:
         stub_server.add("/coll/", "<html><body>Please sign in</body></html>")
         cfg = dataclasses.replace(_config(tmp_path),
                                   environments=[Environment("coll", stub_server.url + "/coll/")])
-        assert facade.SyncService(lambda: cfg).check_reachable("coll") is False
+        assert facade.SyncService(lambda: cfg).check_reachable(cfg.env("coll")) is False
 
 
 class TestSyncMisc:
@@ -749,8 +823,8 @@ class TestFakeCore:
     def test_fake_sync_can_report_an_env_as_unreachable(self, fake_services: CoreServices):
         sync = fake_services.sync
         sync.set_unreachable("coll")
-        assert sync.check_reachable("coll") is False
-        assert sync.check_reachable("svil") is True
+        assert sync.check_reachable(Environment("coll", "https://example.invalid/coll/")) is False
+        assert sync.check_reachable(Environment("svil", "https://example.invalid/svil/")) is True
         sink = CollectingSink()
         report = sync.run(None, force=True, dry_run=False, sink=sink, cancel=CancelToken())
         assert [e.result.status for e in sink.of(EnvFinished)] == ["unreachable", "ok"]
