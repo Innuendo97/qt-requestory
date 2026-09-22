@@ -23,7 +23,10 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('CompanyName', ''),
+            # Not blank: on an unsigned exe the Properties > Details tab is the
+            # only place a colleague can check where the file came from, and
+            # SmartScreen shows "Autore sconosciuto" next to it.
+            StringStruct('CompanyName', 'qtRequestory'),
             StringStruct('FileDescription', 'qtRequestory - mirror, search and extract request logs'),
             StringStruct('FileVersion', '@VERSION@'),
             StringStruct('InternalName', 'qtRequestory'),

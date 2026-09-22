@@ -14,6 +14,8 @@ import struct
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "qtrequestory"
 IGNORED_DIRS = {"__pycache__"}
@@ -106,11 +108,18 @@ def test_app_ico_entries_point_inside_the_file():
 # navigation rail, and shows "La pagina X non è disponibile in questa versione."
 # on every single page. It happened on the first build of this project.
 #
-# Every dynamically imported package therefore has to be named in
-# ``qtRequestory.spec``. These tests fail when a new one appears without it.
+# Every dynamically imported package therefore has to be *collected* by
+# ``qtRequestory.spec``, and the collection has to reach ``hiddenimports``.
 
 SPEC = ROOT / "qtRequestory.spec"
-DYNAMIC_IMPORT = re.compile(r"importlib\.import_module\(")
+#: Every shape that hides a module name from PyInstaller's static analysis:
+#: ``importlib.import_module(...)``, the ``from importlib import import_module``
+#: variant that calls it bare, and the ``__import__`` builtin.
+DYNAMIC_IMPORT = re.compile(
+    r"\bimportlib\s*\.\s*import_module\s*\("   # the canonical spelling
+    r"|(?<!\.)\bimport_module\s*\("            # `from importlib import import_module`
+    r"|(?<!\.)\b__import__\s*\("               # the builtin
+)
 #: file -> the package name (a module-level constant) it imports from dynamically.
 KNOWN_DYNAMIC_IMPORTERS = {"ui/main_window.py": "qtrequestory.ui.pages"}
 
@@ -124,9 +133,47 @@ def _modules_using_dynamic_import() -> set[str]:
 
 
 def test_the_spec_collects_every_dynamically_imported_package():
+    """The spec must *call* collect_submodules, not merely mention the package.
+
+    An earlier version of this test asserted ``package in spec`` over the whole
+    file. The package name also appears in the spec's own comments, so deleting
+    the ``collect_submodules`` call and the ``hiddenimports=`` line left the test
+    green while the exe went back to shipping four placeholder pages. Match the
+    code.
+    """
     spec = SPEC.read_text(encoding="utf-8")
     for package in KNOWN_DYNAMIC_IMPORTERS.values():
-        assert package in spec, f"{package} is imported dynamically but the spec never mentions it"
+        collected = re.search(
+            rf"collect_submodules\(\s*['\"]{re.escape(package)}['\"]\s*\)", spec
+        )
+        assert collected, f"qtRequestory.spec never calls collect_submodules({package!r})"
+    assert "hiddenimports=PAGE_MODULES" in spec, (
+        "qtRequestory.spec collects the page modules but does not pass them to "
+        "Analysis(hiddenimports=...), so they never reach the exe"
+    )
+
+
+@pytest.mark.parametrize("line", [
+    "    page = importlib.import_module(name)",
+    "    page = import_module(name)",                 # from importlib import import_module
+    "    page = import_module(f'{PKG}.{module}')",
+    "    page = __import__(name, fromlist=['x'])",
+    "mod = importlib .import_module(name)",           # spacing does not help it hide
+    "mod = import_module (name)",
+])
+def test_the_detector_sees_every_shape_of_dynamic_import(line):
+    """The first version of this regex only knew ``importlib.import_module(``."""
+    assert DYNAMIC_IMPORT.search(line)
+
+
+@pytest.mark.parametrize("line", [
+    "from importlib import import_module",            # the import itself is not a call
+    "import importlib",
+    "self.import_module_count += 1",
+    "obj.import_module(name)",                        # a method of something else
+])
+def test_the_detector_does_not_cry_wolf(line):
+    assert not DYNAMIC_IMPORT.search(line)
 
 
 def test_the_package_name_the_spec_relies_on_is_the_real_one():

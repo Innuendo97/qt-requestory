@@ -68,8 +68,31 @@ def test_the_resource_is_pure_ascii(generator, tmp_path):
 
 
 def test_running_it_as_a_script_writes_the_default_file(tmp_path, monkeypatch):
-    """``build.ps1`` calls it with no arguments; that path must work too."""
-    monkeypatch.setattr(sys, "argv", ["make_version_info.py", str(tmp_path / "out.txt")])
+    """``build.ps1`` calls it with NO arguments, so DEFAULT_OUTPUT must be right.
+
+    The default is ``scripts/version_info.txt``, which the spec then feeds to
+    PyInstaller; a wrong default would make the build silently stamp a stale
+    resource (or fail to find one). ``DEFAULT_OUTPUT`` is redirected into
+    ``tmp_path`` rather than letting the test write into the repository.
+    """
     module = _generator()
+    redirected = tmp_path / "version_info.txt"
+    monkeypatch.setattr(module, "DEFAULT_OUTPUT", redirected)
+    monkeypatch.setattr(sys, "argv", ["make_version_info.py"])  # no arguments
+
     assert module.main() == 0
-    assert (tmp_path / "out.txt").is_file()
+    assert redirected.is_file()
+    assert module.DEFAULT_OUTPUT.name == "version_info.txt"
+    assert module.write_version_info.__defaults__ == (None,)  # default really is used
+
+
+def test_the_default_output_is_the_file_the_spec_reads():
+    """Guard the one path build.ps1 and qtRequestory.spec agree on."""
+    module = _generator()
+    assert module.DEFAULT_OUTPUT == ROOT / "scripts" / "version_info.txt"
+
+
+def test_a_version_that_is_not_major_minor_patch_is_refused(generator):
+    """FixedFileInfo wants four integers; '1.0.0rc1' would become a broken resource."""
+    with pytest.raises(ValueError):
+        generator.render("1.0.0rc1")

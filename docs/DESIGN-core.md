@@ -368,8 +368,14 @@ invisible to PyInstaller, so the whole `qtrequestory.ui.pages` package was left 
 first build; because `MainWindow._build_page` swallows the `ModuleNotFoundError` by
 design, the exe started, drew the rail and showed "La pagina «Ricerca» non è disponibile
 in questa versione." on all four pages. Fixed with
-`hiddenimports=collect_submodules("qtrequestory.ui.pages")`; `tests/test_packaging.py`
-now fails if a new dynamic import appears without a matching entry in the spec.
+`hiddenimports=collect_submodules("qtrequestory.ui.pages")`. `tests/test_packaging.py`
+guards two halves of this, and it is worth being precise about which: it fails when a
+*new* dynamic importer appears in `src/` (any of `importlib.import_module(`,
+a bare `import_module(`, `__import__(`) that is not in `KNOWN_DYNAMIC_IMPORTERS`, and it
+fails when the spec stops *calling* `collect_submodules("qtrequestory.ui.pages")` or stops
+passing the result as `hiddenimports=PAGE_MODULES`. It does **not** derive the list of
+needed entries from the code, so a new dynamic importer still has to be wired into the
+spec by hand — the test only refuses to let it pass unnoticed.
 
 **Exclusions that worked** (each verified by running the built exe, GUI included):
 `tkinter`, `unittest`, `pydoc`, `doctest`; the Qt Python modules the app never imports
@@ -391,6 +397,12 @@ Measured: 39.81 MB before the two binary filters, **30.18 MB** after. Qt DLLs sh
 **~7.4 s cold, ~4.9 s warm** (`--version`): onefile unpacks the whole 27 MB payload into
 `%TEMP%` on *every* run, hourly scheduled `--sync` included, and the AV scans it. That is
 the price of one file to hand out; a onedir build would start in a fraction of the time.
+
+**If anyone ever reports a blank or black window**, the dropped `opengl32sw.dll` is the
+first suspect: a VDI/RDP session, a blacklisted GPU driver or `QT_OPENGL=software` in the
+environment makes Qt ask for the software GL renderer that is no longer in the bundle.
+Confirm by removing `"opengl32sw.dll"` from `DROP_BINARIES` in the spec and rebuilding
+(+19.7 MB uncompressed, ~9 MB on the exe) before looking anywhere else.
 
 The scheduled task must point at a copy in a stable folder
 (`%LOCALAPPDATA%\qtRequestory\bin\`), never at `dist\` — see `is_unstable_location`.

@@ -29,14 +29,19 @@ SRC = SPEC_DIR / "src"
 SCRIPTS = SPEC_DIR / "scripts"
 ICON_DIR = SRC / "qtrequestory" / "ui" / "icons"
 
-# The Windows version resource is generated from qtrequestory.__version__ so the
-# number is never written down twice; build.ps1 does it too, this keeps a bare
-# `pyinstaller qtRequestory.spec` working.
+# `scripts` for the version-resource generator below, `src` because
+# collect_submodules has to be able to import the package it walks. The package
+# is not pip-installed in the build venv (pytest runs with pythonpath=src), so
+# nothing else would put it on the path.
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SRC))
 from PyInstaller.utils.hooks import collect_submodules  # noqa: E402
 from make_version_info import write_version_info  # noqa: E402
 
-VERSION_FILE = write_version_info()  # this also puts `src` on sys.path
+# The Windows version resource is generated from qtrequestory.__version__ so the
+# number is never written down twice; build.ps1 does it too, this keeps a bare
+# `pyinstaller qtRequestory.spec` working.
+VERSION_FILE = write_version_info()
 
 # The four pages are reached through
 # `importlib.import_module(f"{PAGES_PACKAGE}.{module}")` in ui/main_window.py
@@ -49,7 +54,15 @@ VERSION_FILE = write_version_info()  # this also puts `src` on sys.path
 # "pagina search non disponibile (No module named 'qtrequestory.ui.pages')".
 # collect_submodules (not --collect-all) so a page added later is picked up too.
 PAGE_MODULES = collect_submodules("qtrequestory.ui.pages")
-assert len(PAGE_MODULES) > 4, f"suspiciously few page modules: {PAGE_MODULES}"
+
+# The four modules ui/main_window.py's PAGES actually asks import_module for. A
+# collect_submodules that silently returned only the package (a moved directory,
+# a renamed package) would otherwise build the exact broken exe this is here to
+# prevent, and nothing would say so until someone opened the window.
+for _page in ("search_page", "sync_page", "settings_page", "about_page"):
+    assert f"qtrequestory.ui.pages.{_page}" in PAGE_MODULES, (
+        f"qtrequestory.ui.pages.{_page} was not collected; got {PAGE_MODULES}"
+    )
 
 # ui/icons.py reads these from disk at runtime (ICON_DIR = Path(__file__).with_name("icons")),
 # which under onefile resolves inside the extraction dir — hence the same relative
@@ -134,14 +147,16 @@ a = Analysis(
 #
 # Excluding a Python module (above) does not help here: both come in as plain
 # DLL dependencies, so they have to be filtered out of the analysis result.
-# Measured on this build: dropping them took the exe from 39.81 MB to 30.08 MB
-# (27.4 MB of uncompressed payload). Both removals were verified by launching
-# the built GUI, not assumed.
+# Measured on this build: dropping them took the exe from 39.81 MB to 30.18 MB
+# (31 644 271 bytes; ~27 MB of uncompressed payload). Both removals were verified
+# by launching the built GUI, not assumed.
 #
 # 1. opengl32sw.dll (19.7 MB uncompressed) — Qt's software OpenGL renderer, loaded only when
 #    something asks for an OpenGL surface. This UI is QtWidgets on the raster
 #    engine (QtOpenGL/QtQuick are excluded above), so nothing ever does; if a
-#    future version draws with OpenGL, delete this filter first.
+#    future version draws with OpenGL, delete this filter first. It is also the
+#    first thing to try if anyone ever reports a blank or black window (a VDI/RDP
+#    session, a blacklisted GPU driver, QT_OPENGL=software in the environment).
 # 2. libssl-3-*/libcrypto-3-* that do NOT come from the Python installation
 #    (7.7 MB uncompressed) — PyInstaller's QtNetwork hook hunts for an OpenSSL build on the
 #    build machine's PATH and ships whatever it finds, which on this machine
