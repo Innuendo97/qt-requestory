@@ -1,0 +1,23 @@
+# environment / build
+.venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.superpowers/
+
+# never commit real environment definitions, logs or mirrors
+environments.json
+*.log
+logs/
+mirror/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db

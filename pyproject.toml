@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qtrequestory"
+version = "1.0.0"
+description = "Mirror, search and extract document-generator request logs (nginx daily logs) — desktop tool"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+ui = ["PySide6-Essentials>=6.7"]
+dev = ["pytest>=8", "pytest-qt>=4.4", "pyinstaller>=6.10"]
+
+[project.scripts]
+qtrequestory = "qtrequestory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
