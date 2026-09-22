@@ -35,10 +35,10 @@ from qtrequestory.core.config import Config, Environment, default_config, valida
 from qtrequestory.core.events import (
     CancelToken,
     EnvFinished,
+    EnvSkipped,
     EnvStarted,
     EnvUnreachable,
     EventSink,
-    EnvSkipped,
     FileDone,
     FileFailed,
     FileProgress,
@@ -92,6 +92,14 @@ HIT_SPECS: tuple[tuple[date, str, str, str, int | None, str | None], ...] = (
 SCRIPT_FILE_NAME = "20260918.txt"
 SCRIPT_FILE_SIZE = 4 * 1_048_576
 SCRIPT_PROGRESS_STEPS = 4
+#: Daily files the scripted remote index holds besides the downloaded one: two
+#: already in the mirror and one empty. ``RemoteIndexRead`` announces them and
+#: every ``EnvResult`` produced after it reports the very same numbers.
+SCRIPT_PRESENT = 2
+SCRIPT_EMPTY = 1
+#: What the autoindex lists: the downloaded file plus the present and empty
+#: ones (the engine's ``len(index.daily)``, which counts the empty entries).
+SCRIPT_N_DAILY = 1 + SCRIPT_PRESENT + SCRIPT_EMPTY
 #: Files the index phase "scans" after a successful scripted sync.
 SCRIPT_INDEXED_FILES = 2
 #: Small by default so a UI test that drives the whole sequence stays fast, but
@@ -154,8 +162,8 @@ class FakeConfigApi:
         self.import_error: str | None = None
 
     def set_import_error(self, message: str | None) -> None:
-        """Make the next ``import_environments_file`` raise ``ValueError(message)``
-        (the wizard's malformed-file path); ``None`` clears it."""
+        """Make every ``import_environments_file`` raise ``ValueError(message)``
+        (the wizard's malformed-file path) until ``None`` clears it again."""
         self.import_error = message
 
     def is_first_run(self) -> bool:
@@ -201,11 +209,17 @@ class FakeSyncApi:
         self.holder: str | None = None
         self.runs: list[dict] = []
         self.log_lines = [f"[2026-09-22 09:0{i}:00] coll: scaricato 2026091{i}.txt (12,5 MB)" for i in range(4)]
+        #: "coll" looks like a mirror synced before, "svil" like a never-synced
+        #: one. Neither starts *fresh*: the default outcome is "ok" (a scripted
+        #: download), and ``is_fresh`` must agree with what a non-forced ``run``
+        #: does — an env whose card says "Aggiornato" and that then downloads
+        #: anyway is a fake no UI test can be written against. ``set_fresh`` is
+        #: the knob for the skipped case, and it sets both.
         self._statuses: dict[str, EnvStatus] = {
             name: EnvStatus(
                 env=name,
                 last_success=datetime(2026, 9, 22, 9, 23) if name == "coll" else None,
-                fresh=name == "coll",
+                fresh=False,
                 n_local_files=39 if name == "coll" else 0,
                 local_bytes=41 * 1_048_576 if name == "coll" else 0,
                 latest_day=DAYS[0] if name == "coll" else None,
@@ -252,17 +266,34 @@ class FakeSyncApi:
         self.holder = text
 
     def set_env_status(self, env_name: str, **kw) -> EnvStatus:
-        self._statuses[env_name] = dataclasses.replace(self._statuses[env_name], **kw)
+        """Patch one card's status, creating it for an env the fake does not
+        know: the wizard can import an ``environments.json`` with any names at
+        all, and a knob that raised ``KeyError`` there would make those names
+        untestable even though ``env_status`` answers for them."""
+        self._statuses[env_name] = dataclasses.replace(self._status(env_name), **kw)
         return self._statuses[env_name]
+
+    @staticmethod
+    def _default_status(env_name: str) -> EnvStatus:
+        """A never-synced, never-fresh env: what an unknown name looks like."""
+        return EnvStatus(
+            env=env_name,
+            last_success=None,
+            fresh=False,
+            n_local_files=0,
+            local_bytes=0,
+            latest_day=None,
+            index_pending=0,
+        )
+
+    def _status(self, env_name: str) -> EnvStatus:
+        status = self._statuses.get(env_name)
+        return status if status is not None else self._default_status(env_name)
 
     # -- contract ----------------------------------------------------------
 
     def env_status(self, env_name: str) -> EnvStatus:
-        return self._statuses.get(
-            env_name,
-            EnvStatus(env=env_name, last_success=None, fresh=False, n_local_files=0,
-                      local_bytes=0, latest_day=None, index_pending=0),
-        )
+        return self._status(env_name)
 
     def check_reachable(self, env_name: str, timeout: float = 5.0) -> bool:
         return self._outcomes.get(env_name, "ok") != "unreachable"
@@ -348,13 +379,21 @@ class FakeSyncApi:
             sink(EnvUnreachable(name, error))
             return EnvResult(name, "unreachable", error=error)
         size = SCRIPT_FILE_SIZE
-        sink(RemoteIndexRead(name, n_daily=3, n_empty=1, n_loose=2, bytes_to_download=size))
+        sink(RemoteIndexRead(name, n_daily=SCRIPT_N_DAILY, n_empty=SCRIPT_EMPTY, n_loose=2,
+                             bytes_to_download=size))
+        # The engine tallies the files already present and the empty ones plan
+        # by plan, before its `if dry_run` branch: a dry run walks every plan,
+        # so it reports the numbers RemoteIndexRead has just announced. A
+        # cancel is an early exit from that same loop, so it reports only what
+        # it walked — here nothing, since the scripted index is newest-first
+        # with the download ahead of the present/empty entries.
         if dry_run:
             # The engine skips the transfer entirely under dry_run: no
-            # FileStarted, no FileProgress, so no progress bar in the UI.
-            return EnvResult(name, "ok", downloaded=1, bytes=size)
+            # FileStarted, no FileProgress, so no progress bar in the UI. It
+            # still counts what it would have downloaded, and what it skipped.
+            return EnvResult(name, "ok", downloaded=1, present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY, bytes=size)
         if outcome == "errors":
-            return self._fail_files(name, size, sink)
+            return self._fail_files(name, size, sink, cancel)
         sink(FileStarted(name, SCRIPT_FILE_NAME, size))
         for step in range(1, SCRIPT_PROGRESS_STEPS + 1):
             self._pause()
@@ -362,17 +401,30 @@ class FakeSyncApi:
                 return EnvResult(name, "cancelled", error=f"annullato durante {SCRIPT_FILE_NAME}")
             sink(FileProgress(name, SCRIPT_FILE_NAME, size * step // SCRIPT_PROGRESS_STEPS, size))
         sink(FileDone(name, SCRIPT_FILE_NAME, size, self._root / "mirror" / name / SCRIPT_FILE_NAME))
-        return EnvResult(name, "ok", downloaded=1, present=2, empty=1, bytes=size)
+        return EnvResult(name, "ok", downloaded=1, present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY, bytes=size)
 
-    def _fail_files(self, name: str, size: int, sink: EventSink) -> EnvResult:
-        """``FileStarted`` then ``FileFailed`` per file, like a truncated transfer."""
+    def _fail_files(self, name: str, size: int, sink: EventSink, cancel: CancelToken) -> EnvResult:
+        """``FileStarted`` then ``FileFailed`` per file, like a truncated transfer.
+
+        The token is checked before every file and again while one is in
+        flight, exactly where the engine checks it, so a run cancelled while
+        files are failing ends ``cancelled`` (exit 3) and not ``errors``
+        (exit 1). Only what the loop actually walked travels with the cancelled
+        result: the failures so far, and no present/empty (those plans come
+        after the downloads in the scripted index, so the cancel never reaches
+        them).
+        """
         n = self._n_failures.get(name, 1)
         for i in range(n):
             file_name = f"2026091{i}.txt"
+            if cancel.is_set():
+                return EnvResult(name, "cancelled", failed=i, error=f"annullato prima di {file_name}")
             sink(FileStarted(name, file_name, size))
             self._pause()
+            if cancel.is_set():
+                return EnvResult(name, "cancelled", failed=i, error=f"annullato durante {file_name}")
             sink(FileFailed(name, file_name, "troncato: 512 di 4194304 byte"))
-        return EnvResult(name, "errors", present=2, empty=1, failed=n)
+        return EnvResult(name, "errors", present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY, failed=n)
 
     def _pause(self) -> None:
         if self.step_delay:
