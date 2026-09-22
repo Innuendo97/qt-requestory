@@ -21,6 +21,7 @@ from qtrequestory.core.events import (
     EnvFinished,
     EnvSkipped,
     FileFailed,
+    FileProgress,
     FileStarted,
     IndexStarted,
     RemoteIndexRead,
@@ -41,6 +42,20 @@ def fake(tmp_path: Path) -> CoreServices:
 def _run(sync, env: str, **kw):
     sink = CollectingSink()
     report = sync.run([env], sink=sink, cancel=CancelToken(), **kw)
+    return sink, report
+
+
+def _run_cancelling(sync, env: str, on_event: type):
+    """Run ``env`` and hit "Annulla" the moment an ``on_event`` is emitted."""
+    sink = CollectingSink()
+    cancel = CancelToken()
+
+    def cancelling(ev):
+        sink(ev)
+        if isinstance(ev, on_event):
+            cancel.cancel()
+
+    report = sync.run([env], force=True, dry_run=False, sink=cancelling, cancel=cancel)
     return sink, report
 
 
@@ -113,15 +128,7 @@ def test_cancelling_a_failing_run_is_cancelled_not_errors(fake):
     "Annulla" while files are failing gets exit 3 (annullato), not exit 1."""
     sync = fake.sync
     sync.set_failing("coll", 3)
-    cancel = CancelToken()
-    sink = CollectingSink()
-
-    def cancelling(ev):
-        sink(ev)
-        if isinstance(ev, FileFailed):
-            cancel.cancel()
-
-    report = sync.run(["coll"], force=True, dry_run=False, sink=cancelling, cancel=cancel)
+    sink, report = _run_cancelling(sync, "coll", FileFailed)
     assert sink.of(EnvFinished)[0].result.status == "cancelled"
     assert report.exit_code == 3
     assert len(sink.of(FileStarted)) == 1  # it stops at the cancel, not after all 3
@@ -133,17 +140,47 @@ def test_cancelling_mid_file_stops_before_the_failure_is_reported(fake):
     engine, the interrupted transfer is not also reported as a failure."""
     sync = fake.sync
     sync.set_failing("coll", 3)
-    cancel = CancelToken()
-    sink = CollectingSink()
-
-    def cancelling(ev):
-        sink(ev)
-        if isinstance(ev, FileStarted):
-            cancel.cancel()
-
-    report = sync.run(["coll"], force=True, dry_run=False, sink=cancelling, cancel=cancel)
+    sink, report = _run_cancelling(sync, "coll", FileStarted)
     assert sink.of(FileFailed) == []
     assert sink.of(EnvFinished)[0].result.status == "cancelled"
+    assert report.exit_code == 3
+
+
+@pytest.mark.parametrize(
+    "failing, trigger",
+    [(False, FileProgress), (True, FileStarted), (True, FileFailed)],
+)
+def test_a_cancelled_run_counts_only_what_it_reached(fake, failing: bool, trigger: type):
+    """A cancel is an early exit from the engine's tally loop, not a completed
+    pass: ``present``/``empty`` are incremented plan by plan *inside* that loop
+    (``core/sync.py``), so only what was walked before the cancel is counted —
+    unlike a dry run, which walks every plan. The scripted scenario is
+    newest-first with the download ahead of the present/empty entries, so a
+    cancel during it counts neither. ``SyncReport.summary_line`` prints these
+    numbers for cancelled results too, so a wrong one would reach the UI.
+    """
+    sync = fake.sync
+    if failing:
+        sync.set_failing("coll", 3)
+    sink, report = _run_cancelling(sync, "coll", trigger)
+    result = sink.of(EnvFinished)[0].result
+    assert result.status == "cancelled"
+    assert (result.present, result.empty) == (0, 0)
+    assert report.exit_code == 3
+
+
+def test_a_run_cancelled_before_it_starts_counts_nothing_at_all(fake):
+    """The env is announced and finished, but nothing was read: every counter
+    stays at 0 (``core/sync.py``, the pre-flight cancel check)."""
+    cancel = CancelToken()
+    cancel.cancel()
+    sink = CollectingSink()
+    report = fake.sync.run(["coll"], force=True, dry_run=False, sink=sink, cancel=cancel)
+    result = sink.of(EnvFinished)[0].result
+    assert (result.status, result.downloaded, result.present, result.empty, result.failed) == (
+        "cancelled", 0, 0, 0, 0
+    )
+    assert sink.of(RemoteIndexRead) == []
     assert report.exit_code == 3
 
 

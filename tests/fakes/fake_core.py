@@ -276,8 +276,15 @@ class FakeSyncApi:
     @staticmethod
     def _default_status(env_name: str) -> EnvStatus:
         """A never-synced, never-fresh env: what an unknown name looks like."""
-        return EnvStatus(env=env_name, last_success=None, fresh=False, n_local_files=0,
-                         local_bytes=0, latest_day=None, index_pending=0)
+        return EnvStatus(
+            env=env_name,
+            last_success=None,
+            fresh=False,
+            n_local_files=0,
+            local_bytes=0,
+            latest_day=None,
+            index_pending=0,
+        )
 
     def _status(self, env_name: str) -> EnvStatus:
         status = self._statuses.get(env_name)
@@ -374,10 +381,12 @@ class FakeSyncApi:
         size = SCRIPT_FILE_SIZE
         sink(RemoteIndexRead(name, n_daily=SCRIPT_N_DAILY, n_empty=SCRIPT_EMPTY, n_loose=2,
                              bytes_to_download=size))
-        # The engine tallies the files already present and the empty ones while
-        # it walks the plans — before the `if dry_run` branch and before any
-        # transfer — so every result produced from here on reports the numbers
-        # RemoteIndexRead has just announced, whatever the outcome.
+        # The engine tallies the files already present and the empty ones plan
+        # by plan, before its `if dry_run` branch: a dry run walks every plan,
+        # so it reports the numbers RemoteIndexRead has just announced. A
+        # cancel is an early exit from that same loop, so it reports only what
+        # it walked — here nothing, since the scripted index is newest-first
+        # with the download ahead of the present/empty entries.
         if dry_run:
             # The engine skips the transfer entirely under dry_run: no
             # FileStarted, no FileProgress, so no progress bar in the UI. It
@@ -389,8 +398,7 @@ class FakeSyncApi:
         for step in range(1, SCRIPT_PROGRESS_STEPS + 1):
             self._pause()
             if cancel.is_set():
-                return EnvResult(name, "cancelled", present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY,
-                                 error=f"annullato durante {SCRIPT_FILE_NAME}")
+                return EnvResult(name, "cancelled", error=f"annullato durante {SCRIPT_FILE_NAME}")
             sink(FileProgress(name, SCRIPT_FILE_NAME, size * step // SCRIPT_PROGRESS_STEPS, size))
         sink(FileDone(name, SCRIPT_FILE_NAME, size, self._root / "mirror" / name / SCRIPT_FILE_NAME))
         return EnvResult(name, "ok", downloaded=1, present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY, bytes=size)
@@ -401,19 +409,20 @@ class FakeSyncApi:
         The token is checked before every file and again while one is in
         flight, exactly where the engine checks it, so a run cancelled while
         files are failing ends ``cancelled`` (exit 3) and not ``errors``
-        (exit 1) — the failures counted so far travel with the result.
+        (exit 1). Only what the loop actually walked travels with the cancelled
+        result: the failures so far, and no present/empty (those plans come
+        after the downloads in the scripted index, so the cancel never reaches
+        them).
         """
         n = self._n_failures.get(name, 1)
         for i in range(n):
             file_name = f"2026091{i}.txt"
             if cancel.is_set():
-                return EnvResult(name, "cancelled", present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY,
-                                 failed=i, error=f"annullato prima di {file_name}")
+                return EnvResult(name, "cancelled", failed=i, error=f"annullato prima di {file_name}")
             sink(FileStarted(name, file_name, size))
             self._pause()
             if cancel.is_set():
-                return EnvResult(name, "cancelled", present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY,
-                                 failed=i, error=f"annullato durante {file_name}")
+                return EnvResult(name, "cancelled", failed=i, error=f"annullato durante {file_name}")
             sink(FileFailed(name, file_name, "troncato: 512 di 4194304 byte"))
         return EnvResult(name, "errors", present=SCRIPT_PRESENT, empty=SCRIPT_EMPTY, failed=n)
 
