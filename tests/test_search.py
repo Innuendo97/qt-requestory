@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -220,12 +221,44 @@ def test_read_body_detects_stale_index_and_recovers_after_rescan(indexed):
     assert read_body(hit2) == original
 
 
-def test_read_body_missing_file_is_stale(indexed):
+def test_read_body_missing_file_is_stale_and_rescan_heals(indexed):
     conn, mirror = indexed
     hit = search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a"))[0]
     hit.file_path.unlink()
+    with pytest.raises(IndexStale) as info:
+        read_body(hit)
+    # the documented recovery loop must work for this trigger too: rescan drops the day
+    assert IndexBuilder(conn, mirror.root, null_sink).rescan_file(info.value.env, info.value.day) == 0
+    assert conn.in_transaction is False
+    assert conn.execute("SELECT COUNT(*) FROM files WHERE env='svil'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM entries WHERE env='svil'").fetchone()[0] == 0
+    assert search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a")) == []
+    assert coverage(conn, "svil") is None
+
+
+def test_read_body_header_check_is_bounded(indexed, monkeypatch):
+    """A stale offset landing inside a multi-MB body must not read the whole line."""
+    conn, mirror = indexed
+    hit = search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a"))[0]
+    path = mirror.files[("svil", D16)]
+    path.write_bytes(b"### " + b"x" * 5_000_000 + b".json\n{}\n" + path.read_bytes())
+    seen: list[int | None] = []
+    real_open = Path.open
+
+    def spy_open(self, *a, **kw):
+        f = real_open(self, *a, **kw)
+        real_readline = f.readline
+
+        def readline(size=-1):
+            seen.append(size)
+            return real_readline(size)
+        f.readline = readline
+        return f
+
+    monkeypatch.setattr(Path, "open", spy_open)
     with pytest.raises(IndexStale):
         read_body(hit)
+    assert seen and all(0 < size < 1000 for size in seen)
 
 
 # -------------------------------------------------------------- coverage ---
@@ -247,6 +280,8 @@ def test_list_template_keys_order_and_prefix(indexed):
     assert list_template_keys(conn, "coll", prefix="MOD_TEST") == [KEY_SINT, KEY_EMAIL]
     assert list_template_keys(conn, "coll", prefix="mod_test_e") == [KEY_EMAIL]
     assert list_template_keys(conn, "coll", prefix="MOD%") == []
+    assert list_template_keys(conn, "coll", prefix="  MOD_TEST ") == [KEY_SINT, KEY_EMAIL]
+    assert list_template_keys(conn, "coll", prefix="   ") == list_template_keys(conn, "coll")
     assert list_template_keys(conn, "coll", limit=1) == [KEY_CTE]
     assert list_template_keys(conn, "prod") == []
 
@@ -269,6 +304,8 @@ def test_list_fdi_prefix(indexed):
     assert list_fdi_prefix(conn, "coll", "z") == []
     assert list_fdi_prefix(conn, "coll", "", limit=2) == [FDI_A, FDI_B]
     assert list_fdi_prefix(conn, "svil", "") == [FDI_A]
+    assert list_fdi_prefix(conn, "svil", "  ") == [FDI_A]
+    assert list_fdi_prefix(conn, "coll", " c ") == [FDI_C, FDI_C + "-t15"]
 
 
 # ------------------------------------------------------------ output name ---

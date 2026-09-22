@@ -128,9 +128,18 @@ class IndexBuilder:
 
     def rescan_file(self, env: str, day: date) -> int:
         """Re-index one day unconditionally (self-heal after ``IndexStale``);
-        returns the number of entries found."""
+        returns the number of entries found.
+
+        A vanished file is one of the documented ``IndexStale`` triggers, so
+        it is handled here too: its rows are dropped and 0 is returned.
+        """
         path = local_path(self._root, env, day)
-        st = path.stat()
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            with self._conn:
+                self._conn.execute("DELETE FROM files WHERE env=? AND day=?", (env, day.isoformat()))
+            return 0
         return self._index_file(LocalDailyFile(env, day, path, st.st_size, st.st_mtime_ns))
 
     # ---------------------------------------------------------- internal ---

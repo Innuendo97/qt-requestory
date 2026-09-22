@@ -184,7 +184,8 @@ def read_body(hit: SearchHit) -> bytes:
     try:
         with hit.file_path.open("rb") as f:
             f.seek(hit.header_offset)
-            header = f.readline().rstrip(b"\r\n")
+            # Bounded: a stale offset may land inside a multi-MB body line.
+            header = f.readline(len(expected) + 2).rstrip(b"\r\n")
             if header != expected:
                 raise IndexStale(hit.env, hit.day)
             f.seek(hit.body_offset)
@@ -222,7 +223,8 @@ def list_template_keys(conn: sqlite3.Connection, env: str, prefix: str = "", lim
     then most frequent, then alphabetical — the order a picker wants."""
     where = ["env = ?"]
     params: list[object] = [env]
-    if prefix:
+    prefix = _clean(prefix)
+    if prefix is not None:
         clause, extra = _key_clause(prefix, "prefix")
         where.append(clause)
         params += extra
@@ -240,7 +242,8 @@ def list_fdi_prefix(conn: sqlite3.Connection, env: str, prefix: str, limit: int 
     """Distinct FDIs of ``env`` starting with ``prefix`` (case-insensitive), sorted."""
     where = ["env = ?", "fdi IS NOT NULL"]
     params: list[object] = [env]
-    if prefix:
+    prefix = _clean(prefix)
+    if prefix is not None:
         lo, hi = _fdi_range(prefix)
         where.append("fdi >= ? AND fdi < ?")
         params += [lo, hi]
