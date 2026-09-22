@@ -134,7 +134,10 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 - Empty states (centred icon + 2 lines + 1 button, never a modal): no local log for env →
   [Vai a Sincronizzazione]; no results → hints: if `al` = today "Le chiamate di oggi
   arrivano domani con il file YYYYMMDD.txt."; window < 90 days → [Cerca negli ultimi 90
-  giorni]; FDI shorter than 8 chars → "Prova con l'FDI completo".
+  giorni]; FDI shorter than 8 chars → "Prova con l'FDI completo"; a query that carried a
+  template key → "La template key deve essere completa…" pointing at the picker, because
+  the key match is exact (`SearchQuery.key_mode` defaults to `"exact"` and nothing in the
+  UI selects `prefix`/`contains`) and half a key is the natural thing to type.
 - Output contract: the preview/copy/save/open text is exactly `extract.pretty_json(body)`,
   starts with `{\n    "documents": [`; the UI never adds headers or comments.
 

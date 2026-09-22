@@ -99,6 +99,13 @@ SEARCH_EMPTY_NO_RESULTS_HINT = "Controlla l'ambiente, il periodo e i filtri."
 #: {file} = YYYYMMDD.txt of today; shown when the window ends today.
 SEARCH_EMPTY_HINT_TODAY = "Le chiamate di oggi arrivano domani con il file {file}."
 SEARCH_EMPTY_HINT_SHORT_FDI = "Prova con l'FDI completo."
+#: Shown whenever the query carried a template key: the match is exact, and
+#: nothing else on the page says so. Keys come in suffix families
+#: (_LUCE / _GAS / _DUAL / _386), so typing half of one is the natural mistake.
+SEARCH_EMPTY_HINT_EXACT_KEY = (
+    "La template key deve essere completa: la ricerca non accetta parti di key. "
+    "Scegli la key dall'elenco a discesa del campo «Template key»."
+)
 SEARCH_EMPTY_WIDEN_BTN = "Cerca negli ultimi 90 giorni"
 
 # --- preview slot -----------------------------------------------------------
