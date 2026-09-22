@@ -114,7 +114,9 @@ class EnvTable(QTableWidget):
         self.insertRow(row)
         check = QTableWidgetItem()
         check.setFlags(
-            Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsUserCheckable
         )
         check.setCheckState(Qt.CheckState.Checked if env.enabled else Qt.CheckState.Unchecked)
         self.setItem(row, self.COL_ENABLED, check)

@@ -176,6 +176,13 @@ def test_superseded_jobs_are_cancelled_so_they_stop_early(qtbot, runner):
     assert job1.token.is_set() is True
 
 
+def test_a_shut_down_runner_refuses_new_work(qapp):
+    """Nothing may be queued while the pool is being torn down."""
+    runner = JobRunner()
+    runner.shutdown(1000)
+    assert runner.submit("search", lambda: "tardi") is None
+
+
 # ----------------------------------------------------------------- the sink ---
 
 def test_qt_event_sink_emits_every_event_it_is_called_with(qtbot):

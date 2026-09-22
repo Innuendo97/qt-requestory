@@ -88,7 +88,8 @@ def test_a_page_that_explodes_does_not_take_the_shell_down(qtbot, fake_core, run
     def boom(services, runner_, window_):
         raise RuntimeError("bug nella pagina")
 
-    win = MainWindow(fake_core, runner, pages=[spec("ok"), PageSpec("bad", "Bad", "info", boom, "top")])
+    pages = [spec("ok"), PageSpec("bad", "Bad", "info", boom, "top")]
+    win = MainWindow(fake_core, runner, pages=pages)
     qtbot.addWidget(win)
     assert isinstance(win.page("bad"), QLabel)
     assert isinstance(win.page("ok"), Recorder)
@@ -149,6 +150,22 @@ def test_sincronizza_ora_jumps_to_the_sync_page_and_asks_it_to_start(qtbot, fake
 
 
 # -------------------------------------------------------------- status bar ---
+
+def test_switching_to_dark_mode_re_tints_the_rail_icons(qtbot, window, monkeypatch):
+    """The glyphs are tinted for the palette: a theme switch must redo them."""
+    from PySide6.QtGui import QColor, QGuiApplication
+    from qtrequestory.ui import icons
+
+    before = window.rail_top.item(0).icon().pixmap(20, 20).toImage()
+    hints = QGuiApplication.styleHints()
+    real_icon = icons.icon
+    monkeypatch.setattr(icons, "icon", lambda name, color=None: real_icon(name, QColor("#FF00FF")))
+
+    hints.colorSchemeChanged.emit(hints.colorScheme())
+
+    after = window.rail_top.item(0).icon().pixmap(20, 20).toImage()
+    assert before != after
+
 
 def test_set_status_shows_a_transient_message(window):
     window.set_status("Copiato negli appunti (312 KB)")
@@ -220,7 +237,9 @@ def test_a_saved_configuration_is_broadcast_to_the_other_pages(qtbot, fake_core,
 
 def test_closing_while_a_sync_runs_asks_first(qtbot, window, runner, monkeypatch):
     asked: list[object] = []
-    monkeypatch.setattr(mw, "confirm_quit_during_sync", lambda parent: asked.append(parent) or False)
+    monkeypatch.setattr(
+        mw, "confirm_quit_during_sync", lambda parent: asked.append(parent) or False
+    )
     gate = threading.Event()
     job = runner.submit("sync", lambda: gate.wait(5.0))
     try:

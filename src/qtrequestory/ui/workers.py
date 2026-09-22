@@ -85,7 +85,8 @@ class QtEventSink(QObject):
 
     event = Signal(object)
 
-    def __init__(self, min_interval: float = PROGRESS_INTERVAL_S, parent: QObject | None = None) -> None:
+    def __init__(self, min_interval: float = PROGRESS_INTERVAL_S,
+                 parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._min_interval = min_interval
         self._last_progress = 0.0
@@ -139,7 +140,8 @@ class Worker(QRunnable):
             return
         self._emit(self._signals.started)
         try:
-            self._emit(self._signals.result, self._fn(*self._args, **self._call_kwargs()))
+            value = self._fn(*self._args, **self._call_kwargs())
+            self._emit(self._signals.result, value)
         except Cancelled:
             self._emit(self._signals.cancelled)
         except Exception as exc:  # noqa: BLE001 - any core failure becomes a message
@@ -242,8 +244,13 @@ class JobRunner(QObject):
         """Run ``fn(*args, **kwargs)`` on a pool thread; ``None`` when refused.
 
         ``sink=`` and ``cancel=`` are added by the worker when ``fn`` accepts
-        them, so callers pass only the real arguments.
+        them, so callers pass only the real arguments. ``None`` is also what a
+        page gets while the application is shutting down — a job that would
+        never run must not look like one that will.
         """
+        if self._closing:
+            log.debug("job %s refused: chiusura in corso", name)
+            return None
         previous = self._jobs.get(name)
         if name in self.EXCLUSIVE and previous is not None and previous.is_running():
             log.debug("job %s refused: already running", name)
@@ -253,8 +260,11 @@ class JobRunner(QObject):
             previous.superseded = True
             previous.cancel()  # a superseded job should stop as soon as it can
 
-        sink = QtEventSink(self._progress_interval, self)
-        signals = WorkerSignals(self)
+        # No parent: the sink and the signals must be freed with the job they
+        # belong to, otherwise every search would leave two QObjects behind on
+        # the runner for the lifetime of the application.
+        sink = QtEventSink(self._progress_interval)
+        signals = WorkerSignals()
         job = Job(_next_id(), name, signals, sink, CancelToken())
         sink.event.connect(signals.progress)
         sink.event.connect(partial(_relay_log, signals))
@@ -292,6 +302,8 @@ class JobRunner(QObject):
 
     def shutdown(self, timeout_ms: int = 5000) -> bool:
         """Cancel everything and wait for the pool: called when the app quits.
+
+        One way: the runner accepts no more work afterwards.
 
         Without this, Qt tears the pool down while a worker still touches
         Python objects, which on Windows shows up as a crash on exit.

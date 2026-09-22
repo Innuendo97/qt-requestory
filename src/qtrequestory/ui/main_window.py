@@ -27,7 +27,7 @@ from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QKeySequence, QPalette, QShortcut
+from PySide6.QtGui import QGuiApplication, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QSizePolicy,
@@ -51,6 +51,8 @@ log = logging.getLogger(__name__)
 
 RAIL_WIDTH = 200
 STATUS_TIMEOUT_MS = 4000
+#: Item data: the icon name, so the rail can re-tint itself on a theme switch.
+ICON_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class PageSpec(NamedTuple):
@@ -86,7 +88,8 @@ def page_factory(module: str, class_name: str) -> Callable[..., QWidget]:
 #: The v1 pages, in rail order. No disabled placeholders: a page is here only
 #: when it exists (DESIGN-ui §Navigation).
 PAGES: list[PageSpec] = [
-    PageSpec("search", strings.NAV_SEARCH, "search", page_factory("search_page", "SearchPage"), "top"),
+    PageSpec("search", strings.NAV_SEARCH, "search",
+             page_factory("search_page", "SearchPage"), "top"),
     PageSpec("sync", strings.NAV_SYNC, "arrow-sync", page_factory("sync_page", "SyncPage"), "top"),
     PageSpec("settings", strings.NAV_SETTINGS, "settings",
              page_factory("settings_page", "SettingsPage"), "bottom"),
@@ -104,7 +107,8 @@ class ClickableLabel(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+        inside = self.rect().contains(event.position().toPoint())
+        if inside and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 
@@ -163,6 +167,7 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self.sync_summary.clicked.connect(lambda: self.show_page("sync"))
         self._runner.busy.connect(self._on_job_refused)
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_color_scheme_changed)
         self._restore_geometry()
         if self._pages:
             self.show_page(next(iter(self._pages)))  # the first entry of PAGES
@@ -270,6 +275,7 @@ class MainWindow(QMainWindow):
             rail = self.rail_top if spec.section == "top" else self.rail_bottom
             item = QListWidgetItem(icons.icon(spec.icon_name), spec.label)
             item.setData(Qt.ItemDataRole.UserRole, spec.key)
+            item.setData(ICON_NAME_ROLE, spec.icon_name)
             rail.addItem(item)
         self._connect_page_hooks()
 
@@ -311,6 +317,14 @@ class MainWindow(QMainWindow):
     def _on_rail_selection(self, current: QListWidgetItem | None, _previous=None) -> None:
         if current is not None:
             self.show_page(current.data(Qt.ItemDataRole.UserRole))
+
+    def _on_color_scheme_changed(self, _scheme) -> None:
+        """Light/dark switched: the glyphs were tinted for the old palette."""
+        icons.clear_cache()
+        for rail in (self.rail_top, self.rail_bottom):
+            for row in range(rail.count()):
+                item = rail.item(row)
+                item.setIcon(icons.icon(item.data(ICON_NAME_ROLE)))
 
     def _on_job_refused(self, name: str) -> None:
         self.set_status(strings.STATUS_BUSY.format(name=name))
