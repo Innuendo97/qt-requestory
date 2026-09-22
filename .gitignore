@@ -2,6 +2,8 @@
 .venv/
 build/
 dist/
+# generated from version_info.txt.in by scripts/make_version_info.py
+scripts/version_info.txt
 *.egg-info/
 __pycache__/
 *.pyc

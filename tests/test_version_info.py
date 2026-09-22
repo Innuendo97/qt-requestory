@@ -1,0 +1,98 @@
+"""The Windows version resource must carry the version the package reports.
+
+``qtRequestory.exe --version`` prints ``qtrequestory.__version__``; the
+Properties > Details tab of the same file shows the version *resource*. When
+the two drift apart, a colleague reporting "I'm on 1.0.0" is telling you
+something that may not be true — which is why the resource is generated from
+``__version__`` instead of being edited by hand.
+
+These tests run the generator (``scripts/make_version_info.py``) rather than
+reading the committed output: the output is a build artefact and is not
+committed.
+"""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+GENERATOR = ROOT / "scripts" / "make_version_info.py"
+
+
+def _generator():
+    """Import ``scripts/make_version_info.py`` — it lives outside the package."""
+    spec = importlib.util.spec_from_file_location("_make_version_info", GENERATOR)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def generator():
+    return _generator()
+
+
+def test_the_resource_carries_the_package_version(generator, tmp_path):
+    from qtrequestory import __version__
+
+    out = tmp_path / "version_info.txt"
+    generator.write_version_info(out)
+    text = out.read_text(encoding="utf-8")
+
+    major, minor, patch = (int(p) for p in __version__.split("."))
+    assert f"filevers=({major}, {minor}, {patch}, 0)" in text
+    assert f"prodvers=({major}, {minor}, {patch}, 0)" in text
+    assert text.count(f"'{__version__}'") == 2  # FileVersion and ProductVersion
+
+
+def test_the_resource_is_what_pyinstaller_can_parse(generator, tmp_path):
+    """PyInstaller ``exec``s this file; a template typo must fail here, not mid-build."""
+    pytest.importorskip("PyInstaller", reason="only the build environment has PyInstaller")
+    from PyInstaller.utils.win32.versioninfo import load_version_info_from_text_file
+
+    out = tmp_path / "version_info.txt"
+    generator.write_version_info(out)
+    info = load_version_info_from_text_file(str(out))
+    assert "qtRequestory.exe" in str(info)
+
+
+def test_the_resource_is_pure_ascii(generator, tmp_path):
+    """No em dashes: the resource is read back by tools with assorted code pages."""
+    out = tmp_path / "version_info.txt"
+    generator.write_version_info(out)
+    out.read_bytes().decode("ascii")
+
+
+def test_running_it_as_a_script_writes_the_default_file(tmp_path, monkeypatch):
+    """``build.ps1`` calls it with NO arguments, so DEFAULT_OUTPUT must be right.
+
+    The default is ``scripts/version_info.txt``, which the spec then feeds to
+    PyInstaller; a wrong default would make the build silently stamp a stale
+    resource (or fail to find one). ``DEFAULT_OUTPUT`` is redirected into
+    ``tmp_path`` rather than letting the test write into the repository.
+    """
+    module = _generator()
+    redirected = tmp_path / "version_info.txt"
+    monkeypatch.setattr(module, "DEFAULT_OUTPUT", redirected)
+    monkeypatch.setattr(sys, "argv", ["make_version_info.py"])  # no arguments
+
+    assert module.main() == 0
+    assert redirected.is_file()
+    assert module.DEFAULT_OUTPUT.name == "version_info.txt"
+    assert module.write_version_info.__defaults__ == (None,)  # default really is used
+
+
+def test_the_default_output_is_the_file_the_spec_reads():
+    """Guard the one path build.ps1 and qtRequestory.spec agree on."""
+    module = _generator()
+    assert module.DEFAULT_OUTPUT == ROOT / "scripts" / "version_info.txt"
+
+
+def test_a_version_that_is_not_major_minor_patch_is_refused(generator):
+    """FixedFileInfo wants four integers; '1.0.0rc1' would become a broken resource."""
+    with pytest.raises(ValueError):
+        generator.render("1.0.0rc1")

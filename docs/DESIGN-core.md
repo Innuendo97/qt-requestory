@@ -352,6 +352,71 @@ editor unless `--no-open`, exit 1 when nothing matches). `--task status` exits 1
 is registered. Qt is imported ONLY inside the GUI branch (`tests/test_cli.py` checks it in a
 subprocess).
 
+## Packaging (`qtRequestory.spec`, `scripts/build.ps1`)
+
+One windowed onefile exe, no installer: the colleagues receive it over chat and run
+it from wherever it lands. `pyinstaller qtRequestory.spec` from the repo venv
+(python.org 3.12.10 / PySide6-Essentials 6.11.2 / PyInstaller 6.22.3); `scripts/build.ps1`
+is the real entry point — it refuses a non-venv or Microsoft Store interpreter, runs the
+full pytest suite and aborts on red, then builds, then *runs* the produced exe
+(`--version`, `--task status`, and `--find` against a throwaway config in `%TEMP%`
+pointing at an empty mirror, which must answer "nessuna chiamata trovata" with exit 1).
+Entry script: `scripts/entrypoint.py`, not `qtrequestory/__main__.py` — PyInstaller
+prepends the entry script's directory to `sys.path`, and from inside the package that
+would make `core`/`ui` importable a second time as top-level packages.
+
+`console=False` (no console flash, invisible hourly `--sync`; `cli._guard_std_streams`
+covers the resulting `sys.stdout is None`) and `upx=False` (packed exes get quarantined).
+Version resource: `scripts/version_info.txt` is generated from `version_info.txt.in` by
+`scripts/make_version_info.py`, so `__version__` is written down once. Icon:
+`ui/icons/app.ico`, committed, generated from `app.svg` by `scripts/make_icon.py`
+(16/24/32/48 as 32-bit BMP entries, 256 as PNG).
+
+**Hidden import — the one that matters.** `ui/main_window.py` reaches the four pages
+through `importlib.import_module(f"{PAGES_PACKAGE}.{module}")`. A computed module name is
+invisible to PyInstaller, so the whole `qtrequestory.ui.pages` package was left out of the
+first build; because `MainWindow._build_page` swallows the `ModuleNotFoundError` by
+design, the exe started, drew the rail and showed "La pagina «Ricerca» non è disponibile
+in questa versione." on all four pages. Fixed with
+`hiddenimports=collect_submodules("qtrequestory.ui.pages")`. `tests/test_packaging.py`
+guards two halves of this, and it is worth being precise about which: it fails when a
+*new* dynamic importer appears in `src/` (any of `importlib.import_module(`,
+a bare `import_module(`, `__import__(`) that is not in `KNOWN_DYNAMIC_IMPORTERS`, and it
+fails when the spec stops *calling* `collect_submodules("qtrequestory.ui.pages")` or stops
+passing the result as `hiddenimports=PAGE_MODULES`. It does **not** derive the list of
+needed entries from the code, so a new dynamic importer still has to be wired into the
+spec by hand — the test only refuses to let it pass unnoticed.
+
+**Exclusions that worked** (each verified by running the built exe, GUI included):
+`tkinter`, `unittest`, `pydoc`, `doctest`; the Qt Python modules the app never imports
+(`QtQml`, `QtQuick*`, `QtDBus`, `QtOpenGL`, `QtOpenGLWidgets`, `QtDesigner`, `QtUiTools`,
+`QtHelp`, `QtTest`, `QtSql`, plus the Addons modules so a full `PySide6` wheel in the build
+venv cannot quietly fatten the exe). Two binaries are filtered out of `a.binaries`, where
+a module exclusion has no effect: `opengl32sw.dll` (19.7 MB — Qt's software GL renderer;
+the UI is QtWidgets on the raster engine) and any `libssl-3-*`/`libcrypto-3-*` that does
+not come from the Python installation (7.7 MB — PyInstaller's QtNetwork hook ships
+whatever OpenSSL it finds on the *build machine's* PATH, which also made the build
+non-reproducible; Python's own pair stays, `urllib` needs it for the real HTTPS downloads).
+
+**NOT excluded, on purpose:** `PySide6.QtNetwork` (the `QLocalServer` single-instance
+guard in `ui/app.py`) and `PySide6.QtSvg` (`Qt6Svg.dll` backs the `imageformats/qsvg.dll`
+plugin that renders every icon).
+
+Measured: 39.81 MB before the two binary filters, **30.18 MB** after. Qt DLLs shipped:
+`Qt6Core`, `Qt6Gui`, `Qt6Widgets`, `Qt6Network`, `Qt6Svg` — nothing else. Start-up is
+**~7.4 s cold, ~4.9 s warm** (`--version`): onefile unpacks the whole 27 MB payload into
+`%TEMP%` on *every* run, hourly scheduled `--sync` included, and the AV scans it. That is
+the price of one file to hand out; a onedir build would start in a fraction of the time.
+
+**If anyone ever reports a blank or black window**, the dropped `opengl32sw.dll` is the
+first suspect: a VDI/RDP session, a blacklisted GPU driver or `QT_OPENGL=software` in the
+environment makes Qt ask for the software GL renderer that is no longer in the bundle.
+Confirm by removing `"opengl32sw.dll"` from `DROP_BINARIES` in the spec and rebuilding
+(+19.7 MB uncompressed, ~9 MB on the exe) before looking anywhere else.
+
+The scheduled task must point at a copy in a stable folder
+(`%LOCALAPPDATA%\qtRequestory\bin\`), never at `dist\` — see `is_unstable_location`.
+
 ## Testing (pytest; fixtures are 100% synthetic — no real data ever)
 
 `tests/conftest.py` fixtures: `synthetic_body(fdi, key, request_date=None, ndocs=2, noise=True)`
