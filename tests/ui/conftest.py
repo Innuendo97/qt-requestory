@@ -40,3 +40,60 @@ def fake_core(tmp_path: Path) -> CoreServices:
 def app_paths(fake_core: CoreServices):
     """The ``AppPaths`` the fake core writes into (already created)."""
     return fake_core.paths
+
+
+@pytest.fixture(autouse=True)
+def isolated_qsettings(tmp_path: Path):
+    """Keep ``QSettings`` out of the developer's registry.
+
+    Window geometry, the last used environment and the last save folder are all
+    stored in ``QSettings("qtRequestory", "qtRequestory")``, which on Windows is
+    the real registry. Switching the default format to INI and pointing it at a
+    temp directory gives every test its own empty store, so tests neither see
+    each other's state nor leave anything behind.
+
+    Both settings are global and process-wide, so the previous values are put
+    back afterwards: a fixture that exists to stop state leaking must not leak.
+    ``QSettings`` has no getter for the configured path, so the original root is
+    read back from the file name a probe would use (``<root>/<org>/<app>.ini``).
+    """
+    from PySide6.QtCore import QSettings
+
+    ini = QSettings.Format.IniFormat
+    scopes = (QSettings.Scope.UserScope, QSettings.Scope.SystemScope)
+    previous_format = QSettings.defaultFormat()
+    previous_roots = {scope: _ini_root(ini, scope) for scope in scopes}
+
+    store = tmp_path / "settings"
+    store.mkdir(exist_ok=True)
+    QSettings.setDefaultFormat(ini)
+    for scope in scopes:
+        QSettings.setPath(ini, scope, str(store))
+    try:
+        yield store
+    finally:
+        QSettings.setDefaultFormat(previous_format)
+        for scope, root in previous_roots.items():
+            QSettings.setPath(ini, scope, root)
+
+
+def _ini_root(fmt, scope) -> str:
+    """The directory ``QSettings`` currently writes INI files into."""
+    from PySide6.QtCore import QSettings
+
+    probe = QSettings(fmt, scope, "qtrequestory-probe", "probe")
+    return str(Path(probe.fileName()).parent.parent)
+
+
+@pytest.fixture
+def runner(qapp):
+    """The shared ``JobRunner`` a page factory receives, stopped after the test.
+
+    Without the teardown a worker can outlive the test and touch objects pytest
+    has already torn down, which on Windows shows up as a hard crash.
+    """
+    from qtrequestory.ui.workers import JobRunner
+
+    job_runner = JobRunner()
+    yield job_runner
+    job_runner.shutdown(3000)
