@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette, QTextDocument
 from PySide6.QtWidgets import QPlainTextEdit
 
@@ -149,6 +150,17 @@ def test_refresh_colors_re_derives_the_palette_and_rehighlights(highlighter, qap
     after = color_of(document, '"documents"')
     assert after != before, "a dark window must not keep the light-theme hues"
     assert after.lightness() > 110, "keys must stay readable on a dark background"
+
+
+def test_a_light_dark_switch_refreshes_the_colors_by_itself(highlighter, qapp, app_palette):
+    """The pane never calls ``refresh_colors``: the highlighter listens itself."""
+    document = highlighter.document()
+    before = color_of(document, '"documents"')
+
+    qapp.setPalette(dark_palette())
+    qapp.styleHints().colorSchemeChanged.emit(Qt.ColorScheme.Dark)
+
+    assert color_of(document, '"documents"') != before
 
 
 def test_refresh_colors_without_a_document_does_not_crash(qapp):

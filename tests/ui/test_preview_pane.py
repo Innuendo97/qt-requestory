@@ -90,6 +90,7 @@ def test_the_actions_are_disabled_until_a_body_has_arrived(pane, hit):
     assert not pane.copy_button.isEnabled()
     pane.set_hit(hit)
     assert not pane.copy_button.isEnabled(), "still loading: nothing to copy yet"
+    assert pane.editor.placeholderText() == strings.PREVIEW_LOADING
 
 
 def test_the_actions_are_enabled_once_the_body_is_there(qtbot, pane, hit):
@@ -241,10 +242,13 @@ def test_open_folder_writes_the_body_and_opens_the_output_directory(
 
 
 def test_the_actions_do_nothing_without_a_body(pane, fake_core):
+    """No dialog, no file, no editor: the buttons are disabled, but the same
+    four methods are the page's context menu and can be reached with no hit."""
     pane.copy_body()
     pane.open_in_editor()
     pane.open_folder()
 
+    assert pane.save_as() is None, "the save dialog must not even open"
     assert fake_core.extract.opened == []
     assert fake_core.extract.folders == []
 
@@ -296,9 +300,17 @@ def test_a_body_that_cannot_be_read_reports_instead_of_showing_half_a_json(
 
 # --------------------------------------------------------------- keyboard ----
 
-def test_the_pane_binds_the_four_documented_shortcuts(pane):
+def test_the_pane_binds_the_documented_shortcuts(pane):
     bound = {shortcut.key().toString() for shortcut in pane.findChildren(QShortcut)}
     assert {"Ctrl+C", "Ctrl+S", "Ctrl+O", "Ctrl+Shift+O", "Ctrl+F"} <= bound
+
+
+def test_escape_closes_the_find_bar_and_only_the_find_bar(pane):
+    """Bound on the bar, not on the pane: Esc in the results table is the
+    Ricerca page's own (it clears the focused field)."""
+    escapes = [s for s in pane.find_bar.findChildren(QShortcut) if s.key().toString() == "Esc"]
+    assert len(escapes) == 1
+    assert escapes[0].parent() is pane.find_bar
 
 
 def test_ctrl_c_without_a_selection_copies_the_whole_body(qtbot, pane, hit):
