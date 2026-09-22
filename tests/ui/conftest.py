@@ -40,3 +40,37 @@ def fake_core(tmp_path: Path) -> CoreServices:
 def app_paths(fake_core: CoreServices):
     """The ``AppPaths`` the fake core writes into (already created)."""
     return fake_core.paths
+
+
+@pytest.fixture(autouse=True)
+def isolated_qsettings(tmp_path: Path):
+    """Keep ``QSettings`` out of the developer's registry.
+
+    Window geometry, the last used environment and the last save folder are all
+    stored in ``QSettings("qtRequestory", "qtRequestory")``, which on Windows is
+    the real registry. Switching the default format to INI and pointing it at a
+    temp directory gives every test its own empty store, so tests neither see
+    each other's state nor leave anything behind.
+    """
+    from PySide6.QtCore import QSettings
+
+    store = tmp_path / "settings"
+    store.mkdir(exist_ok=True)
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
+        QSettings.setPath(QSettings.Format.IniFormat, scope, str(store))
+    yield store
+
+
+@pytest.fixture
+def runner(qapp):
+    """The shared ``JobRunner`` a page factory receives, stopped after the test.
+
+    Without the teardown a worker can outlive the test and touch objects pytest
+    has already torn down, which on Windows shows up as a hard crash.
+    """
+    from qtrequestory.ui.workers import JobRunner
+
+    job_runner = JobRunner()
+    yield job_runner
+    job_runner.shutdown(3000)
