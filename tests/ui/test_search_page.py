@@ -23,6 +23,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget
 
 from qtrequestory.ui import strings
+from qtrequestory.ui.pages.search_form import CUSTOM_ID
 from qtrequestory.ui.pages.search_page import SearchPage
 from qtrequestory.ui.pages.search_paste import parse_pasted_entry
 from qtrequestory.ui.results_model import ResultsModel
@@ -183,6 +184,13 @@ def test_a_preset_sets_a_window_of_that_many_days_ending_today(page, days):
     assert (day_to - day_from).days + 1 == days
     assert page.form.window_days() == days
     assert not page.form.date_from.isVisible(), "the date editors belong to «Personalizzato»"
+
+
+def test_clicking_personalizzato_opens_on_the_window_that_was_showing(page):
+    page.form.set_preset(7)
+    page.form.period_group.button(CUSTOM_ID).click()
+    assert page.form.preset_days() is None
+    assert page.form.day_range() == (date.today() - timedelta(days=6), date.today())
 
 
 def test_personalizzato_reveals_the_two_date_editors(page):

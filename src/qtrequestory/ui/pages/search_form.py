@@ -111,6 +111,10 @@ class SearchForm(QWidget):
         self.date_to = QDateEdit()
         self.period_group = QButtonGroup(self)
         self.search_button = QPushButton(strings.SEARCH_BTN)
+        #: The preset the date editors are seeded from when the user switches
+        #: to "Personalizzato" — otherwise both would read today and the custom
+        #: window would start out one day wide.
+        self._last_preset = PRESETS[1][0]
         self._build()
         self._connect()
         self.set_preset(PRESETS[1][0])
@@ -259,6 +263,7 @@ class SearchForm(QWidget):
             self.set_custom_range(today - timedelta(days=max(days, 1) - 1), today)
             return
         button.setChecked(True)
+        self._last_preset = days
         self._show_dates(False)
 
     def preset_days(self) -> int | None:
@@ -329,7 +334,14 @@ class SearchForm(QWidget):
         self.set_template_key(key)
 
     def _on_preset_clicked(self, button_id: int) -> None:
-        self._show_dates(button_id == CUSTOM_ID)
+        if button_id != CUSTOM_ID:
+            self._last_preset = button_id
+            self._show_dates(False)
+            return
+        # Open "Personalizzato" on the window that was showing, so the user
+        # nudges one end of a real range instead of building it from scratch.
+        today = date.today()
+        self.set_custom_range(today - timedelta(days=self._last_preset - 1), today)
 
     def _show_dates(self, visible: bool) -> None:
         for widget in (self._from_label, self.date_from, self._to_label, self.date_to):
