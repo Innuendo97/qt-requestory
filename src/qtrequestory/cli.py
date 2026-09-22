@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.find:
         return _run_find(parser, args, config)
     if args.task:
-        return _run_task(args.task)
+        return _run_task(args.task, config)
     return _start_gui(paths)
 
 
@@ -277,13 +277,18 @@ def _print_others(others: list[SearchHit]) -> None:
 # ------------------------------------------------------------------- --task ---
 
 
-def scheduler_service() -> facade.SchedulerService:
-    """Built through a function so tests can substitute a fake ``schtasks``."""
-    return facade.SchedulerService()
+def scheduler_service(config: Config) -> facade.SchedulerService:
+    """Built through a function so tests can substitute a fake ``schtasks``.
+
+    ``config`` is the one ``main`` already loaded (``--config`` included), so
+    ``--task install`` registers the schedule the user saved in Impostazioni
+    instead of a second, hard-coded one.
+    """
+    return facade.SchedulerService(config_source=lambda: config)
 
 
-def _run_task(action: str) -> int:
-    service = scheduler_service()
+def _run_task(action: str, config: Config) -> int:
+    service = scheduler_service(config)
     if action == "status":
         return _print_task_status(service.status(), service.exe_path())
     try:

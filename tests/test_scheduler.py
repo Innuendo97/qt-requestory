@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from qtrequestory.core import scheduler
+from qtrequestory.core.config import ScheduleSettings
 from qtrequestory.core.scheduler import (
     LEGACY_TASK_NAME,
     TASK_NAME,
@@ -24,11 +25,13 @@ from qtrequestory.core.scheduler import (
     TaskSpec,
     TaskStatus,
     build_task_xml,
+    default_description,
     detect_legacy_task,
     is_unstable_location,
     register,
     remove_legacy_task,
     run_now,
+    spec_from_config,
     status,
     unregister,
 )
@@ -148,6 +151,19 @@ class TestBuildTaskXml:
         assert root.find(f"{{{NS}}}Triggers/{{{NS}}}LogonTrigger") is None
         assert root.find(f"{{{NS}}}Triggers/{{{NS}}}CalendarTrigger") is not None
 
+    def test_no_repetition_element_at_all_when_the_window_is_zero(self):
+        """``repeat_for_h = 0`` is "once a day", and Task Scheduler rejects a
+        ``Repetition`` with ``Duration=PT0H`` — the element must be absent."""
+        root = ET.fromstring(build_task_xml(_spec(repeat_for_h=0), USER, "d"))
+        trigger = _find(root, "Triggers/CalendarTrigger")
+        assert trigger.find(f"{{{NS}}}Repetition") is None
+        assert _text(trigger, "ScheduleByDay/DaysInterval") == "1"
+        assert _text(trigger, "StartBoundary").endswith("T09:00:00")
+
+    def test_the_repetition_element_is_there_as_soon_as_the_window_is_not(self):
+        root = ET.fromstring(build_task_xml(_spec(repeat_for_h=1), USER, "d"))
+        assert _text(root, "Triggers/CalendarTrigger/Repetition/Duration") == "PT1H"
+
     def test_special_characters_are_escaped(self):
         exe = Path(r"C:\Program Files\Tools & Co\<odd>\qtRequestory.exe")
         xml = build_task_xml(_spec(exe), USER, 'Desc with "quotes" & <tags>')
@@ -162,6 +178,75 @@ class TestBuildTaskXml:
         xml = build_task_xml(_spec(), USER, "d")
         assert xml.lstrip().startswith("<?xml")
         assert "UTF-16" in xml.split("?>", 1)[0].upper()
+
+
+# ------------------------------------------------------------ spec_from_config
+
+
+class TestSpecFromConfig:
+    """The schedule the user saved in Impostazioni is what gets registered."""
+
+    def test_every_field_of_the_block_reaches_the_spec(self):
+        exe = Path(r"C:\Tools\qtRequestory\qtRequestory.exe")
+        spec = spec_from_config(
+            ScheduleSettings(start_time="07:30", repeat_every_h=2, repeat_for_h=6,
+                             run_at_logon=False),
+            exe,
+        )
+        assert spec == TaskSpec(exe=exe, start_time=time(7, 30), repeat_every_h=2,
+                                repeat_for_h=6, run_at_logon=False)
+        assert spec.args == "--sync"
+
+    def test_the_defaults_reproduce_the_previously_hard_coded_task(self):
+        exe = Path(r"C:\Tools\qtRequestory\qtRequestory.exe")
+        assert spec_from_config(ScheduleSettings(), exe) == TaskSpec(exe=exe)
+
+    def test_a_hand_edited_start_time_falls_back_instead_of_raising(self):
+        """``validate`` reports it in the UI; here the task must still register:
+        refusing to schedule anything would silently stop the mirror."""
+        spec = spec_from_config(ScheduleSettings(start_time="mezzogiorno"), Path("q.exe"))
+        assert spec.start_time == TaskSpec(exe=Path("q.exe")).start_time
+
+    @pytest.mark.parametrize(
+        "stored, expected",
+        [
+            (ScheduleSettings(repeat_every_h=0), (1, 9)),      # PT0H: schtasks refuses the XML
+            (ScheduleSettings(repeat_every_h=99), (12, 9)),
+            (ScheduleSettings(repeat_every_h=-3), (1, 9)),
+            (ScheduleSettings(repeat_for_h=99), (1, 23)),
+            (ScheduleSettings(repeat_for_h=-1), (1, 0)),
+        ],
+    )
+    def test_hand_edited_counts_are_clamped_to_the_validated_range(self, stored, expected):
+        """Same story as the start time: the file can hold anything, and an
+        ``<Interval>PT0H</Interval>`` would make ``register`` raise instead of
+        scheduling a slightly different — but working — task."""
+        spec = spec_from_config(stored, Path("q.exe"))
+        assert (spec.repeat_every_h, spec.repeat_for_h) == expected
+
+    def test_a_clamped_schedule_still_produces_XML_schtasks_can_parse(self):
+        spec = spec_from_config(ScheduleSettings(repeat_every_h=0), Path("q.exe"))
+        root = ET.fromstring(build_task_xml(spec, USER, "d"))
+        assert _text(root, "Triggers/CalendarTrigger/Repetition/Interval") == "PT1H"
+
+    def test_the_xml_of_a_single_daily_run_has_no_repetition_and_no_logon(self):
+        schedule = ScheduleSettings(start_time="06:15", repeat_for_h=0, run_at_logon=False)
+        root = ET.fromstring(
+            build_task_xml(spec_from_config(schedule, Path("q.exe")), USER, "d",
+                           today=date(2026, 9, 22))
+        )
+        trigger = _find(root, "Triggers/CalendarTrigger")
+        assert _text(trigger, "StartBoundary") == "2026-09-22T06:15:00"
+        assert trigger.find(f"{{{NS}}}Repetition") is None
+        assert root.find(f"{{{NS}}}Triggers/{{{NS}}}LogonTrigger") is None
+
+    def test_the_description_does_not_promise_retries_it_will_not_make(self):
+        every_hour = default_description(spec_from_config(ScheduleSettings(), Path("q.exe")))
+        assert "09:00" in every_hour and "18:00" in every_hour
+        once = default_description(
+            spec_from_config(ScheduleSettings(repeat_for_h=0), Path("q.exe"))
+        )
+        assert "09:00" in once and "ritenta" not in once
 
 
 # -------------------------------------------------------------------- register

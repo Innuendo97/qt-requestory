@@ -53,7 +53,7 @@ from qtrequestory.ui.contracts import (
 from qtrequestory.ui.pages import progress_model as pm
 from qtrequestory.ui.pages import sync_format as fmt
 from qtrequestory.ui.pages.env_card import EnvCard
-from qtrequestory.ui.workers import Job, JobRunner
+from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
 
 __all__ = ["SyncPage", "SyncPresenter"]
 
@@ -276,7 +276,7 @@ class SyncPage(QWidget):
         return next((c for c in self._cards if c.env_name == env_name), None)
 
     def on_config_changed(self, cfg: Config | None = None) -> None:
-        """Impostazioni saved: the set of environments may have changed.
+        """Impostazioni saved: the environments — or the schedule — may have changed.
 
         The broadcast payload is only a notification: every service reads the
         configuration back through ``ConfigService.current``, so reloading is
@@ -285,6 +285,7 @@ class SyncPage(QWidget):
         self.rebuild_cards()
         self._rebuild_menu()
         self.presenter.emit_summary()
+        self.refresh_scheduler()  # the status line describes the saved schedule
 
     def retune(self) -> None:
         """Light/dark switched: the pills were coloured for the old palette."""
@@ -418,7 +419,9 @@ class SyncPage(QWidget):
         self._set_scheduler_busy(False)
         with QSignalBlocker(self.auto_check):  # a repaint is not a user decision
             self.auto_check.setChecked(task.registered)
-        self.auto_status.setText(fmt.format_task_status(task))
+        self.auto_status.setText(
+            fmt.format_task_status(task, self._services.config.load().schedule)
+        )
         mismatch = task.registered and not task.exe_matches
         self.exe_warning.setText(
             strings.SYNC_AUTO_EXE_MISMATCH.format(path=task.command) if mismatch else "")
@@ -436,9 +439,13 @@ class SyncPage(QWidget):
     def _run_scheduler(self, register: bool) -> None:
         """``schtasks`` is a subprocess call: never on the GUI thread."""
         scheduler = self._services.scheduler
-        job = self._runner.submit("scheduler",
+        job = self._runner.submit(SCHEDULER_JOB,
                                   scheduler.register if register else scheduler.unregister)
         if job is None:
+            # Refused (Impostazioni is re-registering) or the application is
+            # closing: nothing will run, so the checkbox must not keep showing
+            # the change the user just asked for.
+            self.refresh_scheduler()
             return
         self.scheduler_job = job
         self._set_scheduler_busy(True)

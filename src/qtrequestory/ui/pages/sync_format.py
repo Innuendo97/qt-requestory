@@ -28,8 +28,9 @@ from datetime import datetime
 
 from qtrequestory.core.events import LoggingSink  # see the module docstring
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import Event, TaskStatus
+from qtrequestory.ui.contracts import Event, ScheduleSettings, TaskStatus
 from qtrequestory.ui.pages.progress_model import PHASE_INDEX, ProgressSnapshot
+from qtrequestory.ui.pages.schedule_text import schedule_sentence
 
 __all__ = [
     "StripTexts", "format_eta", "format_rate", "format_size", "format_task_status",
@@ -162,11 +163,16 @@ def format_when(moment: datetime | None, *, now: datetime | None = None) -> str:
     return strings.SYNC_WHEN_OLDER.format(date=moment.strftime("%d/%m/%Y"), time=clock)
 
 
-def format_task_status(task: TaskStatus) -> str:
-    """The line under the auto-sync checkbox: active, next run, last outcome."""
+def format_task_status(task: TaskStatus, schedule: ScheduleSettings) -> str:
+    """The line under the auto-sync checkbox: active, schedule, next run, last outcome.
+
+    ``schedule`` is the saved configuration rather than anything read back from
+    the task: the same sentence is what Impostazioni shows, and describing a
+    schedule the user did not choose would be worse than saying nothing.
+    """
     if not task.registered:
         return strings.SYNC_AUTO_OFF
-    parts = [strings.SYNC_AUTO_ON]
+    parts = [strings.SYNC_AUTO_ON, schedule_sentence(schedule)]
     if task.next_run:
         parts.append(strings.SYNC_AUTO_NEXT.format(next=task.next_run))
     if task.last_run:

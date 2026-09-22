@@ -30,7 +30,16 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from qtrequestory import __version__
-from qtrequestory.core.config import Config, ConfigError, Environment, IndexSettings, SyncSettings
+from qtrequestory.core.config import (
+    Config,
+    ConfigError,
+    Environment,
+    IndexSettings,
+    ScheduleSettings,
+    SyncSettings,
+    parse_hhmm,
+    sanitised_schedule,
+)
 from qtrequestory.core.daily import EntryName, LocalDailyFile, parse_entry_name
 from qtrequestory.core.events import (
     CancelToken,
@@ -68,9 +77,11 @@ __all__ = [
     # re-exported core types
     "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "EntryName",
     "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "IndexPlan", "IndexSettings",
-    "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "SchedulerError",
-    "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec", "TaskStatus",
-    "parse_entry_name",
+    "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "ScheduleSettings",
+    "SchedulerError", "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec",
+    "TaskStatus",
+    # the core helpers the UI is allowed to call directly (pure functions, no I/O)
+    "parse_entry_name", "parse_hhmm", "sanitised_schedule",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",
@@ -335,7 +346,7 @@ class CoreServices:
         return cls(
             config=config,
             sync=facade.SyncService(config.current, paths=resolved),
-            scheduler=facade.SchedulerService(),
+            scheduler=facade.SchedulerService(config_source=config.current),
             index=facade.IndexService(config.current),
             extract=facade.ExtractService(config.current),
             paths=resolved,

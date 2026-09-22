@@ -39,6 +39,12 @@ SIDECAR_NAME = "environments.json"
 HIDDEN_DIR_NAME = ".qtrequestory"
 TIME_FORMAT = "%H:%M"
 
+#: Hours between two attempts of the scheduled task, and how long it keeps
+#: retrying. ``validate`` reports a value outside these; ``sanitised_schedule``
+#: clamps to them. 12 and 23 keep the retry window inside its own day.
+REPEAT_EVERY_RANGE = (1, 12)
+REPEAT_FOR_RANGE = (0, 23)
+
 T = TypeVar("T")
 
 
@@ -69,6 +75,27 @@ class IndexSettings:
     parse_json: bool = True
 
 
+@dataclass(frozen=True)
+class ScheduleSettings:
+    """When the Windows scheduled task runs (Impostazioni § Sincronizzazione automatica).
+
+    The defaults are not a taste decision: they are the schedule ``TaskSpec``
+    used to hard-code (09:00, hourly for 9 h, plus a logon trigger), so an
+    existing ``config.json`` — which has no ``schedule`` block at all — keeps
+    behaving exactly as before.
+
+    ``start_time`` stays a ``"HH:MM"`` *string* rather than a ``time``: the file
+    may have been hand-edited, and a value the user can see in Impostazioni must
+    be reported by ``validate`` instead of being silently swallowed while
+    parsing. ``repeat_for_h == 0`` means "no repetition": a single daily run.
+    """
+
+    start_time: str = "09:00"
+    repeat_every_h: int = 1
+    repeat_for_h: int = 9
+    run_at_logon: bool = True
+
+
 @dataclass
 class Config:
     schema_version: int
@@ -81,6 +108,7 @@ class Config:
     compaction_time: time
     sync: SyncSettings
     index: IndexSettings
+    schedule: ScheduleSettings
     log_level: str
 
     @property
@@ -125,6 +153,7 @@ def default_config() -> Config:
         compaction_time=time(18, 30),
         sync=SyncSettings(),
         index=IndexSettings(),
+        schedule=ScheduleSettings(),
         log_level="INFO",
     )
 
@@ -144,6 +173,7 @@ def _to_raw(cfg: Config) -> dict[str, Any]:
         "compaction_time": cfg.compaction_time.strftime(TIME_FORMAT),
         "sync": dataclasses.asdict(cfg.sync),
         "index": dataclasses.asdict(cfg.index),
+        "schedule": dataclasses.asdict(cfg.schedule),
         "log_level": cfg.log_level,
     }
 
@@ -162,6 +192,19 @@ def _optional_path(value: Any, key: str) -> Path | None:
         log.warning("config: valore non valido per %s (%r), atteso un percorso", key, value)
         return None
     return Path(value)
+
+
+def parse_hhmm(value: str) -> time | None:
+    """``"09:00"`` -> ``time(9, 0)``; ``None`` when it is not a wall clock time.
+
+    Public because three places must agree on what a valid ``start_time`` is:
+    ``validate`` (which reports it), the scheduler (which builds the trigger
+    from it) and the UI (which shows the resulting schedule in words).
+    """
+    try:
+        return datetime.strptime(str(value).strip(), TIME_FORMAT).time()
+    except ValueError:
+        return None
 
 
 def _parse_time(value: Any, fallback: time) -> time:
@@ -251,6 +294,7 @@ def _from_raw(raw: dict[str, Any]) -> Config:
         compaction_time=_parse_time(raw.get("compaction_time"), d.compaction_time),
         sync=_settings_from_raw(SyncSettings, raw.get("sync"), "sync"),
         index=_settings_from_raw(IndexSettings, raw.get("index"), "index"),
+        schedule=_settings_from_raw(ScheduleSettings, raw.get("schedule"), "schedule"),
         log_level=_coerce(raw.get("log_level"), d.log_level, "log_level"),
     )
 
@@ -384,7 +428,63 @@ def validate(cfg: Config) -> list[str]:
         errors.append(f"default_window_days deve essere tra 1 e 3650 (trovato {cfg.default_window_days})")
     if cfg.output_retention_hours < 1:
         errors.append(f"output_retention_hours deve essere almeno 1 (trovato {cfg.output_retention_hours})")
+    errors.extend(_schedule_errors(cfg.schedule))
     return errors
+
+
+def _schedule_errors(schedule: ScheduleSettings) -> list[str]:
+    """The bounds Task Scheduler and a sensible retry window impose.
+
+    ``repeat_every_h`` stops at 12 and ``repeat_for_h`` at 23 so that the window
+    can never overlap the next day's run; ``repeat_for_h = 0`` is the legitimate
+    "one run a day, no retries".
+    """
+    errors: list[str] = []
+    if parse_hhmm(schedule.start_time) is None:
+        errors.append(
+            f"schedule.start_time '{schedule.start_time}' non è un orario valido (atteso HH:MM)"
+        )
+    every_low, every_high = REPEAT_EVERY_RANGE
+    if not every_low <= schedule.repeat_every_h <= every_high:
+        errors.append(
+            f"schedule.repeat_every_h deve essere tra {every_low} e {every_high} "
+            f"(trovato {schedule.repeat_every_h})"
+        )
+    for_low, for_high = REPEAT_FOR_RANGE
+    if not for_low <= schedule.repeat_for_h <= for_high:
+        errors.append(
+            f"schedule.repeat_for_h deve essere tra {for_low} e {for_high} "
+            f"(trovato {schedule.repeat_for_h})"
+        )
+    return errors
+
+
+def sanitised_schedule(schedule: ScheduleSettings) -> ScheduleSettings:
+    """The schedule as the scheduled task will really run it.
+
+    ``validate`` *reports* a bad value; this *repairs* it, because the file can
+    be hand-edited and the task must still be registered — a mirror that stops
+    syncing loses days that cannot be recovered. The start time falls back to
+    the default (and is canonicalised, ``"7:30"`` -> ``"07:30"``) and the two
+    counts are clamped into range, which also keeps XML ``schtasks`` refuses
+    (``<Interval>PT0H</Interval>``) from ever being built.
+
+    One function, so that what gets registered and what the UI says about it
+    cannot diverge: ``scheduler.spec_from_config`` and the sentence the pages
+    show both start here.
+    """
+    start = parse_hhmm(schedule.start_time) or parse_hhmm(ScheduleSettings().start_time)
+    assert start is not None  # the dataclass default is always a valid HH:MM
+    return ScheduleSettings(
+        start_time=start.strftime(TIME_FORMAT),
+        repeat_every_h=_clamp(schedule.repeat_every_h, *REPEAT_EVERY_RANGE),
+        repeat_for_h=_clamp(schedule.repeat_for_h, *REPEAT_FOR_RANGE),
+        run_at_logon=schedule.run_at_logon,
+    )
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
 
 
 # ------------------------------------------------- environments sidecar ---

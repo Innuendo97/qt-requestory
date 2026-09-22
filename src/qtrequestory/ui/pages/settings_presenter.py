@@ -18,11 +18,21 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import Config, CoreServices, Environment
+from qtrequestory.ui.contracts import (
+    Config,
+    CoreServices,
+    Environment,
+    ScheduleSettings,
+    parse_hhmm,
+)
 
 __all__ = [
-    "FormValues", "SettingsPresenter", "check_reachable", "form_of", "normalised",
+    "FormValues", "SettingsPresenter", "canonical_schedule", "check_reachable", "form_of",
+    "normalised",
 ]
+
+#: How ``ScheduleSettings.start_time`` is spelled once it has been through a widget.
+TIME_FORMAT = "%H:%M"
 
 
 @dataclass(frozen=True)
@@ -39,6 +49,10 @@ class FormValues:
     editor_path: str = ""
     window_days: int = 30
     output_dir: str = ""
+    #: The four automatic-synchronisation fields, already in the core's own
+    #: shape: a frozen dataclass of scalars, so comparing two forms (dirty
+    #: tracking) and handing it to ``config.validate`` both work unchanged.
+    schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
 
 
 def normalised(text: str) -> str:
@@ -53,6 +67,22 @@ def normalised(text: str) -> str:
     return str(Path(text)) if text else ""
 
 
+def canonical_schedule(schedule: ScheduleSettings) -> ScheduleSettings:
+    """The schedule in the spelling the widgets produce.
+
+    Same idea as :func:`normalised` for paths: ``config.validate`` accepts
+    ``"7:30"`` and the task registers 07:30, but a ``QTimeEdit`` can only hand
+    back ``"07:30"``. Comparing the raw strings would call that an edit —
+    [Salva] lit on a form nobody touched. An unparsable value is left alone, so
+    it reads as the edit it will be (the field shows the default, and saving
+    repairs the file).
+    """
+    parsed = parse_hhmm(schedule.start_time)
+    if parsed is None:
+        return schedule
+    return dataclasses.replace(schedule, start_time=parsed.strftime(TIME_FORMAT))
+
+
 def form_of(cfg: Config) -> FormValues:
     """The form a configuration loads into."""
     return FormValues(
@@ -61,6 +91,7 @@ def form_of(cfg: Config) -> FormValues:
         editor_path=str(cfg.editor_path) if cfg.editor_path is not None else "",
         window_days=cfg.default_window_days,
         output_dir=str(cfg.output_dir) if cfg.output_dir is not None else "",
+        schedule=canonical_schedule(cfg.schedule),
     )
 
 
@@ -108,6 +139,7 @@ class SettingsPresenter(QObject):
             editor_path=_optional_path(form.editor_path),
             default_window_days=form.window_days,
             output_dir=_optional_path(form.output_dir),
+            schedule=form.schedule,
         )
 
     def is_dirty(self, form: FormValues) -> bool:

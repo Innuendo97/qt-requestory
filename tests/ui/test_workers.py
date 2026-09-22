@@ -141,6 +141,28 @@ def test_a_second_sync_submit_is_refused_while_the_first_runs(qtbot, runner):
     assert runner.submit("sync", lambda: None) is not None
 
 
+def test_a_second_schtasks_call_is_refused_rather_than_superseding_the_first(qtbot, runner):
+    """``schtasks`` ignores the cancel token, so a superseded call still runs:
+    the two would land in either order and the task could end up in the state
+    of the *first* one. Both pages that drive it use ``SCHEDULER_JOB``."""
+    from qtrequestory.ui.workers import SCHEDULER_JOB
+
+    assert SCHEDULER_JOB in JobRunner.EXCLUSIVE
+    gate = threading.Event()
+    refused: list[str] = []
+    runner.busy.connect(refused.append)
+
+    job = runner.submit(SCHEDULER_JOB, lambda: gate.wait(3.0))
+
+    assert runner.submit(SCHEDULER_JOB, lambda: None) is None
+    assert refused == [SCHEDULER_JOB]
+
+    gate.set()
+    with qtbot.waitSignal(job.signals.finished, timeout=3000):
+        pass
+    assert runner.submit(SCHEDULER_JOB, lambda: None) is not None
+
+
 def test_a_second_search_supersedes_the_first_and_its_result_is_dropped(qtbot, runner):
     gate = threading.Event()
     running = threading.Event()

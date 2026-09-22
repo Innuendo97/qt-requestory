@@ -467,6 +467,47 @@ def test_the_legacy_notice_stops_promising_a_replacement_without_autosync(
     assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
 
 
+def test_the_automation_note_describes_the_schedule_that_would_be_registered(
+    qtbot, fake_core, runner
+):
+    """``wizard.py`` registers whatever ``config.json`` holds, so offering a
+    09:00 task to someone who moved the start to 07:30 — which is what
+    "Riesegui configurazione iniziale" used to do — is a promise it breaks."""
+    from qtrequestory.ui.contracts import ScheduleSettings
+
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.load(),
+        schedule=ScheduleSettings(start_time="07:30", repeat_every_h=2, repeat_for_h=6,
+                                  run_at_logon=False),
+    )
+    widget = FirstRunWizard(fake_core, runner)
+    qtbot.addWidget(widget)
+    page = widget.automation_page
+    page.initializePage()
+
+    note = page.autosync_note.text()
+    assert "Ogni giorno alle 07:30, riprova ogni 2 ore fino alle 13:30." in note
+    assert "09:00" not in note and "18:00" not in note
+    assert "09:00" not in page.autosync_check.text()
+
+
+def test_the_automation_note_follows_a_schedule_saved_after_the_page_was_built(
+    qtbot, fake_core, runner
+):
+    from qtrequestory.ui.contracts import ScheduleSettings
+
+    widget = FirstRunWizard(fake_core, runner)
+    qtbot.addWidget(widget)
+    page = widget.automation_page
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.load(), schedule=ScheduleSettings(start_time="06:00", repeat_for_h=0)
+    )
+
+    page.initializePage()
+
+    assert "Ogni giorno alle 06:00, e al login." in page.autosync_note.text()
+
+
 def test_no_legacy_task_means_no_notice_whatever_the_checkbox_says(wizard, fake_core):
     page = wizard.automation_page
     page.initializePage()

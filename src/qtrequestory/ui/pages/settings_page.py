@@ -17,9 +17,10 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTime, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -27,13 +28,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.contracts import CoreServices, ScheduleSettings, parse_hhmm
 from qtrequestory.ui.env_table import EnvTable
+from qtrequestory.ui.pages.schedule_text import schedule_sentence
 from qtrequestory.ui.pages.settings_presenter import (
     FormValues,
     SettingsPresenter,
@@ -41,13 +45,17 @@ from qtrequestory.ui.pages.settings_presenter import (
     form_of,
     normalised,
 )
-from qtrequestory.ui.workers import JobRunner
+from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
 
 #: The three "Periodo predefinito" buttons (DESIGN-ui §Impostazioni page).
 WINDOW_CHOICES = (7, 30, 90)
 #: Exclusive job name: an index run refuses a second one while it works.
 INDEX_JOB = "index"
 CHECK_JOB = "check-envs"
+#: What ``QTimeEdit`` shows and what ``ScheduleSettings.start_time`` stores.
+TIME_FORMAT = "HH:mm"
+#: Shown when the stored start time cannot be parsed at all (hand-edited file).
+DEFAULT_START = parse_hhmm(ScheduleSettings().start_time)
 
 
 class SettingsPage(QWidget):
@@ -69,6 +77,9 @@ class SettingsPage(QWidget):
         self._presenter = SettingsPresenter(services, self)
         self._presenter.config_changed.connect(self.config_changed.emit)
         self._window_days = WINDOW_CHOICES[1]
+        #: The re-registration a save may start; kept so a test — and one day a
+        #: busy indicator — can tell whether schtasks was actually driven.
+        self.scheduler_job: Job | None = None
         self._build()
         self.reload()
 
@@ -122,6 +133,17 @@ class SettingsPage(QWidget):
         self.output_edit.setPlaceholderText(strings.SETTINGS_OUTPUT_HINT)
 
         layout.addWidget(_separator())
+        layout.addWidget(QLabel(strings.SETTINGS_SCHEDULE_LABEL))
+        layout.addLayout(self._schedule_row())
+        layout.addWidget(self.schedule_logon)
+        self.schedule_hint = QLabel(strings.SETTINGS_SCHEDULE_LOGON_HINT)
+        self.schedule_hint.setWordWrap(True)
+        layout.addWidget(self.schedule_hint)
+        self.schedule_summary = QLabel()
+        self.schedule_summary.setWordWrap(True)
+        layout.addWidget(self.schedule_summary)
+
+        layout.addWidget(_separator())
         layout.addWidget(QLabel(strings.SETTINGS_ADVANCED_LABEL))
         self.rebuild_button = _button(strings.SETTINGS_BTN_REBUILD, self._rebuild_index)
         self.wizard_button = _button(strings.SETTINGS_BTN_RERUN_WIZARD, self._rerun_wizard)
@@ -149,6 +171,32 @@ class SettingsPage(QWidget):
         layout.addLayout(_row(edit, *buttons))
         return edit
 
+    def _schedule_row(self) -> QHBoxLayout:
+        """Ora di avvio · Riprova ogni N ore · per N ore, plus the logon box.
+
+        The widgets, not the validation, are what stops an impossible schedule:
+        the ranges here are the ones ``config.validate`` enforces, so the form
+        can never even offer a value the core would refuse.
+        """
+        self.schedule_start = QTimeEdit()
+        self.schedule_start.setDisplayFormat(TIME_FORMAT)
+        self.schedule_start.timeChanged.connect(self._on_edited)
+
+        self.schedule_every = _hours_spin(1, 12)
+        self.schedule_for = _hours_spin(0, 23, special=strings.SETTINGS_SCHEDULE_NO_REPEAT)
+        for spin in (self.schedule_every, self.schedule_for):
+            spin.valueChanged.connect(self._on_edited)
+
+        self.schedule_logon = QCheckBox(strings.SETTINGS_SCHEDULE_LOGON)
+        self.schedule_logon.toggled.connect(self._on_edited)
+
+        return _row(
+            QLabel(strings.SETTINGS_SCHEDULE_START), self.schedule_start,
+            QLabel(strings.SETTINGS_SCHEDULE_EVERY), self.schedule_every,
+            QLabel(strings.SETTINGS_SCHEDULE_FOR), self.schedule_for,
+            stretch_at_end=True,
+        )
+
     def _window_row(self) -> QHBoxLayout:
         self.window_buttons: dict[int, QPushButton] = {}
         group = QButtonGroup(self)
@@ -173,6 +221,16 @@ class SettingsPage(QWidget):
             editor_path=normalised(self.editor_edit.text()),
             window_days=self._window_days,
             output_dir=normalised(self.output_edit.text()),
+            schedule=self.schedule_values(),
+        )
+
+    def schedule_values(self) -> ScheduleSettings:
+        """The four automatic-synchronisation widgets as the core's own block."""
+        return ScheduleSettings(
+            start_time=self.schedule_start.time().toString(TIME_FORMAT),
+            repeat_every_h=self.schedule_every.value(),
+            repeat_for_h=self.schedule_for.value(),
+            run_at_logon=self.schedule_logon.isChecked(),
         )
 
     def is_dirty(self) -> bool:
@@ -196,6 +254,7 @@ class SettingsPage(QWidget):
         self.env_table.set_environments(form.environments)
         self.editor_edit.setText(form.editor_path)
         self.output_edit.setText(form.output_dir)
+        self.set_schedule(form.schedule)
         self.set_window_days(form.window_days)
         self.config_path_label.setText(
             strings.SETTINGS_CONFIG_PATH.format(path=self._services.config.config_path())
@@ -203,7 +262,28 @@ class SettingsPage(QWidget):
         self._show_errors([])
         self._on_edited()
 
+    def set_schedule(self, schedule: ScheduleSettings) -> None:
+        """Load the four fields; an unparsable stored time shows the default.
+
+        The time goes through ``parse_hhmm`` — the core's own parser — and NOT
+        through ``QTime.fromString``, which is stricter: it rejects ``"7:30"``
+        while ``config.validate`` accepts it and the task registers 07:30. The
+        form would then show 09:00, disagree with the Sincronizzazione line, be
+        dirty without a single edit, and rewrite the user's hour on the next
+        save. One parser, one answer.
+        """
+        start = parse_hhmm(schedule.start_time) or DEFAULT_START
+        self.schedule_start.setTime(QTime(start.hour, start.minute))
+        self.schedule_every.setValue(schedule.repeat_every_h)
+        self.schedule_for.setValue(schedule.repeat_for_h)
+        self.schedule_logon.setChecked(schedule.run_at_logon)
+
     def _on_edited(self) -> None:
+        self.schedule_summary.setText(
+            strings.SETTINGS_SCHEDULE_SUMMARY.format(
+                schedule=schedule_sentence(self.schedule_values())
+            )
+        )
         self.save_button.setEnabled(self.is_dirty())
 
     # -- saving ------------------------------------------------------------
@@ -217,8 +297,34 @@ class SettingsPage(QWidget):
             return
         self.reload()  # the saved configuration, normalised, is the new baseline
         self._status(strings.SETTINGS_SAVED)
+        self._update_scheduled_task()
         if moved:
             self._offer_reindex()
+
+    def _update_scheduled_task(self) -> None:
+        """Re-register an existing task so it runs on the schedule just saved.
+
+        Saving a schedule that never reaches Task Scheduler is the one failure
+        the user could not see: the form would show 07:30 while the task kept
+        09:00. A task that is not registered is left alone — ticking the box on
+        the Sincronizzazione page is what creates it, and it will read the
+        saved values when it does.
+
+        ``schtasks`` is a subprocess call, so it goes through the runner, and a
+        failure is a status line: a modal over a save that *did* succeed would
+        say the wrong thing.
+        """
+        if not self._services.scheduler.status().registered:
+            return
+        job = self._runner.submit(SCHEDULER_JOB, self._services.scheduler.register)
+        if job is None:  # closing, or the Sincronizzazione page is driving schtasks
+            return
+        self.scheduler_job = job
+        job.signals.error.connect(
+            lambda _kind, message: self._status(
+                strings.SETTINGS_SCHEDULE_UPDATE_FAILED.format(message=message)
+            )
+        )
 
     def _show_errors(self, errors: Sequence[str]) -> None:
         if not errors:
@@ -367,6 +473,26 @@ def _button(text: str, slot: Callable[[], object]) -> QPushButton:
     button = QPushButton(text)
     button.clicked.connect(lambda _checked=False: slot())
     return button
+
+
+def _hours_spin(minimum: int, maximum: int, *, special: str | None = None) -> QSpinBox:
+    """A whole-hours box whose suffix follows the number ("1 ora", "2 ore").
+
+    ``special`` is shown instead of the minimum value, which is how the retry
+    window says "nessuna ripetizione" rather than a bare 0.
+    """
+    spin = QSpinBox()
+    spin.setRange(minimum, maximum)
+    if special is not None:
+        spin.setSpecialValueText(special)
+
+    def follow(value: int) -> None:
+        spin.setSuffix(strings.SETTINGS_SCHEDULE_HOUR_ONE if value == 1
+                       else strings.SETTINGS_SCHEDULE_HOURS)
+
+    spin.valueChanged.connect(follow)
+    follow(spin.value())
+    return spin
 
 
 def _row(*widgets: QWidget, stretch_at_end: bool = False,

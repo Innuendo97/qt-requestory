@@ -282,20 +282,21 @@ def test_the_formatter_does_not_write_into_the_application_log(caplog):
 
 # ------------------------------------------------------------ task status ---
 
-def test_the_task_status_line_says_active_next_and_last():
-    from qtrequestory.ui.contracts import TaskStatus
+def test_the_task_status_line_says_active_schedule_next_and_last():
+    from qtrequestory.ui.contracts import ScheduleSettings, TaskStatus
 
     task = TaskStatus(registered=True, command=Path("q.exe"), args="--sync", exe_matches=True,
                       state="Pronto", next_run="domani 09:00", last_run="oggi 11:24", last_result=0)
-    line = fmt.format_task_status(task)
+    line = fmt.format_task_status(task, ScheduleSettings())
     assert strings.SYNC_AUTO_ON in line
+    assert "Ogni giorno alle 09:00" in line  # the schedule, in words
     assert "domani 09:00" in line and "oggi 11:24" in line and "0" in line
 
 
 def test_an_unregistered_task_says_only_that():
-    from qtrequestory.ui.contracts import NOT_REGISTERED
+    from qtrequestory.ui.contracts import NOT_REGISTERED, ScheduleSettings
 
-    assert fmt.format_task_status(NOT_REGISTERED) == strings.SYNC_AUTO_OFF
+    assert fmt.format_task_status(NOT_REGISTERED, ScheduleSettings()) == strings.SYNC_AUTO_OFF
 
 
 # ------------------------------------------------------------- strip texts ---

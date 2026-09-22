@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import Config, CoreServices, Environment
 from qtrequestory.ui.env_table import EnvTable
+from qtrequestory.ui.pages.schedule_text import schedule_sentence
 from qtrequestory.ui.workers import Job, JobRunner
 
 __all__ = ["AutomationPage", "EnvironmentsPage", "LogFolderPage"]
@@ -378,12 +379,15 @@ class AutomationPage(QWizardPage):
 
         self.autosync_check = QCheckBox(strings.WIZARD_P3_AUTOSYNC)
         self.autosync_check.setChecked(True)
+        self.autosync_note = _muted()
+        self.autosync_note.setWordWrap(True)
         self.legacy_label = _muted()
         self.legacy_label.setVisible(False)
         # The legacy task is removed only when ours replaces it, so the notice
         # follows the checkbox: "verrà sostituito" would otherwise be a promise
         # the wizard does not keep.
         self.autosync_check.toggled.connect(self._refresh_legacy_notice)
+        self.refresh_schedule_note()
         self.editor_edit = QLineEdit()
         self.editor_hint = _muted()
         self.start_sync_check = QCheckBox(strings.WIZARD_P3_START_SYNC)
@@ -398,7 +402,7 @@ class AutomationPage(QWizardPage):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.autosync_check)
-        layout.addWidget(_muted(strings.WIZARD_P3_AUTOSYNC_NOTE))
+        layout.addWidget(self.autosync_note)
         layout.addWidget(self.legacy_label)
         layout.addSpacing(12)
         layout.addLayout(editor_row)
@@ -410,11 +414,26 @@ class AutomationPage(QWizardPage):
     def initializePage(self) -> None:
         self._legacy = self._services.scheduler.detect_legacy_task()
         self._refresh_legacy_notice()
+        self.refresh_schedule_note()
         if not self.editor_edit.text():
             detected = self._services.config.detect_editor()
             self.editor_edit.setText(str(detected) if detected is not None else "")
         self.editor_hint.setText(
             "" if self.editor_edit.text() else strings.WIZARD_P3_EDITOR_NOT_FOUND
+        )
+
+    def refresh_schedule_note(self) -> None:
+        """Say which schedule the checkbox would actually register.
+
+        ``wizard.py`` registers whatever ``config.json`` holds, and Impostazioni
+        can have changed it long ago — "Riesegui configurazione iniziale" must
+        not offer a 09:00 task to someone who moved the start to 07:30. Same
+        sentence as Impostazioni and the Sincronizzazione page.
+        """
+        self.autosync_note.setText(
+            strings.WIZARD_P3_AUTOSYNC_NOTE.format(
+                schedule=schedule_sentence(self._services.config.load().schedule)
+            )
         )
 
     # -- the answers --------------------------------------------------------

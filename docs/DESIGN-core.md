@@ -109,12 +109,18 @@ class LoggingSink: __init__(logger); __call__(ev)      # headless: formats every
   "compaction_time": "18:30",
   "sync": {"index_timeout_s": 15, "download_timeout_s": 60, "chunk_size": 1048576, "retries": 1},
   "index": {"parse_json": true},
+  "schedule": {"start_time": "09:00", "repeat_every_h": 1, "repeat_for_h": 9, "run_at_logon": true},
   "log_level": "INFO"
 }
 ```
 ```python
 @dataclass(frozen=True) class Environment: name: str; url: str; enabled: bool = True
 @dataclass class SyncSettings / IndexSettings
+@dataclass(frozen=True) class ScheduleSettings   # the scheduled task, edited in Impostazioni;
+                                                 # defaults = the previously hard-coded TaskSpec
+def parse_hhmm(value) -> time | None             # shared by validate, scheduler and the UI wording
+def sanitised_schedule(s) -> ScheduleSettings    # what the task will really run: bad time -> default,
+                                                 # counts clamped; used by spec_from_config AND the UI sentence
 @dataclass class Config: (fields above; paths as Path; compaction_time as datetime.time)
     index_path / state_path / lock_path / resolved_output_dir  (properties)
     def env(self, name) -> Environment
@@ -123,7 +129,8 @@ def default_config() -> Config                        # environments = []  (NO h
 def load_config(path) -> Config      # missing -> defaults, file NOT created (a cancelled first-run wizard must stay a first run);
                                      # corrupt -> renamed .broken-<ts> + defaults written back; unknown keys ignored; missing keys defaulted
 def save_config(cfg, path)           # tmp + os.replace
-def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650
+def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650;
+                                     # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23
 def import_environments_file(path) -> list[Environment]   # JSON list [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
 def find_sidecar_environments(exe_dir) -> Path | None     # environments.json next to the exe
 def detect_editor() -> Path | None   # Notepad++ in ProgramFiles / ProgramFiles(x86) / PATH
@@ -297,6 +304,8 @@ Two differences from the legacy `nginx/find-call.py`, for the user-facing README
 ```python
 TASK_NAME = "qtRequestory Sync"; LEGACY_TASK_NAME = "NginxLogSync"
 @dataclass(frozen=True) class TaskSpec: exe: Path; args: str = "--sync"; start_time: time = time(9,0); repeat_every_h=1; repeat_for_h=9; run_at_logon=True; exec_limit_h=3
+def spec_from_config(schedule: ScheduleSettings, exe) -> TaskSpec   # the saved schedule (through
+                                                                    # config.sanitised_schedule) is what gets registered
 @dataclass(frozen=True) class TaskStatus: registered; command: Path|None; args; exe_matches: bool; state; next_run; last_run; last_result: int|None
 def build_task_xml(spec, user_id, description) -> str
 def register(spec, runner=run_schtasks) ; def unregister(runner) ; def status(current_exe, runner) -> TaskStatus
@@ -305,7 +314,8 @@ def current_exe_for_task() -> Path | None        # sys.executable when frozen; e
 def is_unstable_location(exe: Path) -> str | None   # %TEMP%, Downloads, network/OneDrive -> reason
 ```
 `schtasks /Create /TN "<name>" /XML <utf-16 file> /F`; XML: `CalendarTrigger` (today 09:00,
-`ScheduleByDay DaysInterval=1`, `Repetition Interval=PT1H Duration=PT9H`), `LogonTrigger`,
+`ScheduleByDay DaysInterval=1`, `Repetition Interval=PT1H Duration=PT9H` — omitted entirely when
+`repeat_for_h == 0`, i.e. a single daily run), `LogonTrigger` (only when `run_at_logon`),
 `Principal LogonType=InteractiveToken RunLevel=LeastPrivilege`, `Settings`:
 `MultipleInstancesPolicy=IgnoreNew`, `DisallowStartIfOnBatteries=false`,
 `StopIfGoingOnBatteries=false`, `StartWhenAvailable=true`, `ExecutionTimeLimit=PT3H`,

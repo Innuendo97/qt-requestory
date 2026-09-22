@@ -43,8 +43,11 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
    environments.json oppure inserisci nome e URL". [Verifica raggiungibilità] optional,
    never blocking: "Gli ambienti sono raggiungibili solo da rete aziendale o VPN Cisco: se
    ora non lo sono, va bene lo stesso."
-3. **Automazione** — [x] Sincronizza automaticamente ogni giorno alle 09:00 (riprova ogni ora
-   fino alle 18:00 e al logon; solo se la rete è raggiungibile; nessuna password salvata).
+3. **Automazione** — [x] Sincronizza automaticamente i log, with the schedule that would be
+   registered spelled out underneath by `schedule_text.schedule_sentence` from the saved
+   `schedule` block ("Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login.
+   Solo se la rete è raggiungibile; nessuna password salvata.") — never a second copy of the
+   hours, because Impostazioni can have changed them.
    If `detect_legacy_task()`: "(!) È presente il vecchio task NginxLogSync basato su
    PowerShell: verrà sostituito." Notepad++ path (detected, [Sfoglia…]). [x] Avvia la prima
    sincronizzazione al termine.
@@ -79,7 +82,8 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
   "file i di N · MB/total · rate · ETA" (total from `RemoteIndexRead.bytes_to_download`);
   indexing phase shown in the same strip.
 - Auto-sync checkbox → `scheduler.register/unregister` in a worker; status line from
-  `scheduler.status`; if `exe_matches` is False: "Il task punta a un eseguibile diverso
+  `scheduler.status` plus the configured schedule in words (`schedule_text.schedule_sentence`,
+  the same sentence Impostazioni shows); if `exe_matches` is False: "Il task punta a un eseguibile diverso
   (<path>). [Aggiorna]". If `is_unstable_location(exe)`: warn before registering.
 - If the lock is held by the scheduled run: button disabled, "Sincronizzazione in corso dal
   task pianificato…", poll every 2 s.
@@ -134,7 +138,11 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 Cartella dei log locali [Sfoglia…][Apri] (change → "Vuoi indicizzare i log presenti nella
 nuova cartella ora?") · Ambienti table (abilitato/nome/URL, Aggiungi/Rimuovi/Verifica/Importa
 da file…) · Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
-temporanei · Avanzate: [Ricostruisci indice] [Riesegui configurazione iniziale] · Config path
+temporanei · Sincronizzazione automatica: Ora di avvio (`QTimeEdit`), Riprova ogni (1–12 h),
+per (0–23 h, 0 = nessuna ripetizione), [x] Esegui anche al login, plus the live summary
+sentence of `ui/pages/schedule_text.py` (shared with the Sincronizzazione status line); a save
+re-registers the task when one is registered · Avanzate: [Ricostruisci indice] [Riesegui
+configurazione iniziale] · Config path
 [Apri cartella]. [Annulla] [Salva] (Salva enabled only when dirty; inline validation via
 `config.validate`). Emits `config_changed` consumed by Sync/Search.
 
@@ -150,7 +158,7 @@ class CancelToken (core)                       # passed to core calls
 class WorkerSignals(QObject): started, progress(object), log(str), result(object), error(str, str), finished, cancelled
 class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions -> error
 class JobRunner(QObject): QThreadPool(maxThreadCount=3); submit(name, fn, ...) -> Job
-    # named singleton jobs: "sync" refused if running; "search"/"preview" supersede (older results dropped by request id)
+    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel token); "search"/"preview" supersede (older results dropped by request id)
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> queued signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.

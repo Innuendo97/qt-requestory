@@ -60,7 +60,7 @@ from qtrequestory.core.index.search import (
 from qtrequestory.core.jobs import JobReport, run_index_job, run_sync_job
 from qtrequestory.core.lock import ProcessLock
 from qtrequestory.core.paths import AppPaths, app_paths, executable_dir
-from qtrequestory.core.scheduler import CommandRunner, SchedulerError, TaskSpec, TaskStatus
+from qtrequestory.core.scheduler import CommandRunner, SchedulerError, TaskStatus
 from qtrequestory.core.state import SyncState
 
 #: How a configuration is obtained. ``ConfigService.current`` is the real one.
@@ -294,11 +294,15 @@ class SchedulerService:
         *,
         runner: CommandRunner = scheduler.run_schtasks,
         exe_provider: Callable[[], Path | None] = scheduler.current_exe_for_task,
-        spec_factory: Callable[[Path], TaskSpec] = TaskSpec,
+        config_source: ConfigSource = config_mod.default_config,
     ) -> None:
         self._runner = runner
         self._exe_provider = exe_provider
-        self._spec_factory = spec_factory
+        #: Read at every ``register``, never cached: Impostazioni can change the
+        #: schedule and immediately re-register through this same object.
+        #: The default is the standalone one (no config file in sight), and it
+        #: is exactly what ``config.json`` would say if it had no schedule block.
+        self._config_source = config_source
 
     def status(self) -> TaskStatus:
         """``scheduler.status`` with the schtasks placeholders normalised to None.
@@ -326,7 +330,8 @@ class SchedulerService:
                 "la sincronizzazione automatica richiede l'eseguibile installato: "
                 "avviato dai sorgenti non c'è nulla da pianificare"
             )
-        scheduler.register(self._spec_factory(exe), runner=self._runner)
+        spec = scheduler.spec_from_config(self._config_source().schedule, exe)
+        scheduler.register(spec, runner=self._runner)
 
     def unregister(self) -> None:
         scheduler.unregister(runner=self._runner)

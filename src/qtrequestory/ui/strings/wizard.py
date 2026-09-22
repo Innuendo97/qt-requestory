@@ -68,10 +68,12 @@ WIZARD_P2_NO_ENVIRONMENTS = (
 
 WIZARD_P3_TITLE = "Automazione"
 WIZARD_P3_SUBTITLE = "Come tenere aggiornata la copia locale senza pensarci."
-WIZARD_P3_AUTOSYNC = "Sincronizza automaticamente ogni giorno alle 09:00"
+WIZARD_P3_AUTOSYNC = "Sincronizza automaticamente i log"
+#: {schedule} = the sentence of ``ui/pages/schedule_text.py``, built from the
+#: saved configuration — the wizard registers exactly that schedule, so the
+#: hours must not be written here a third time.
 WIZARD_P3_AUTOSYNC_NOTE = (
-    "Riprova ogni ora fino alle 18:00 e al logon; solo se la rete è raggiungibile; "
-    "nessuna password salvata."
+    "{schedule}. Solo se la rete è raggiungibile; nessuna password salvata."
 )
 WIZARD_P3_LEGACY_TASK = (
     "È presente il vecchio task NginxLogSync basato su PowerShell: verrà sostituito."

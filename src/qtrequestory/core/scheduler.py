@@ -32,6 +32,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Callable
 
+from qtrequestory.core.config import ScheduleSettings, parse_hhmm, sanitised_schedule
 from qtrequestory.core.paths import executable_path
 
 TASK_NAME = "qtRequestory Sync"
@@ -48,17 +49,46 @@ class SchedulerError(Exception):
     """schtasks failed; the message carries its (localised) output."""
 
 
+#: The legacy task's start time; also what ``config.sanitised_schedule`` falls
+#: back to when the stored one cannot be parsed.
+DEFAULT_START_TIME = time(9, 0)
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     """What to register. Defaults reproduce the legacy task: 09:00 daily, hourly for 9 h (until 18:00)."""
 
     exe: Path
     args: str = "--sync"
-    start_time: time = time(9, 0)
+    start_time: time = DEFAULT_START_TIME
     repeat_every_h: int = 1
+    #: ``0`` = no repetition at all: one run a day (no ``Repetition`` element).
     repeat_for_h: int = 9
     run_at_logon: bool = True
     exec_limit_h: int = 3
+
+
+def spec_from_config(schedule: ScheduleSettings, exe: Path) -> TaskSpec:
+    """The task to register for the schedule saved in ``config.json``.
+
+    The one place that turns the four stored values into a ``TaskSpec``, so the
+    scheduled task and what Impostazioni shows can never describe different
+    things.
+
+    No value is trusted: ``config.sanitised_schedule`` repairs a hand-edited
+    file first (bad time -> the default, counts clamped into range), because
+    ``config.validate`` only *reports* those and a task that refuses to register
+    would cost whole days of logs. The UI builds its sentence from the same
+    function, so what runs and what is shown cannot differ.
+    """
+    runnable = sanitised_schedule(schedule)
+    return TaskSpec(
+        exe=exe,
+        start_time=parse_hhmm(runnable.start_time) or DEFAULT_START_TIME,
+        repeat_every_h=runnable.repeat_every_h,
+        repeat_for_h=runnable.repeat_for_h,
+        run_at_logon=runnable.run_at_logon,
+    )
 
 
 @dataclass(frozen=True)
@@ -108,10 +138,19 @@ def _check(result: subprocess.CompletedProcess, what: str) -> None:
 
 
 def default_description(spec: TaskSpec) -> str:
+    """What the Task Scheduler console shows about this task.
+
+    Deliberately NOT the sentence Impostazioni shows: this one lives in the
+    Windows console, is written once at registration time and must stay in the
+    core (the UI wording is in ``ui/strings``).
+    """
+    start = spec.start_time.strftime("%H:%M")
+    preamble = "qtRequestory: scarica i log giornalieri delle richieste nginx nel mirror locale. "
+    if spec.repeat_for_h <= 0:
+        return preamble + f"Ogni giorno alle {start}."
     end_h = (spec.start_time.hour + spec.repeat_for_h) % 24
     return (
-        "qtRequestory: scarica i log giornalieri delle richieste nginx nel mirror locale. "
-        f"Ogni giorno dalle {spec.start_time.strftime('%H:%M')}, "
+        preamble + f"Ogni giorno dalle {start}, "
         f"ritenta ogni {spec.repeat_every_h} h fino alle {end_h:02d}:{spec.start_time.minute:02d}."
     )
 
@@ -133,10 +172,13 @@ def build_task_xml(spec: TaskSpec, user_id: str, description: str, today: date |
 
     triggers = el(root, "Triggers")
     cal = el(triggers, "CalendarTrigger")
-    rep = el(cal, "Repetition")
-    el(rep, "Interval", f"PT{spec.repeat_every_h}H")
-    el(rep, "Duration", f"PT{spec.repeat_for_h}H")
-    el(rep, "StopAtDurationEnd", "false")
+    # repeat_for_h == 0 means "once a day": Task Scheduler rejects a Repetition
+    # with Duration=PT0H, so the element must be left out entirely.
+    if spec.repeat_for_h > 0:
+        rep = el(cal, "Repetition")
+        el(rep, "Interval", f"PT{spec.repeat_every_h}H")
+        el(rep, "Duration", f"PT{spec.repeat_for_h}H")
+        el(rep, "StopAtDurationEnd", "false")
     el(cal, "StartBoundary", start)
     el(cal, "Enabled", "true")
     el(el(cal, "ScheduleByDay"), "DaysInterval", "1")
