@@ -169,6 +169,7 @@ class Route:
     body: bytes = b""
     status: int = 200
     truncate_after: int | None = None   # send only N bytes of body, then close
+    truncate_once: bool = False         # ... but only on the first request (retry tests)
     hang: bool = False                  # never answer (timeouts)
     content_type: str = "text/html"
 
@@ -221,6 +222,8 @@ class StubServer:
                         pass
                     if route.truncate_after is not None:
                         self.close_connection = True
+                        if route.truncate_once:
+                            route.truncate_after = None
 
             def do_GET(self):
                 self._serve(True)

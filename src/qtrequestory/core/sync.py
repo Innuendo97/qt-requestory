@@ -55,6 +55,8 @@ EnvStatus = Literal["ok", "fresh", "unreachable", "errors", "cancelled"]
 PROGRESS_INTERVAL_S = 0.1
 _monotonic = time.monotonic  # module attribute so tests can drive the throttle
 
+NOT_AN_INDEX_TEXT = "l'index non contiene file giornalieri, probabile pagina di login/proxy — stato non aggiornato"
+
 _STATUS_LABELS: dict[str, str] = {
     "ok": "ok",
     "fresh": "già sincronizzato",
@@ -133,6 +135,14 @@ class _Tally:
                          self.failed, self.bytes, error)
 
 
+class _SizeMismatch(Exception):
+    """The transfer completed but its size differs from the autoindex entry."""
+
+    def __init__(self, written: int, expected: int) -> None:
+        kind = "troncato" if written < expected else "dimensione inattesa"
+        super().__init__(f"{kind}: {written} di {expected} byte")
+
+
 @dataclass(frozen=True)
 class _Plan:
     """What to do with one remote daily file, decided before any download so
@@ -164,20 +174,17 @@ class SyncEngine:
     def run(self, envs: Iterable[str] | None = None, *, force: bool = False, dry_run: bool = False) -> SyncReport:
         """Sync ``envs`` (default: every enabled environment) one after the other.
 
-        Unknown names raise ``KeyError`` before anything starts. After a
-        cancelled environment the remaining ones are not started: the report
-        only lists what actually ran.
+        Unknown names raise ``KeyError`` before anything starts. Every env
+        gets a result, also after a cancel (then ``cancelled`` without I/O).
         """
         targets = self._config.enabled_environments() if envs is None else [self._config.env(n) for n in envs]
         started = self._clock()
         self._sink(SyncStarted(tuple(e.name for e in targets), dry_run))
-        results: list[EnvResult] = []
-        for env in targets:
-            result = self.sync_env(env, force=force, dry_run=dry_run)
-            results.append(result)
-            if result.status == "cancelled":
-                break
-        report = SyncReport(tuple(results), started, self._clock())
+        # After a cancel the remaining envs still go through sync_env: it
+        # short-circuits to "cancelled" without touching the network, so every
+        # env announced in SyncStarted gets its EnvStarted/EnvFinished pair.
+        results = tuple(self.sync_env(env, force=force, dry_run=dry_run) for env in targets)
+        report = SyncReport(results, started, self._clock())
         self._sink(SyncFinished(report))
         return report
 
@@ -200,6 +207,13 @@ class SyncEngine:
             self._sink(EnvUnreachable(env.name, str(e)))
             return tally.result("unreachable", str(e))
         index = parse_autoindex(html)
+        if not index.daily:
+            # A captive portal / login page / proxy error answers 200 with HTML
+            # that has no daily file at all. Marking the env fresh on that
+            # would silently skip real syncs until the next compaction.
+            text = f"{env.name}: {NOT_AN_INDEX_TEXT}"
+            self._sink(LogMessage(logging.WARNING, text))
+            return tally.result("unreachable", text)
         plans = [self._plan(env, remote) for remote in index.daily]  # already newest first
         to_download = [p for p in plans if p.action == "download"]
         self._sink(RemoteIndexRead(
@@ -256,21 +270,19 @@ class SyncEngine:
         """Fetch one file into place; return the error text or ``None`` on success.
 
         Emits ``FileStarted``, throttled ``FileProgress``, then ``FileDone`` or
-        ``FileFailed``. A network failure is retried ``config.sync.retries``
-        times; a truncated transfer is not (the server sent what it had). A
-        ``Cancelled`` propagates. Whatever happens the ``.part`` is gone when
-        this returns or raises.
+        ``FileFailed``. A failed attempt (network error or a transfer whose
+        size differs from the index) is retried ``config.sync.retries`` times.
+        A ``Cancelled`` propagates. Whatever happens the ``.part`` is gone
+        when this returns or raises.
         """
         url = env.url + remote.name
         part = dest.with_name(dest.name + ".part")
         self._sink(FileStarted(env.name, remote.name, remote.size))
         try:
             try:
-                written = self._transfer_with_retries(env, remote, url, part)
-            except HttpDownloadError as e:
+                self._transfer_with_retries(env, remote, url, part)
+            except (HttpDownloadError, _SizeMismatch) as e:
                 return self._fail(env, remote, str(e))
-            if written != remote.size:
-                return self._fail(env, remote, f"troncato: {written} di {remote.size} byte")
             try:
                 os.replace(part, dest)
             except OSError as e:
@@ -280,16 +292,24 @@ class SyncEngine:
         finally:
             _remove_quietly(part)
 
-    def _transfer_with_retries(self, env: Environment, remote: RemoteDailyFile, url: str, part: Path) -> int:
-        """Retry a failed transfer up to ``config.sync.retries`` times; the last
-        ``HttpDownloadError`` propagates. Each retry is announced as a warning
-        so the log explains why one file shows several GETs."""
+    def _transfer_with_retries(self, env: Environment, remote: RemoteDailyFile, url: str, part: Path) -> None:
+        """Leave a complete ``part`` in place or raise the last attempt's error.
+
+        An attempt fails on ``HttpDownloadError`` or when the byte count does
+        not match the index (short read: the server closed early; longer: the
+        file changed under us). Each retry is announced as a warning so the
+        log explains why one file shows several GETs.
+        """
         retries = self._config.sync.retries
         attempt = 0
         while True:
             try:
-                return self._transfer(env, remote, url, part)
-            except HttpDownloadError as e:
+                written = self._transfer(env, remote, url, part)
+                if written != remote.size:
+                    raise _SizeMismatch(written, remote.size)
+                return
+            except (HttpDownloadError, _SizeMismatch) as e:
+                _remove_quietly(part)
                 attempt += 1
                 if attempt > retries:
                     raise
@@ -308,7 +328,8 @@ class SyncEngine:
                 last_emit = now
                 self._sink(FileProgress(env.name, remote.name, done, remote.size))
 
-        part.parent.mkdir(parents=True, exist_ok=True)
+        # http.download creates part.parent; an unwritable mirror surfaces as
+        # HttpDownloadError and stays a per-file failure.
         return self._http.download(
             url, part,
             timeout=self._config.sync.download_timeout_s,

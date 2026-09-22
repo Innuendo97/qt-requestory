@@ -214,12 +214,13 @@ def test_all_unreachable_is_exit_2(cfg, state, events, fake_clock, stub_server):
 
 # ----------------------------------------------------------- 5. truncated ---
 
-def test_truncated_download_fails_file_but_not_the_rest(cfg, state, events, fake_clock, stub_server):
+def test_truncated_download_is_retried_then_fails_file_but_not_the_rest(cfg, state, events, fake_clock, stub_server):
     _serve_env(stub_server, "coll", {"20260921.txt": _payload(10_000), "20260920.txt": _payload(3_000)})
     stub_server.routes["/coll/20260921.txt"].truncate_after = 4_000
 
     report = _engine(cfg, state, events, fake_clock).run(["coll"])
 
+    assert len(_requests_to(stub_server, "/coll/20260921.txt")) == RETRIES + 1
     failed = events.of(FileFailed)
     assert len(failed) == 1
     assert failed[0].name == "20260921.txt"
@@ -232,6 +233,53 @@ def test_truncated_download_fails_file_but_not_the_rest(cfg, state, events, fake
     assert result.failed == 1 and result.downloaded == 1
     assert report.exit_code == 1
     assert not cfg.state_path.exists()
+
+
+def test_truncated_once_then_complete_succeeds_on_retry(cfg, state, events, fake_clock, stub_server):
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(10_000)})
+    stub_server.routes["/coll/20260921.txt"].truncate_after = 4_000
+    stub_server.routes["/coll/20260921.txt"].truncate_once = True
+
+    report = _engine(cfg, state, events, fake_clock).run(["coll"])
+
+    assert len(_requests_to(stub_server, "/coll/20260921.txt")) == 2
+    assert not events.of(FileFailed)
+    assert [e.name for e in events.of(FileDone)] == ["20260921.txt"]
+    assert _local(cfg, "coll", "20260921.txt").read_bytes() == _payload(10_000)
+    assert _no_part_files(cfg.mirror_root)
+    warnings = [e for e in events.of(LogMessage) if e.level == logging.WARNING]
+    assert len(warnings) == 1 and "troncato" in warnings[0].text
+    assert report.exit_code == 0
+    assert SyncState(cfg.state_path).load().get("coll").last_success == fake_clock.now
+
+
+def test_oversized_download_is_reported_as_unexpected_size(cfg, state, events, fake_clock, stub_server):
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(2_000)})
+    # the index promised 2000 bytes but the server now sends more
+    stub_server.routes["/coll/20260921.txt"].body = _payload(2_500)
+
+    _engine(cfg, state, events, fake_clock).run(["coll"])
+
+    assert events.of(FileFailed)[0].error == "dimensione inattesa: 2500 di 2000 byte"
+    assert not _local(cfg, "coll", "20260921.txt").exists()
+    assert _no_part_files(cfg.mirror_root)
+
+
+# ----------------------------------------------------- 4b. not an index ---
+
+def test_page_without_daily_files_is_unreachable_not_fresh(cfg, state, events, fake_clock, stub_server):
+    stub_server.add("/svil/", "<html>captive portal</html>")
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert report.results[0].status == "unreachable"
+    assert report.exit_code == 2
+    warnings = [e for e in events.of(LogMessage) if e.level == logging.WARNING]
+    assert warnings and warnings[0].text == (
+        "svil: l'index non contiene file giornalieri, probabile pagina di login/proxy — stato non aggiornato"
+    )
+    assert not cfg.state_path.exists()
+    assert not events.of(RemoteIndexRead)
 
 
 # -------------------------------------------------------------- 6. retry ---
@@ -299,14 +347,17 @@ def test_cancel_during_download_removes_part_and_stops(cfg, state, events, fake_
     report = _engine(cfg, state, cancelling_sink, fake_clock, cancel=cancel).run(["svil", "coll"])
 
     assert report.exit_code == 3
-    assert [r.status for r in report.results] == ["cancelled"]
+    assert [r.status for r in report.results] == ["cancelled", "cancelled"]
     assert _no_part_files(cfg.mirror_root)
     assert not _local(cfg, "svil", "20260921.txt").exists()
     assert not _local(cfg, "svil", "20260920.txt").exists()
     assert ("GET", "/svil/20260920.txt") not in stub_server.requests
-    assert ("GET", "/coll/") not in stub_server.requests
+    assert not [r for r in stub_server.requests if r[1].startswith("/coll/")]
     assert not events.of(FileDone)
     assert not cfg.state_path.exists()
+    # every env announced in SyncStarted is started and finished, even after the cancel
+    assert [e.env for e in events.of(EnvStarted)] == ["svil", "coll"]
+    assert [e.env for e in events.of(EnvFinished)] == ["svil", "coll"]
     assert isinstance(events.events[-1], SyncFinished)
 
 
