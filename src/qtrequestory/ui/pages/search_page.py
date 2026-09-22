@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import actions, strings
 from qtrequestory.ui.contracts import Coverage, CoreServices, SearchHit, SearchQuery
 from qtrequestory.ui.pages.search_form import FULL_FDI_LEN, SearchForm
 from qtrequestory.ui.results_model import ElideMiddleDelegate, ResultsModel, ResultsProxy, format_day
@@ -434,9 +434,18 @@ class SearchPage(QWidget):
         self._update_coverage(env)
 
     def _clear_results(self) -> None:
+        """Drop the rows AND any empty state describing the search that made them.
+
+        "Nessuna chiamata trovata" is about a query that ran against the
+        previous environment; leaving it up while switching to one that does
+        have logs claims there is nothing there before anything was searched.
+        The caller (``_on_env_changed``) then asks ``_update_coverage`` to put
+        the "no log" state back if this environment really has none.
+        """
         self.model.set_hits([])
         self.summary_label.setText("")
         self._query = None
+        self._set_state(STATE_TABLE)
         self.presenter.select(None)
 
     def _on_index_pending(self, pending: int) -> None:
@@ -535,17 +544,8 @@ class SearchPage(QWidget):
             shower(key)
 
     def _settings(self) -> QSettings:
-        """The user's store, opened through ``defaultFormat``.
-
-        Not ``QSettings(org, app)``: that constructor hardcodes ``NativeFormat``
-        (the Windows registry) and ignores ``setDefaultFormat`` entirely, so the
-        redirection ``tests/ui/conftest.py`` installs would not catch it and the
-        test suite would write the last used environment into the developer's
-        real registry. In the application ``defaultFormat`` *is* NativeFormat,
-        so production behaviour is unchanged.
-        """
-        return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
-                         strings.ORG_NAME, strings.APP_NAME)
+        """The user's store; see ``actions.user_settings`` for why not ``QSettings(org, app)``."""
+        return actions.user_settings()
 
 
 def _add(menu: QMenu, label: str, slot, *, enabled: bool = True) -> QAction:

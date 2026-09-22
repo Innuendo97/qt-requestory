@@ -2,9 +2,10 @@
 
 Design choices (see docs/DESIGN-core.md §config):
 
-* Loading is *lenient*: a missing file is created with defaults, a corrupt one is
-  set aside (``config.json.broken-<ts>``) instead of blocking the app, unknown
-  keys are ignored and missing keys defaulted. The tool must always start.
+* Loading is *lenient*: a missing file yields the defaults (without creating
+  it — see ``load_config``), a corrupt one is set aside
+  (``config.json.broken-<ts>``) instead of blocking the app, unknown keys are
+  ignored and missing keys defaulted. The tool must always start.
 * Writing is *atomic* (temp file + ``os.replace``) so a crash mid-save never
   leaves a truncated config behind.
 * ``default_config()`` ships with NO environments: this repository is public and
@@ -285,6 +286,12 @@ def _set_aside_broken(path: Path) -> Path:
 
 
 def _write_defaults(path: Path) -> Config:
+    """Defaults written back to disk; used only after a corrupt file was set aside.
+
+    There the file DID exist, so the user has configured the tool before and the
+    first-run wizard must not reappear: something has to take the broken file's
+    place.
+    """
     cfg = default_config()
     save_config(cfg, path)
     return cfg
@@ -331,9 +338,19 @@ def _migrate(raw: dict[str, Any], version: int, path: Path) -> dict[str, Any]:
 
 
 def load_config(path: Path) -> Config:
+    """The configuration at ``path``, or the defaults when it does not exist yet.
+
+    A missing file is NOT created. ``is_first_run`` answers "has this user ever
+    configured the tool", and the answer must survive everything that merely
+    *reads* the configuration: a ``--sync`` fired by the scheduled task before
+    the first launch, and above all a first-run wizard the user cancelled —
+    writing defaults there would silently suppress the wizard forever. The file
+    appears when something explicitly saves it (``save_config``), which is what
+    the wizard and Impostazioni do.
+    """
     if is_first_run(path):
-        log.info("config: %s assente, creo i valori predefiniti", path)
-        return _write_defaults(path)
+        log.info("config: %s assente, uso i valori predefiniti", path)
+        return default_config()
     try:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(raw, dict):

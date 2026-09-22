@@ -43,6 +43,19 @@ def app_paths(fake_core: CoreServices):
 
 
 @pytest.fixture(autouse=True)
+def isolated_instance_key(monkeypatch, request):
+    """A local-server name unique to this process AND this test.
+
+    ``QLocalServer`` names are machine-global: without this, two pytest runs on
+    the same machine fight over the same pipe and ``test_app.py`` flakes —
+    worse, a run could talk to the developer's real qtRequestory window.
+    """
+    from qtrequestory.ui.app import INSTANCE_KEY_ENV_VAR
+
+    monkeypatch.setenv(INSTANCE_KEY_ENV_VAR, f"qtrequestory-test-{os.getpid()}-{id(request.node)}")
+
+
+@pytest.fixture(autouse=True)
 def isolated_qsettings(tmp_path: Path):
     """Keep ``QSettings`` out of the developer's registry.
 

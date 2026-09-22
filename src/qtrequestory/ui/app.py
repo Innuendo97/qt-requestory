@@ -28,7 +28,8 @@ from qtrequestory.ui.contracts import CoreServices
 from qtrequestory.ui.main_window import MainWindow
 from qtrequestory.ui.workers import JobRunner
 
-__all__ = ["SingleInstance", "instance_key", "run_gui", "show_first_run_wizard", "wizard_available"]
+__all__ = ["INSTANCE_KEY_ENV_VAR", "SingleInstance", "instance_key", "run_gui",
+           "show_first_run_wizard", "wizard_available"]
 
 log = logging.getLogger(__name__)
 
@@ -36,9 +37,18 @@ log = logging.getLogger(__name__)
 PREFERRED_STYLE = "windows11"
 CONNECT_TIMEOUT_MS = 300
 
+#: Overrides the local-server name. A named pipe is machine-global, so two test
+#: runs on the same box (CI and a developer, or two agents) would steal it from
+#: each other and each think it is the second instance. The test harness sets
+#: this to something unique per process; the application never sets it.
+INSTANCE_KEY_ENV_VAR = "QTREQUESTORY_INSTANCE_KEY"
+
 
 def instance_key() -> str:
     """Name of the local server: one running instance per user."""
+    override = os.environ.get(INSTANCE_KEY_ENV_VAR)
+    if override:
+        return override
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "utente"
     return f"qtrequestory-{re.sub(r'[^A-Za-z0-9_-]+', '-', user).lower()}"
 

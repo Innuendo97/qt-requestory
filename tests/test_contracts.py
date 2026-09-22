@@ -163,6 +163,9 @@ def test_contracts_reexport_the_real_core_dataclasses():
     assert contracts.SyncReport is CoreSyncReport
     assert contracts.TaskStatus is sched.TaskStatus
     assert contracts.EnvStatus is facade.EnvStatus
+    # The "no task" sentinel too: without it the UI (and its tests) have to
+    # reach past the contract into core.scheduler to render that one state.
+    assert contracts.NOT_REGISTERED is sched.NOT_REGISTERED
 
 
 def test_contracts_reexport_everything_the_ui_imports():
@@ -205,10 +208,11 @@ class TestConfigService:
         svc = facade.ConfigService(paths)
         assert svc.is_first_run() is True
         assert svc.config_path() == paths.config_file
-        cfg = svc.load()  # load() creates the defaults, as the core does
-        assert svc.is_first_run() is False
+        cfg = svc.load()  # the defaults, and still no file: the wizard must run
+        assert svc.is_first_run() is True
         updated = dataclasses.replace(cfg, default_window_days=7)
         svc.save(updated)
+        assert svc.is_first_run() is False
         assert facade.ConfigService(paths).load().default_window_days == 7
         # the saved config is what the other services see from now on
         assert svc.current().default_window_days == 7

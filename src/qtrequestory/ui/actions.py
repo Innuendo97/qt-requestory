@@ -31,6 +31,7 @@ __all__ = [
     "open_hit_in_editor",
     "open_output_folder",
     "save_hit_as",
+    "user_settings",
 ]
 
 log = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def save_hit_as(services: CoreServices, parent: QWidget | None, hit: SearchHit,
         return None
     path = Path(chosen)
     services.extract.save_as(path, text)
-    _settings().setValue(SAVE_DIR_KEY, str(path.parent))
+    user_settings().setValue(SAVE_DIR_KEY, str(path.parent))
     log.debug("body salvato in %s", path)
     return path
 
@@ -100,12 +101,23 @@ def open_output_folder(services: CoreServices, hit: SearchHit, text: str) -> Pat
 
 def last_save_dir() -> Path | None:
     """The folder of the last successful "Salva con nome…", if it still exists."""
-    stored = _settings().value(SAVE_DIR_KEY, "")
+    stored = user_settings().value(SAVE_DIR_KEY, "")
     if not stored:
         return None
     path = Path(str(stored))
     return path if path.is_dir() else None
 
 
-def _settings() -> QSettings:
-    return QSettings(strings.ORG_NAME, strings.APP_NAME)
+def user_settings() -> QSettings:
+    """The application's ``QSettings`` store — the ONE way to open it.
+
+    Never ``QSettings(org, app)``: that constructor hardcodes ``NativeFormat``
+    (the Windows registry) and ignores ``QSettings.setDefaultFormat`` entirely,
+    so the redirection ``tests/ui/conftest.py`` installs would not catch it and
+    the suite would write window geometry, the last used environment and the
+    last save folder into the developer's real registry
+    (``HKCU\\Software\\qtRequestory``). In the application ``defaultFormat``
+    *is* NativeFormat, so production behaviour is unchanged.
+    """
+    return QSettings(QSettings.defaultFormat(), QSettings.Scope.UserScope,
+                     strings.ORG_NAME, strings.APP_NAME)

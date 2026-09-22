@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from qtrequestory.ui import icons, strings
+from qtrequestory.ui import actions, icons, strings
 from qtrequestory.ui.contracts import CoreServices
 from qtrequestory.ui.workers import JobRunner
 
@@ -365,7 +365,8 @@ class MainWindow(QMainWindow):
     # -- window state ------------------------------------------------------
 
     def settings(self) -> QSettings:
-        return QSettings(strings.ORG_NAME, strings.APP_NAME)
+        """The user's store; see ``actions.user_settings`` for why not ``QSettings(org, app)``."""
+        return actions.user_settings()
 
     def _restore_geometry(self) -> None:
         stored = self.settings()

@@ -154,8 +154,12 @@ class JobRunner(QObject): QThreadPool(maxThreadCount=3); submit(name, fn, ...) -
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> queued signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.
-- Single instance: `QLocalServer` named `qtrequestory-<username>`; second launch sends
-  `activate` and exits; primary raises its window. The headless `--sync` path never uses it.
+- Single instance: `QLocalServer` named `qtrequestory-<username>` (overridable with
+  `QTREQUESTORY_INSTANCE_KEY` — a pipe name is machine-global, so the test harness gives each
+  pytest process its own); second launch sends `activate` and exits; primary raises its
+  window. The headless `--sync` path never uses it.
+- `QSettings` is opened only through `actions.user_settings()`: `QSettings(org, app)`
+  hardcodes `NativeFormat` and would write the developer's real registry during tests.
 - Startup order (`cli.main`): parse args → `--sync/--index/--find/--task` → core only; else
   import Qt, single-instance guard, `QApplication`, first-run check, `MainWindow.show()`,
   then `index.plan` + opportunistic sync in workers (never before the window is visible).

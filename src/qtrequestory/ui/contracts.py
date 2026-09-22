@@ -59,7 +59,7 @@ from qtrequestory.core.index.builder import IndexPlan, IndexStats
 from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
-from qtrequestory.core.scheduler import SchedulerError, TaskSpec, TaskStatus
+from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
 
 __all__ = [
@@ -68,8 +68,9 @@ __all__ = [
     # re-exported core types
     "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "EntryName",
     "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "IndexPlan", "IndexSettings",
-    "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "SchedulerError", "SearchHit",
-    "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec", "TaskStatus", "parse_entry_name",
+    "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "SchedulerError",
+    "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec", "TaskStatus",
+    "parse_entry_name",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",
@@ -88,7 +89,12 @@ class ConfigApi(Protocol):
         ...
 
     def load(self) -> Config:
-        """Current configuration; a missing file is created with the defaults."""
+        """Current configuration; the defaults when no file exists yet.
+
+        Reading never creates the file: ``is_first_run`` must stay True until
+        something explicitly ``save``s, or a cancelled wizard would never be
+        offered again.
+        """
         ...
 
     def save(self, cfg: Config) -> None:

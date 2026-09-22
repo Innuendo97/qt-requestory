@@ -351,6 +351,22 @@ def test_an_environment_without_local_logs_offers_the_sync_page(qtbot, page, win
     assert page.current_state() == "table", "coming back must leave the empty state"
 
 
+def test_switching_environment_clears_the_no_results_state(qtbot, page):
+    """"Nessuna chiamata trovata" describes the search that ran, not the new env.
+
+    Leaving it up after switching to an environment that does have logs told the
+    user there was nothing there before anything had even been searched.
+    """
+    from qtrequestory.ui.contracts import Coverage
+
+    search(qtbot, page, fdi="aaaa", day_from=date(2026, 1, 1), day_to=date(2026, 1, 31))
+    assert page.current_state() == "no_results"
+
+    page.services.index.coverage = lambda env: Coverage(date(2026, 9, 1), date(2026, 9, 18), 3, 9)
+    page.form.set_env("svil")
+    assert page.current_state() == "table"
+
+
 def test_no_results_explains_what_to_try_next(qtbot, page):
     search(qtbot, page, fdi="aaaa", day_from=date(2026, 1, 1), day_to=date(2026, 1, 31))
     assert page.model.rowCount() == 0
