@@ -177,8 +177,18 @@ def search(conn: sqlite3.Connection, root: Path, q: SearchQuery) -> list[SearchH
 def read_body(hit: SearchHit) -> bytes:
     """Return the exact body bytes of ``hit`` (terminator excluded).
 
-    Raises ``IndexStale`` if the file is gone or the header line at
-    ``header_offset`` is not ``### <name>.json`` (file changed since indexing).
+    Raises ``IndexStale`` if the file is gone, if the header line at
+    ``header_offset`` is not ``### <name>.json``, or if the body does not END
+    where ``body_len`` says it does (file changed since indexing).
+
+    That last check is what keeps a *silently wrong* body out of the UI. The
+    header check only proves the entry still starts here; ``body_len`` is taken
+    on trust, and a body edited in place — or a file replaced while the index
+    held the previous size — leaves every offset valid and only moves the end.
+    The read would then stop mid-JSON and hand the caller a document cut in
+    half; ``pretty_json`` would dress it up as ``{"_parseError": ...}`` and the
+    user would blame the log file, which is fine. One byte answers it: after a
+    body comes the line terminator, or the end of the file.
     """
     expected = b"### " + hit.name.encode("utf-8") + b".json"
     try:
@@ -189,10 +199,13 @@ def read_body(hit: SearchHit) -> bytes:
             if header != expected:
                 raise IndexStale(hit.env, hit.day)
             f.seek(hit.body_offset)
-            body = f.read(hit.body_len)
+            chunk = f.read(hit.body_len + 1)  # one byte past the body
     except FileNotFoundError:
         raise IndexStale(hit.env, hit.day) from None
+    body, trailer = chunk[:hit.body_len], chunk[hit.body_len:]
     if len(body) != hit.body_len:  # truncated file
+        raise IndexStale(hit.env, hit.day)
+    if trailer not in (b"", b"\r", b"\n"):  # b"" = last line, no trailing newline
         raise IndexStale(hit.env, hit.day)
     return body
 

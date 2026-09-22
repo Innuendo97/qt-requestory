@@ -271,7 +271,7 @@ On decode error: `json_ok=0`, `request_date` via `REQDATE_RE`, `ndocs=None`. `ca
 
 ```python
 # builder.py
-class IndexBuilder(conn, root, sink, cancel=None):
+class IndexBuilder(conn, root, sink, cancel=None, *, parse_json=True):   # parse_json is keyword-only
     plan(envs) -> IndexPlan(to_scan: list[LocalDailyFile], to_remove: list[int])   # new or (size,mtime_ns) changed; vanished -> remove
     update(envs, *, full_rebuild=False) -> IndexStats       # one transaction per file; newest first; ANALYZE if >10 files
     rescan_file(env, day) -> int
@@ -280,8 +280,12 @@ class IndexBuilder(conn, root, sink, cancel=None):
     key_mode: Literal["exact","prefix","contains"]="exact"; day_from: date|None=None; day_to: date|None=None; limit: int=1000
 @dataclass(frozen=True) class SearchHit: entry_id; env; day; rel_path; seq; name; fdi; template_key; call_id;
     well_formed; request_date; ndocs; dossier_number; header_offset; body_offset; body_len; json_ok
-def search(conn, q) -> list[SearchHit]     # requires fdi_prefix or template_key (else ValueError)
-def read_body(root, hit) -> bytes          # seek(header_offset), verify header line == '### '+name+'.json', then seek(body_offset).read(body_len); mismatch -> IndexStale(env, day)
+def search(conn, root, q) -> list[SearchHit]   # requires fdi_prefix or template_key (else ValueError);
+                                           # `root` is the mirror root, so every SearchHit carries its file_path
+def read_body(hit) -> bytes                # seek(header_offset), verify header line == '### '+name+'.json',
+                                           # then seek(body_offset) and read body_len+1: that extra byte must be
+                                           # CR, LF or EOF, else body_len is stale.
+                                           # Any mismatch -> IndexStale(env, day)
 class IndexStale(Exception): env; day
 @dataclass(frozen=True) class Coverage: first_day; last_day; n_files; n_entries
 def coverage(conn, env) -> Coverage | None
@@ -300,8 +304,11 @@ SQL: `env=:env AND day BETWEEN … AND (fdi >= :p AND fdi < :p_hi) AND template_
 
 ```python
 def pretty_json(raw: bytes) -> str          # json.dumps(json.loads(raw), ensure_ascii=False, indent=4); on error -> {"_parseError": str, "raw": text}
-def output_name(hit) -> str                 # '<yyyyMMdd>_<fdi or "nofdi">_<TEMPLATE_KEY>.json'
-def write_temp_file(out_dir, hit, text, *, retention_hours=24) -> Path   # housekeeping (delete files older than N h) then write; on name collision append '_<call_id>'
+def output_name(day, fdi, template_key, call_id=None) -> str   # '<yyyyMMdd>_<fdi or "nofdi">_<TEMPLATE_KEY>[_<call_id>].json'
+                                            # search.output_name_for(hit) / output_name_with_id(hit) wrap it for a SearchHit
+def write_temp_file(out_dir, name, text, *, retention_hours=24, alt_name=None) -> Path
+                                            # housekeeping (delete files older than N h) then write; when `name` already
+                                            # exists and `alt_name` (the call-id variant) is given, that one is used instead
 def save_as(path, text) -> None             # utf-8, no BOM
 def find_editor(configured: Path|None) -> Path|None   # configured → Notepad++ standard paths → PATH
 def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor, *paths) else os.startfile each; returns label
@@ -328,9 +335,13 @@ TASK_NAME = "qtRequestory Sync"; LEGACY_TASK_NAME = "NginxLogSync"
 def spec_from_config(schedule: ScheduleSettings, exe) -> TaskSpec   # the saved schedule (through
                                                                     # config.sanitised_schedule) is what gets registered
 @dataclass(frozen=True) class TaskStatus: registered; command: Path|None; args; exe_matches: bool; state; next_run; last_run; last_result: int|None
-def build_task_xml(spec, user_id, description) -> str
-def register(spec, runner=run_schtasks) ; def unregister(runner) ; def status(current_exe, runner) -> TaskStatus
-def run_now(runner) ; def detect_legacy_task(runner) -> bool ; def remove_legacy_task(runner)
+def build_task_xml(spec, user_id, description, today=None) -> str
+# every runner/task_name below is KEYWORD-ONLY (tests inject a fake runner; nothing positional)
+def register(spec, *, runner=run_schtasks, user_id=None, description=None, task_name=TASK_NAME)
+def unregister(*, runner=run_schtasks, task_name=TASK_NAME)
+def status(current_exe, *, runner=run_schtasks, task_name=TASK_NAME) -> TaskStatus
+def run_now(*, runner=run_schtasks, task_name=TASK_NAME)
+def detect_legacy_task(*, runner=run_schtasks) -> bool ; def remove_legacy_task(*, runner=run_schtasks)
 def current_exe_for_task() -> Path | None        # sys.executable when frozen; else None (dev: python -m qtrequestory)
 def is_unstable_location(exe: Path) -> str | None   # %TEMP%, Downloads, network/OneDrive -> reason
 ```
