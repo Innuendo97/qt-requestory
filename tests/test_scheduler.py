@@ -7,6 +7,7 @@ boxes without Task Scheduler at all).
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from qtrequestory.core.scheduler import (
     LEGACY_TASK_NAME,
     TASK_NAME,
     SchedulerError,
+    NOT_REGISTERED,
     TaskSpec,
     TaskStatus,
     build_task_xml,
@@ -399,6 +401,48 @@ class TestStatus:
         assert st.registered is True
         assert st.state is None and st.next_run is None and st.last_run is None and st.last_result is None
 
+    def test_a_missing_schtasks_is_not_registered_instead_of_an_exception(self, caplog):
+        r"""``schtasks`` lives in ``%SystemRoot%\System32``; a PATH that has lost
+        that folder makes ``subprocess.run`` raise ``FileNotFoundError``.
+
+        ``SyncPage.__init__`` calls ``status()``, and ``MainWindow._build_page``
+        turns any exception from a page factory into "La pagina
+        «Sincronizzazione» non e disponibile in questa versione." — the whole
+        page gone, over a PATH the user cannot even see. Not knowing whether a
+        task is registered is no reason to hide the synchronisation page.
+        """
+        def boom(args):
+            raise FileNotFoundError(2, "Impossibile trovare il file specificato", "schtasks")
+
+        with caplog.at_level(logging.WARNING):
+            st = status(Path(r"C:\x\qtRequestory.exe"), runner=FakeRunner(query=boom))
+        assert st == NOT_REGISTERED
+        assert "schtasks" in caplog.text
+
+    def test_garbled_xml_is_not_registered_instead_of_an_exception(self, caplog):
+        """schtasks answered 0 but the output is not a task definition (a
+        truncated pipe, an antivirus banner). Same rule: report "nessun task",
+        never take the page down with it."""
+        runner = FakeRunner(query=_ok("<Task><unclosed>", ["/Query"]))
+        with caplog.at_level(logging.WARNING):
+            st = status(Path(r"C:\x\qtRequestory.exe"), runner=runner)
+        assert st == NOT_REGISTERED
+        assert "xml" in caplog.text.lower()
+
+    def test_a_failing_verbose_query_still_reports_the_task(self, tmp_path):
+        """The second call only fills the runtime columns: losing it must not
+        lose the registration the first call already established."""
+        exe = tmp_path / "qtRequestory.exe"
+
+        def query(args):
+            if "/XML" in args:
+                return _ok(TASK_XML_TEMPLATE.format(command=str(exe)), args)
+            raise OSError("pipe chiusa")
+
+        st = status(exe, runner=FakeRunner(query=query))
+        assert st.registered is True
+        assert (st.state, st.next_run, st.last_run, st.last_result) == (None, None, None, None)
+
     def test_task_name_parameter(self, tmp_path):
         runner = _status_runner(str(tmp_path / "x.exe"))
         status(None, runner=runner, task_name="Other Task")
@@ -453,6 +497,16 @@ class TestLegacyTask:
 
     def test_detect_false(self):
         assert detect_legacy_task(runner=FakeRunner(query=_fail())) is False
+
+    def test_a_missing_schtasks_means_no_legacy_task(self, caplog):
+        """The wizard's third page asks this while it is being built: an
+        unusable ``schtasks`` must not take the first-run wizard down."""
+        def boom(args):
+            raise FileNotFoundError(2, "Impossibile trovare il file specificato", "schtasks")
+
+        with caplog.at_level(logging.WARNING):
+            assert detect_legacy_task(runner=FakeRunner(query=boom)) is False
+        assert "schtasks" in caplog.text
 
     def test_remove_calls_delete(self):
         runner = FakeRunner(delete=_ok())

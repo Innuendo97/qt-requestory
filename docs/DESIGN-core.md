@@ -329,6 +329,13 @@ def is_unstable_location(exe: Path) -> str | None   # %TEMP%, Downloads, network
 `CREATE_NO_WINDOW`, `encoding="oem", errors="replace"`. Status via `/Query /TN name /XML ONE`
 (parse Command/Arguments) + `/Query /TN name /V /FO CSV /NH` (positional columns).
 Pitfalls: never derive paths from argv[0]/cwd; windowed exe has `sys.stdout is None`.
+`status` and `detect_legacy_task` **never raise**: both are called while a UI page (and the
+wizard) is being *built*, and `MainWindow._build_page` turns any exception from a factory
+into "La pagina … non è disponibile in questa versione". `OSError` from the runner
+(`FileNotFoundError` when `%SystemRoot%\System32` is off `PATH`) and `ET.ParseError` from
+garbled output are logged and answered with `NOT_REGISTERED` / `False`. A failure of the
+*second* (`/V /FO CSV`) query only blanks the runtime columns — the registration already
+read from the XML is kept.
 
 ## `core/jobs.py`, `cli.py`
 
