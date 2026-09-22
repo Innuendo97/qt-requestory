@@ -296,3 +296,19 @@ def test_cancelled_inside_a_direct_worker_emits_cancelled(qtbot):
     qtbot.waitUntil(lambda: bool(seen), timeout=2000)
     assert seen == ["cancelled"]
     assert Cancelled is not None  # the core exception is the one we catch
+
+
+def test_shutdown_leaves_no_job_claiming_to_still_be_running(qapp):
+    """A job whose deferred start never came must not look like a live one.
+
+    ``submit`` starts the worker on the next turn of the event loop. When the
+    application quits before that turn — ``run_gui`` returning from ``exec``,
+    or a first sync started right before the window closes — the job would stay
+    "running" forever, and ``MainWindow.closeEvent`` would ask the user whether
+    to interrupt a sync that can no longer happen.
+    """
+    runner = JobRunner()
+    job = runner.submit("sync", lambda: None)  # no event loop turn before shutdown
+    assert runner.shutdown(2000) is True
+    assert not runner.is_running("sync")
+    assert not job.is_running()
