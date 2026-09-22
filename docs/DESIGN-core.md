@@ -119,7 +119,7 @@ class LoggingSink: __init__(logger); __call__(ev)      # headless: formats every
     index_path / state_path / lock_path / resolved_output_dir  (properties)
     def env(self, name) -> Environment
     def enabled_environments(self) -> list[Environment]
-def default_config(paths: AppPaths) -> Config          # environments = []  (NO hostnames in code)
+def default_config() -> Config                        # environments = []  (NO hostnames in code)
 def load_config(path) -> Config      # missing -> defaults (written); corrupt -> renamed .broken-<ts> + defaults; unknown keys ignored; missing keys defaulted
 def save_config(cfg, path)           # tmp + os.replace
 def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650
