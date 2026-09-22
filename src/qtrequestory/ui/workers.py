@@ -106,16 +106,19 @@ class WorkerSignals(QObject):
 class QtEventSink(QObject):
     """A core ``EventSink`` (a callable) that re-emits events as a Qt signal.
 
-    Created on the GUI thread and called from the worker thread. **The
-    connection ``JobRunner`` makes is NOT queued**, and it matters: the slot is
-    ``partial(_relay_event, delivery)``, a plain Python callable with no
-    receiver ``QObject``, so Qt has no thread to queue it to and runs it
-    DIRECT, on the worker thread. It is safe only because that slot touches no
-    widget — all it does is call :meth:`_Delivery.send`, which emits a signal
-    on a ``QObject`` that *does* live in the GUI thread and is therefore
-    delivered there. A slot connected here with a GUI-thread receiver would be
-    queued as usual; a bare function or lambda would run on the worker, so
-    anything touching a widget must go through ``Job.signals``, never here.
+    Created on the GUI thread and called from the worker thread. The
+    ``__call__`` itself — including the ``FileProgress`` throttling below —
+    runs on the WORKER; everything downstream of ``event.emit`` runs on the
+    GUI thread, and that is what makes it legal for a slot to touch widgets.
+
+    Why it is queued is worth writing down, because the usual explanation ("the
+    receiver lives in the GUI thread") does not apply here: ``JobRunner``
+    connects ``event`` to ``partial(_relay_event, delivery)``, a callable with
+    no receiver ``QObject`` at all. For such a connection Qt takes the SENDER
+    as the context, and this sink was created on the GUI thread — so an
+    emission from a pool thread is queued there. Give the connection a
+    worker-affine context object and the same slot would run on the worker
+    instead. ``tests/ui/test_workers.py`` measures it rather than trusting it.
 
     ``FileProgress`` is throttled to one event per ``min_interval`` seconds —
     the core emits one per downloaded chunk, which is thousands per file. No
@@ -160,13 +163,16 @@ class _Delivery(QObject):
     def __init__(self, job: Job) -> None:
         super().__init__()
         self._job = job
-        self._forward.connect(self._on_forward)  # queued: emitted from the worker
+        # Queued when `send` is called from a worker (Worker._emit does), a
+        # direct call when it is already on the GUI thread (the sink relay,
+        # which Qt has queued here first). Either way the slot runs here.
+        self._forward.connect(self._on_forward)
 
     def is_live(self) -> bool:
         return self._job.is_live()
 
     def send(self, name: str, *args: Any) -> None:
-        """Called from the worker thread; ``name`` is a ``WorkerSignals`` member."""
+        """``name`` is a ``WorkerSignals`` member. Callable from either thread."""
         self._forward.emit(name, args)
 
     def _on_forward(self, name: str, args: tuple) -> None:
@@ -353,9 +359,9 @@ class JobRunner(QObject):
         job = Job(_next_id(), name, signals, sink, CancelToken())
         delivery = _Delivery(job)
         job._delivery = delivery
-        # A partial has no receiver QObject, so this runs DIRECT on the worker
-        # thread; `_relay_event` only calls `_Delivery.send`, which re-emits on
-        # a GUI-thread QObject and is queued there. See QtEventSink.
+        # A partial has no receiver QObject, so Qt uses the SENDER as context:
+        # the sink was built here, on the GUI thread, so an emission from the
+        # worker is queued to this thread. See QtEventSink.
         sink.event.connect(partial(_relay_event, delivery))
         self._jobs[name] = job
 

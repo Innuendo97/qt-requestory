@@ -180,11 +180,16 @@ class JobRunner(QObject): QThreadPool(maxThreadCount=len(workers.JOB_NAMES) == 1
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.
-- `QtEventSink` lives on the GUI thread but `sink.event` is connected to `partial(_relay_event,
-  delivery)`, a plain callable with no receiver `QObject` — so that slot runs **DIRECT, on the
-  worker thread**, not queued. It is safe only because it touches no widget: all it does is
-  `_Delivery.send`, which emits `_forward` on a `QObject` that *does* live in the GUI thread and
-  is therefore queued there. Anything else connected to `sink.event` would run on the worker.
+- Which thread runs what (measured in `tests/ui/test_workers.py`, not assumed): `QtEventSink.
+  __call__` — the `FileProgress` throttling included — runs on the **worker**; everything after
+  `event.emit` runs on the **GUI thread**. `JobRunner` connects `sink.event` to
+  `partial(_relay_event, delivery)`, a callable with no receiver `QObject`, and for those Qt
+  takes the **sender** as the connection's context: the sink was created on the GUI thread, so
+  the emission is queued there. (Not "the receiver lives in the GUI thread" — there is no
+  receiver. Hand the connection a worker-affine context object and the same slot would run on
+  the worker.) `Worker._emit` calls `_Delivery.send` from the worker instead, and `_forward` —
+  a signal on a GUI-thread `QObject` — queues it to the same event queue, so progress and result
+  still reach the page in the order the worker produced them.
 - Single instance: `QLocalServer` named `qtrequestory-<username>` (overridable with
   `QTREQUESTORY_INSTANCE_KEY` — a pipe name is machine-global, so the test harness gives each
   pytest process its own); second launch sends `activate` and exits; primary raises its
