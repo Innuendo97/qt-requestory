@@ -91,8 +91,7 @@ class SettingsPage(QWidget):
         # 1366x768 laptop, where this page gets about 420 px of height. So the
         # form scrolls and the [Annulla]/[Salva] row does NOT: the one button
         # that commits the page must never be below the fold.
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer = QVBoxLayout(self)  # keeps the page's own margins
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)  # the form keeps the full width
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -102,6 +101,7 @@ class SettingsPage(QWidget):
         outer.addWidget(self.scroll, 1)
 
         layout = QVBoxLayout(form)
+        layout.setContentsMargins(0, 0, 0, 0)  # `outer` already inset the page
         self.browse_mirror_button = _button(
             strings.BTN_BROWSE, lambda: self._browse_folder(
                 self.mirror_edit, strings.SETTINGS_MIRROR_CAPTION)
@@ -167,8 +167,6 @@ class SettingsPage(QWidget):
         self.config_path_label.setWordWrap(True)
         self.open_config_button = _button(strings.BTN_OPEN_FOLDER, self._open_config_folder)
         layout.addLayout(_row(self.config_path_label, self.open_config_button))
-
-        layout.addStretch(0)
 
         # Pinned footer, outside the scroll area: the validation errors are
         # about the save the user is attempting, so they belong next to it.

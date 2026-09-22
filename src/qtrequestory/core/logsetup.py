@@ -25,6 +25,15 @@ SYNC_LOGGER = "qtrequestory.sync"
 #: ``config.default_config()``: a misspelling must change nothing else.
 DEFAULT_LEVEL = logging.INFO
 
+#: The names ``log_level`` may hold, case-insensitively. Spelled out rather
+#: than looked up with ``getattr(logging, name)``: that module also carries
+#: integers and booleans under names nobody means as a level, and this list is
+#: also what the error message offers the user.
+LEVEL_NAMES = ("CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET")
+#: The subset worth suggesting (``FATAL``/``WARN`` are aliases, ``NOTSET`` is a
+#: trap: on the root logger it means "everything").
+SUGGESTED_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
 
 def resolve_level(level: str | int) -> tuple[int, str | None]:
     """``("debug", ...) -> (10, None)``; an unknown name -> ``(INFO, <reason>)``.
@@ -40,15 +49,15 @@ def resolve_level(level: str | int) -> tuple[int, str | None]:
     The reason is returned rather than logged here so the caller can log it
     once the handlers are installed, i.e. into the file where it can be read.
     """
-    if isinstance(level, int):  # nothing in the tree passes one, but it used to work
-        return level, None
-    candidate = getattr(logging, str(level).upper(), None)
-    if isinstance(candidate, int):
-        return candidate, None
+    if isinstance(level, int) and not isinstance(level, bool):
+        return level, None  # nothing in the tree passes one, but it used to work
+    name = str(level).strip().upper()
+    if name in LEVEL_NAMES:
+        return getattr(logging, name), None
     return DEFAULT_LEVEL, (
         f"log_level '{level}' non riconosciuto: uso "
         f"{logging.getLevelName(DEFAULT_LEVEL)}. Valori ammessi: "
-        "DEBUG, INFO, WARNING, ERROR, CRITICAL."
+        + ", ".join(SUGGESTED_LEVELS) + "."
     )
 
 
