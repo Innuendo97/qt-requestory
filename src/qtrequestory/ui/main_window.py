@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib
 import logging
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import NamedTuple
 
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt, Signal
@@ -70,6 +71,11 @@ class PageSpec(NamedTuple):
     section: str
 
 
+#: Where the page modules live; a ModuleNotFoundError about anything else is a
+#: real import error in a page, not a task that has not landed yet.
+PAGES_PACKAGE = "qtrequestory.ui.pages"
+
+
 def page_factory(module: str, class_name: str) -> Callable[..., QWidget]:
     """A lazy factory for ``qtrequestory.ui.pages.<module>.<class_name>``.
 
@@ -78,7 +84,7 @@ def page_factory(module: str, class_name: str) -> Callable[..., QWidget]:
     """
 
     def factory(services: CoreServices, runner: JobRunner, window: MainWindow) -> QWidget:
-        page_module = importlib.import_module(f"qtrequestory.ui.pages.{module}")
+        page_module = importlib.import_module(f"{PAGES_PACKAGE}.{module}")
         return getattr(page_module, class_name)(services, runner, window)
 
     factory.__name__ = f"make_{module}"
@@ -131,10 +137,17 @@ def build_quit_dialog(parent: QWidget) -> tuple[QMessageBox, QPushButton]:
 
 
 def confirm_quit_during_sync(parent: QWidget) -> bool:
-    """True when the user chose "Interrompi ed esci"."""
+    """True when the user chose "Interrompi ed esci".
+
+    The box is destroyed afterwards: answering "Continua" keeps the window open,
+    and without this every refused close would leave a dialog parented to it.
+    """
     box, stop = build_quit_dialog(parent)
-    box.exec()
-    return box.clickedButton() is stop
+    try:
+        box.exec()
+        return box.clickedButton() is stop
+    finally:
+        box.deleteLater()
 
 
 class MainWindow(QMainWindow):
@@ -282,8 +295,12 @@ class MainWindow(QMainWindow):
     def _build_page(self, spec: PageSpec) -> QWidget:
         try:
             return spec.factory(self._services, self._runner, self)
-        except ModuleNotFoundError as exc:  # a sibling task has not landed yet
-            log.info("pagina %s non disponibile (%s)", spec.key, exc)
+        except ModuleNotFoundError as exc:
+            if (exc.name or "").startswith(PAGES_PACKAGE):
+                log.info("pagina %s non disponibile (%s)", spec.key, exc)  # not written yet
+            else:
+                # The page exists but one of ITS imports is missing: a real bug.
+                log.exception("pagina %s non disponibile", spec.key)
         except Exception:  # noqa: BLE001 - a broken page must not break the shell
             log.exception("pagina %s non disponibile", spec.key)
         placeholder = QLabel(strings.PAGE_UNAVAILABLE.format(label=spec.label))
@@ -292,13 +309,15 @@ class MainWindow(QMainWindow):
         return placeholder
 
     def _connect_page_hooks(self) -> None:
-        for page in self._pages.values():
+        """Wire the optional hooks a page may expose (see the module docstring)."""
+        for key, page in self._pages.items():
             summary = getattr(page, "summary_changed", None)
             if summary is not None and hasattr(summary, "connect"):
                 summary.connect(self.set_sync_summary)
             changed = getattr(page, "config_changed", None)
             if changed is not None and hasattr(changed, "connect"):
-                changed.connect(self._broadcast_config)
+                # The key is bound here so the broadcast can skip its sender.
+                changed.connect(partial(self._broadcast_config, key))
 
     def _build_shortcuts(self) -> None:
         bindings: list[tuple[str, Callable[[], None]]] = [
@@ -329,9 +348,16 @@ class MainWindow(QMainWindow):
     def _on_job_refused(self, name: str) -> None:
         self.set_status(strings.STATUS_BUSY.format(name=name))
 
-    def _broadcast_config(self, cfg: object) -> None:
-        """Impostazioni saved: let Ricerca and Sincronizzazione reload."""
-        for page in self._pages.values():
+    def _broadcast_config(self, sender_key: str, cfg: object) -> None:
+        """Impostazioni saved: let the OTHER pages reload.
+
+        The sender is skipped on purpose: it already has the configuration it
+        just saved, and a page that both emits ``config_changed`` and reloads on
+        ``on_config_changed`` would otherwise re-enter itself.
+        """
+        for key, page in self._pages.items():
+            if key == sender_key:
+                continue
             handler = getattr(page, "on_config_changed", None)
             if callable(handler):
                 handler(cfg)

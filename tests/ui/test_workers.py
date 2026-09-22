@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 
-from qtrequestory.core.events import Cancelled, FileDone, FileProgress, LogMessage
+# The events come through the UI's own seam, exactly as a page would import them.
+from qtrequestory.ui.contracts import Cancelled, FileDone, FileProgress, LogMessage
 from qtrequestory.ui.workers import CancelToken, JobRunner, QtEventSink, Worker, WorkerSignals
 
 MAIN_THREAD = threading.get_ident()
@@ -167,6 +169,44 @@ def test_a_second_search_supersedes_the_first_and_its_result_is_dropped(qtbot, r
     qtbot.wait(150)
 
     assert results == ["secondo"], "a superseded job must stay silent"
+
+
+def test_a_result_already_emitted_is_dropped_when_the_job_is_superseded(qtbot, runner):
+    """The guarantee is "silent", not "usually silent".
+
+    A worker can finish while the GUI thread is busy elsewhere: its signal is
+    then sitting in the queue when the next submit supersedes the job. Checking
+    liveness on the worker thread would let that stale result through, so the
+    check has to happen at delivery time.
+    """
+    started = threading.Event()
+    release = threading.Event()
+    results: list[str] = []
+
+    def first():
+        started.set()
+        release.wait(3.0)
+        return "primo"
+
+    job1 = runner.submit("search", first)
+    job1.signals.result.connect(results.append)
+    qtbot.waitUntil(started.is_set, timeout=3000)
+
+    # From here on the GUI thread never spins the event loop: the worker emits
+    # into the queue and nothing is delivered.
+    release.set()
+    deadline = time.monotonic() + 3.0
+    while not job1.finished and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert job1.finished, "the worker must have emitted before the loop runs again"
+
+    job2 = runner.submit("search", lambda: "secondo")  # supersedes the queued result
+    job2.signals.result.connect(results.append)
+    with qtbot.waitSignal(job2.signals.finished, timeout=3000):
+        pass
+    qtbot.wait(100)
+
+    assert results == ["secondo"]
 
 
 def test_superseded_jobs_are_cancelled_so_they_stop_early(qtbot, runner):

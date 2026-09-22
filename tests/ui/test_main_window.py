@@ -84,6 +84,35 @@ def test_a_missing_page_module_degrades_to_a_placeholder(qtbot, fake_core, runne
     assert placeholder.text() == strings.PAGE_UNAVAILABLE.format(label="Nope")
 
 
+def test_a_broken_import_inside_a_page_is_reported_as_an_error(qtbot, fake_core, runner, caplog):
+    """A page whose own import is missing is a bug, not a task still to land."""
+    def factory(services, runner_, window_):
+        raise ModuleNotFoundError("No module named 'requests'", name="requests")
+
+    with caplog.at_level("INFO", logger="qtrequestory.ui.main_window"):
+        win = MainWindow(fake_core, runner,
+                         pages=[PageSpec("x", "X", "info", factory, "top")])
+    qtbot.addWidget(win)
+
+    assert isinstance(win.page("x"), QLabel)
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
+
+
+def test_a_page_module_that_does_not_exist_yet_is_only_an_info_line(
+    qtbot, fake_core, runner, caplog
+):
+    def factory(services, runner_, window_):
+        raise ModuleNotFoundError("No module named 'qtrequestory.ui.pages.sync_page'",
+                                  name="qtrequestory.ui.pages.sync_page")
+
+    with caplog.at_level("INFO", logger="qtrequestory.ui.main_window"):
+        win = MainWindow(fake_core, runner,
+                         pages=[PageSpec("sync", "Sync", "info", factory, "top")])
+    qtbot.addWidget(win)
+
+    assert [r.levelname for r in caplog.records] == ["INFO"]
+
+
 def test_a_page_that_explodes_does_not_take_the_shell_down(qtbot, fake_core, runner):
     def boom(services, runner_, window_):
         raise RuntimeError("bug nella pagina")
@@ -206,24 +235,27 @@ def test_a_page_summary_signal_feeds_the_status_bar(qtbot, fake_core, runner):
     assert win.sync_summary.text() == "coll: non raggiungibile"
 
 
+class Listener(Recorder):
+    """A page that reloads when Impostazioni saves."""
+
+    def __init__(self, services, runner_, window_):
+        super().__init__(services, runner_, window_)
+        self.configs: list[object] = []
+
+    def on_config_changed(self, cfg):
+        self.configs.append(cfg)
+
+
+class Emitter(Listener):
+    """Impostazioni: emits the new config *and* has a reload handler of its own."""
+
+    config_changed = Signal(object)
+
+
 def test_a_saved_configuration_is_broadcast_to_the_other_pages(qtbot, fake_core, runner):
-    class Settingsish(QWidget):
-        config_changed = Signal(object)
-
-        def __init__(self, services, runner_, window_):
-            super().__init__()
-
-    class Listener(Recorder):
-        def __init__(self, services, runner_, window_):
-            super().__init__(services, runner_, window_)
-            self.configs: list[object] = []
-
-        def on_config_changed(self, cfg):
-            self.configs.append(cfg)
-
     win = MainWindow(
         fake_core, runner,
-        pages=[spec("search", factory=Listener), spec("settings", "bottom", Settingsish)],
+        pages=[spec("search", factory=Listener), spec("settings", "bottom", Emitter)],
     )
     qtbot.addWidget(win)
     cfg = fake_core.config.load()
@@ -231,6 +263,19 @@ def test_a_saved_configuration_is_broadcast_to_the_other_pages(qtbot, fake_core,
     win.page("settings").config_changed.emit(cfg)
 
     assert win.page("search").configs == [cfg]
+
+
+def test_the_page_that_saved_does_not_receive_its_own_broadcast(qtbot, fake_core, runner):
+    """It already has that config, and a handler that re-emits would loop."""
+    win = MainWindow(
+        fake_core, runner,
+        pages=[spec("search", factory=Listener), spec("settings", "bottom", Emitter)],
+    )
+    qtbot.addWidget(win)
+
+    win.page("settings").config_changed.emit(fake_core.config.load())
+
+    assert win.page("settings").configs == []
 
 
 # ------------------------------------------------------------------- close ---
@@ -267,6 +312,32 @@ def test_interrompi_ed_esci_cancels_the_sync_and_closes(qtbot, window, runner, m
 def test_closing_without_a_sync_asks_nothing(window, monkeypatch):
     monkeypatch.setattr(mw, "confirm_quit_during_sync", _must_not_be_called)
     assert window.close() is True
+
+
+def test_the_answer_follows_the_button_the_user_pressed(window, monkeypatch):
+    """`confirm_quit_during_sync` maps the two buttons onto True/False."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    real_build = mw.build_quit_dialog
+    built: list[QMessageBox] = []
+
+    def build(answer_stop: bool):
+        def builder(parent):
+            box, stop = real_build(parent)
+            keep = next(b for b in box.buttons() if b is not stop)
+            box.clickedButton = (lambda: stop) if answer_stop else (lambda: keep)
+            built.append(box)
+            return box, stop
+        return builder
+
+    monkeypatch.setattr(mw, "build_quit_dialog", build(answer_stop=True))
+    assert mw.confirm_quit_during_sync(window) is True
+
+    monkeypatch.setattr(mw, "build_quit_dialog", build(answer_stop=False))
+    assert mw.confirm_quit_during_sync(window) is False
+
+    assert len(built) == 2, "each question builds (and drops) its own dialog"
 
 
 def test_the_quit_dialog_offers_the_two_documented_choices(qtbot, window):

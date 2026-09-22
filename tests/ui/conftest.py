@@ -51,15 +51,38 @@ def isolated_qsettings(tmp_path: Path):
     the real registry. Switching the default format to INI and pointing it at a
     temp directory gives every test its own empty store, so tests neither see
     each other's state nor leave anything behind.
+
+    Both settings are global and process-wide, so the previous values are put
+    back afterwards: a fixture that exists to stop state leaking must not leak.
+    ``QSettings`` has no getter for the configured path, so the original root is
+    read back from the file name a probe would use (``<root>/<org>/<app>.ini``).
     """
     from PySide6.QtCore import QSettings
 
+    ini = QSettings.Format.IniFormat
+    scopes = (QSettings.Scope.UserScope, QSettings.Scope.SystemScope)
+    previous_format = QSettings.defaultFormat()
+    previous_roots = {scope: _ini_root(ini, scope) for scope in scopes}
+
     store = tmp_path / "settings"
     store.mkdir(exist_ok=True)
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
-        QSettings.setPath(QSettings.Format.IniFormat, scope, str(store))
-    yield store
+    QSettings.setDefaultFormat(ini)
+    for scope in scopes:
+        QSettings.setPath(ini, scope, str(store))
+    try:
+        yield store
+    finally:
+        QSettings.setDefaultFormat(previous_format)
+        for scope, root in previous_roots.items():
+            QSettings.setPath(ini, scope, root)
+
+
+def _ini_root(fmt, scope) -> str:
+    """The directory ``QSettings`` currently writes INI files into."""
+    from PySide6.QtCore import QSettings
+
+    probe = QSettings(fmt, scope, "qtrequestory-probe", "probe")
+    return str(Path(probe.fileName()).parent.parent)
 
 
 @pytest.fixture
