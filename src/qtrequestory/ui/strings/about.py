@@ -29,6 +29,7 @@ ABOUT_FILTER_ERRORS = "Errori"
 ABOUT_BTN_COPY_ALL = "Copia tutto"
 ABOUT_LOG_LOADING = "Lettura del log in corso…"
 ABOUT_LOG_EMPTY = "Nessuna riga di log da mostrare."
+ABOUT_LOG_NO_MATCH = "Nessuna riga corrisponde al filtro selezionato."
 ABOUT_LOG_COPIED = "Log copiato negli appunti"
 #: {message} = why the log file could not be read.
 ABOUT_LOG_FAILED = "Impossibile leggere il log: {message}"

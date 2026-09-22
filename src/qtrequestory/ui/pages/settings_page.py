@@ -1,10 +1,9 @@
 """The Impostazioni page: the whole configuration as one form.
 
-Two objects, on purpose. :class:`SettingsPresenter` owns the *rules* — what the
-form means as a ``Config``, whether it differs from what is on disk, whether it
-validates, and the one place that writes it — and :class:`SettingsPage` owns
-the widgets, the dialogs and the background jobs. The rules are then testable
-without a single click, and the page never decides anything.
+The widgets, the dialogs and the background jobs live here; the rules live in
+``settings_presenter.py`` (:class:`SettingsPresenter` — what the form means as
+a ``Config``, whether it is dirty, whether it validates, and the one call that
+writes it). This page decides nothing on its own.
 
 Nothing is written until [Salva]: this page is the only writer of
 ``config.json`` in the application, so an accidental keystroke must not reach
@@ -15,12 +14,10 @@ every *other* page, so this one never hears its own save.
 """
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -35,8 +32,15 @@ from PySide6.QtWidgets import (
 )
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import Config, CoreServices, Environment
+from qtrequestory.ui.contracts import CoreServices
 from qtrequestory.ui.env_table import EnvTable
+from qtrequestory.ui.pages.settings_presenter import (
+    FormValues,
+    SettingsPresenter,
+    check_reachable,
+    form_of,
+    normalised,
+)
 from qtrequestory.ui.workers import JobRunner
 
 #: The three "Periodo predefinito" buttons (DESIGN-ui §Impostazioni page).
@@ -44,107 +48,6 @@ WINDOW_CHOICES = (7, 30, 90)
 #: Exclusive job name: an index run refuses a second one while it works.
 INDEX_JOB = "index"
 CHECK_JOB = "check-envs"
-
-
-@dataclass(frozen=True)
-class FormValues:
-    """What the widgets currently say, as plain data.
-
-    Dirty tracking compares two of these rather than two ``Config`` objects:
-    the form holds *text*, and ``Path("")`` and ``Path(".")`` are the same
-    configuration but a very different thing to show the user.
-    """
-
-    mirror_root: str
-    environments: list[Environment] = field(default_factory=list)
-    editor_path: str = ""
-    window_days: int = 30
-    output_dir: str = ""
-
-
-def form_of(cfg: Config) -> FormValues:
-    """The form a configuration loads into."""
-    return FormValues(
-        mirror_root=str(cfg.mirror_root),
-        environments=list(cfg.environments),
-        editor_path=str(cfg.editor_path) if cfg.editor_path is not None else "",
-        window_days=cfg.default_window_days,
-        output_dir=str(cfg.output_dir) if cfg.output_dir is not None else "",
-    )
-
-
-def _optional_path(text: str) -> Path | None:
-    """An empty field means "use the default", not ``Path("")``."""
-    text = text.strip()
-    return Path(text) if text else None
-
-
-def check_reachable(sync, envs: Sequence[str], cancel) -> list[tuple[str, bool]]:
-    """One blocking probe per environment; runs in a worker, stops on cancel."""
-    results: list[tuple[str, bool]] = []
-    for name in envs:
-        if cancel.is_set():
-            break
-        results.append((name, sync.check_reachable(name)))
-    return results
-
-
-class SettingsPresenter(QObject):
-    """Form in, configuration out — and the only ``config.save`` call."""
-
-    config_changed = Signal(object)
-
-    def __init__(self, services: CoreServices, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._services = services
-        self.loaded: Config = services.config.load()
-
-    def load(self) -> Config:
-        self.loaded = self._services.config.load()
-        return self.loaded
-
-    def to_config(self, form: FormValues) -> Config:
-        """The loaded configuration with the edited fields replaced.
-
-        A copy, never a mutation: the fields this page does not show
-        (``compaction_time``, ``sync``, ``index``, ``log_level``) must survive
-        a save untouched.
-        """
-        return dataclasses.replace(
-            self.loaded,
-            mirror_root=Path(form.mirror_root.strip()),
-            environments=list(form.environments),
-            editor_path=_optional_path(form.editor_path),
-            default_window_days=form.window_days,
-            output_dir=_optional_path(form.output_dir),
-        )
-
-    def is_dirty(self, form: FormValues) -> bool:
-        return form != form_of(self.loaded)
-
-    def mirror_moved(self, form: FormValues) -> bool:
-        """Asked *before* saving: afterwards the old root is gone."""
-        return Path(form.mirror_root.strip()) != self.loaded.mirror_root
-
-    def errors(self, form: FormValues) -> list[str]:
-        """Italian messages from ``config.validate``, plus the one rule the core
-        cannot check: a configuration without a mirror root is meaningless to a
-        user even though ``Path("")`` validates."""
-        found = list(self._services.config.validate(self.to_config(form)))
-        if not form.mirror_root.strip():
-            found.insert(0, strings.SETTINGS_ERROR_NO_MIRROR)
-        return found
-
-    def save(self, form: FormValues) -> list[str]:
-        """Persist ``form``; the returned errors mean nothing was written."""
-        found = self.errors(form)
-        if found:
-            return found
-        cfg = self.to_config(form)
-        self._services.config.save(cfg)
-        self.loaded = cfg
-        self.config_changed.emit(cfg)
-        return []
 
 
 class SettingsPage(QWidget):
@@ -261,12 +164,15 @@ class SettingsPage(QWidget):
     # -- form state --------------------------------------------------------
 
     def form_values(self) -> FormValues:
+        """The three path fields go through ``normalised`` so that re-picking
+        the folder that is already configured is not an edit (Qt's dialogs hand
+        back forward slashes, ``str(Path(...))`` hands back Windows ones)."""
         return FormValues(
-            mirror_root=self.mirror_edit.text().strip(),
+            mirror_root=normalised(self.mirror_edit.text()),
             environments=self.env_table.environments(),
-            editor_path=self.editor_edit.text().strip(),
+            editor_path=normalised(self.editor_edit.text()),
             window_days=self._window_days,
-            output_dir=self.output_edit.text().strip(),
+            output_dir=normalised(self.output_edit.text()),
         )
 
     def is_dirty(self) -> bool:
@@ -320,7 +226,10 @@ class SettingsPage(QWidget):
             self.errors_label.hide()
             return
         self.errors_label.setText(
-            "\n".join([strings.SETTINGS_ERRORS_TITLE, *(f"• {e}" for e in errors)])
+            "\n".join(
+                [strings.SETTINGS_ERRORS_TITLE,
+                 *(strings.SETTINGS_ERROR_BULLET + e for e in errors)]
+            )
         )
         self.errors_label.show()
 
@@ -365,10 +274,18 @@ class SettingsPage(QWidget):
         if not envs:
             self.check_label.setText(strings.SETTINGS_CHECK_NONE)
             return
-        self.check_label.setText(strings.SETTINGS_CHECK_RUNNING)
         job = self._runner.submit(CHECK_JOB, check_reachable, self._services.sync, tuple(envs))
-        if job is not None:
-            job.signals.result.connect(self._on_checked)
+        if job is None:  # the application is closing: no job, so no "in corso…"
+            return
+        self.check_label.setText(strings.SETTINGS_CHECK_RUNNING)
+        job.signals.result.connect(self._on_checked)
+        # Without this the label would sit on "Verifica in corso…" for ever if
+        # a probe raised something `check_reachable` does not swallow.
+        job.signals.error.connect(
+            lambda _kind, message: self.check_label.setText(
+                strings.SETTINGS_CHECK_FAILED.format(message=message)
+            )
+        )
 
     def _on_checked(self, results: object) -> None:
         parts = [

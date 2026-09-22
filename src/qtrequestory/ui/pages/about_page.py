@@ -11,6 +11,7 @@ machine where the log matters.
 """
 from __future__ import annotations
 
+import re
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -39,6 +40,22 @@ MAX_LOG_LINES = 500
 LOG_JOB = "about-log"
 MONOSPACE_FAMILIES = ("Cascadia Mono", "Consolas")
 
+#: ``core.logsetup.APP_LOG_FORMAT`` is ``[<asctime>] <LEVELNAME> <message>``.
+#: Only the level *field* is read — matching the word anywhere in the line
+#: would turn a message that merely mentions an error into one.
+LEVEL_RE = re.compile(r"^\[[^]]*\]\s+(?P<level>[A-Z]{4,8})\s")
+
+
+def line_level(line: str) -> str | None:
+    """The level a log line carries, or None for a line written without one.
+
+    ``app.log`` only gained its level field in this version, so a mirror that
+    has been in use for a while still holds level-less lines: they are not an
+    error, they simply belong to no level filter.
+    """
+    match = LEVEL_RE.match(line)
+    return match.group("level") if match is not None else None
+
 
 def tail_lines(path: Path, n: int) -> list[str]:
     """The last ``n`` lines of ``path``; a missing or unreadable file is empty.
@@ -60,11 +77,13 @@ class AboutPage(QWidget):
     FILTER_ALL = "all"
     FILTER_WARNINGS = "warn"
     FILTER_ERRORS = "error"
-    #: Uppercase tokens that mark a line. ``logsetup`` writes ``[ts] message``
-    #: without a level field, so the level of a line that matters shows up as
-    #: the uppercase word the message itself carries; the match is
-    #: case-sensitive on purpose, so an Italian "errore" is not an ERROR.
-    TOKENS = {FILTER_WARNINGS: ("WARN",), FILTER_ERRORS: ("ERROR",)}
+    #: Which ``logging`` level names each filter keeps. ``CRITICAL`` belongs
+    #: with the errors: a user looking for what went wrong must not have to
+    #: know that the worst failures are logged under a different name.
+    LEVELS = {
+        FILTER_WARNINGS: frozenset({"WARNING"}),
+        FILTER_ERRORS: frozenset({"ERROR", "CRITICAL"}),
+    }
 
     #: ``(key, label, can_open_as_text)`` — the index database is binary, so it
     #: only offers its folder.
@@ -112,6 +131,7 @@ class AboutPage(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(QLabel(strings.ABOUT_SUBTITLE))
         layout.addWidget(self.version_label)
+        layout.addWidget(QLabel(strings.ABOUT_PATHS_LABEL))
         layout.addWidget(self._paths_box())
         layout.addWidget(QLabel(strings.ABOUT_LOG_LABEL))
         layout.addLayout(self._log_toolbar())
@@ -234,15 +254,21 @@ class AboutPage(QWidget):
         return self.filter_combo.currentData()
 
     def _render(self) -> None:
-        mode = self.current_filter()
-        tokens = self.TOKENS.get(mode)
-        shown = self._lines if tokens is None else [
-            line for line in self._lines if any(token in line for token in tokens)
+        levels = self.LEVELS.get(self.current_filter())
+        shown = self._lines if levels is None else [
+            line for line in self._lines if line_level(line) in levels
         ]
-        self.log_view.setPlainText("\n".join(shown) if shown else strings.ABOUT_LOG_EMPTY)
+        if shown:
+            self.log_view.setPlainText("\n".join(shown))
+        else:  # an empty log and an empty filter result are not the same thing
+            self.log_view.setPlainText(
+                strings.ABOUT_LOG_EMPTY if not self._lines else strings.ABOUT_LOG_NO_MATCH
+            )
 
     def _copy_all(self) -> None:
-        QGuiApplication.clipboard().setText(self.log_view.toPlainText())
+        """Copia *tutto*: the whole tail, not the filtered view — the filter is
+        there to read with, and pasting a placeholder into a chat helps nobody."""
+        QGuiApplication.clipboard().setText("\n".join(self._lines))
         self._status(strings.ABOUT_LOG_COPIED)
 
     def _status(self, text: str) -> None:

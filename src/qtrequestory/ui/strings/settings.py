@@ -30,6 +30,8 @@ SETTINGS_CHECK_NONE = "Nessun ambiente da verificare."
 SETTINGS_CHECK_REACHABLE = "{name}: raggiungibile"
 SETTINGS_CHECK_UNREACHABLE = "{name}: non raggiungibile"
 SETTINGS_CHECK_SEPARATOR = " · "
+#: {message} = why the reachability check could not be completed.
+SETTINGS_CHECK_FAILED = "Verifica non riuscita: {message}"
 SETTINGS_CHECK_HINT = (
     "Gli ambienti sono raggiungibili solo da rete aziendale o VPN: "
     "se ora non lo sono, va bene lo stesso."
@@ -63,6 +65,8 @@ SETTINGS_CONFIG_PATH = "File di configurazione: {path}"
 
 SETTINGS_SAVED = "Impostazioni salvate"
 SETTINGS_ERRORS_TITLE = "Correggi questi errori prima di salvare:"
+#: Prefix of each line of that list.
+SETTINGS_ERROR_BULLET = "• "
 SETTINGS_ERROR_NO_MIRROR = "indica la cartella dei log locali"
 SETTINGS_REINDEX_TITLE = "Cartella dei log cambiata"
 SETTINGS_REINDEX_QUESTION = "Vuoi indicizzare i log presenti nella nuova cartella ora?"

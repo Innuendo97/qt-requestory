@@ -2,20 +2,34 @@
 
 The log is read in a worker, so every assertion about its contents waits for
 the job instead of reading the widget straight away.
+
+``LOG_LINES`` is written in the format ``core.logsetup.APP_LOG_FORMAT``
+produces — a fixture in a shape the application never writes would let the
+level filter pass here and match nothing in the field, so one test below feeds
+the page a file written by ``configure_logging`` itself.
 """
 from __future__ import annotations
+
+import logging
 
 import pytest
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.pages.about_page import AboutPage, MAX_LOG_LINES, tail_lines
+from qtrequestory.ui.pages.about_page import (
+    AboutPage,
+    MAX_LOG_LINES,
+    line_level,
+    tail_lines,
+)
 
 LOG_LINES = [
-    "[2026-09-22 09:00:00] avvio dell'applicazione",
+    "[2026-09-22 09:00:00] INFO avvio dell'applicazione",
     "[2026-09-22 09:00:01] WARNING indice non aggiornato",
-    "[2026-09-22 09:00:02] coll: scaricato un file",
+    "[2026-09-22 09:00:02] INFO coll: scaricato un file",
     "[2026-09-22 09:00:03] ERROR download non riuscito",
 ]
+#: What builds before this one wrote: ``[timestamp] message``, no level.
+LEGACY_LINE = "[2026-09-21 18:00:00] riga di una versione precedente"
 
 
 class StubWindow:
@@ -37,6 +51,31 @@ def app_log(fake_core):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(LOG_LINES) + "\n", encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def real_app_log(fake_core):
+    """``app.log`` as ``core.logsetup`` writes it, into the fake core's paths.
+
+    ``configure_logging`` reconfigures the *global* root logger, so the
+    previous handlers are put back (and the new ones closed, or Windows keeps
+    the temp file locked) whatever the test does.
+    """
+    from qtrequestory.core.logsetup import SYNC_LOGGER, configure_logging
+
+    loggers = (logging.getLogger(), logging.getLogger(SYNC_LOGGER))
+    saved = [(lg, list(lg.handlers), lg.level, lg.propagate) for lg in loggers]
+    configure_logging(fake_core.paths, headless=True, level="DEBUG")
+    try:
+        yield fake_core.paths.app_log
+    finally:
+        for logger, handlers, level, propagate in saved:
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+            logger.handlers.extend(handlers)
+            logger.setLevel(level)
+            logger.propagate = propagate
 
 
 @pytest.fixture
@@ -109,13 +148,15 @@ def test_aggiorna_rereads_the_file(page, app_log, qtbot):
     qtbot.waitUntil(lambda: "riga nuova" in page.log_view.toPlainText(), timeout=3000)
 
 
-def test_copia_tutto_puts_the_visible_lines_in_the_clipboard(page, window, qtbot):
+def test_copia_tutto_copies_the_whole_tail_not_the_filtered_view(page, window):
+    """A filter is for reading with: pasting three lines (or a placeholder)
+    into a chat is not what [Copia tutto] promises."""
     from PySide6.QtGui import QGuiApplication
 
     page.set_filter(AboutPage.FILTER_ERRORS)
     page.copy_button.click()
 
-    assert QGuiApplication.clipboard().text() == page.log_view.toPlainText()
+    assert QGuiApplication.clipboard().text() == "\n".join(LOG_LINES)
     assert strings.ABOUT_LOG_COPIED in window.status
 
 
@@ -127,6 +168,62 @@ def test_a_missing_log_file_shows_a_hint_instead_of_failing(
     qtbot.addWidget(widget)
     qtbot.waitUntil(lambda: widget.log_loaded, timeout=3000)
     assert widget.log_view.toPlainText() == strings.ABOUT_LOG_EMPTY
+
+
+def test_an_empty_filter_result_is_not_an_empty_log(qtbot, fake_core, runner, window, app_log):
+    """"Nessuna riga di log" would make the user think the log is empty when it
+    is only the filter that matched nothing."""
+    app_log.write_text(LOG_LINES[0] + "\n", encoding="utf-8")
+    widget = AboutPage(fake_core, runner, window)
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget.log_loaded, timeout=3000)
+
+    widget.set_filter(AboutPage.FILTER_ERRORS)
+
+    assert widget.log_view.toPlainText() == strings.ABOUT_LOG_NO_MATCH
+
+
+def test_a_line_from_an_older_build_survives_the_filter(
+    qtbot, fake_core, runner, window, app_log
+):
+    """``app.log`` only gained its level field in this version."""
+    app_log.write_text("\n".join([LEGACY_LINE, *LOG_LINES]), encoding="utf-8")
+    widget = AboutPage(fake_core, runner, window)
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget.log_loaded, timeout=3000)
+
+    assert LEGACY_LINE in widget.log_view.toPlainText()
+    widget.set_filter(AboutPage.FILTER_ERRORS)
+    assert LEGACY_LINE not in widget.log_view.toPlainText()
+    assert "download non riuscito" in widget.log_view.toPlainText()
+
+
+def test_the_filter_matches_what_configure_logging_really_writes(
+    qtbot, fake_core, runner, window, real_app_log
+):
+    """The one test the level filter is actually worth anything on: the file is
+    written by ``core.logsetup``, not by this module."""
+    log = logging.getLogger("qtrequestory.test.about")
+    log.info("avvio dell'applicazione")
+    log.warning("indice non aggiornato")
+    log.error("download non riuscito")
+
+    widget = AboutPage(fake_core, runner, window)
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget.log_loaded, timeout=3000)
+
+    widget.set_filter(AboutPage.FILTER_WARNINGS)
+    shown = widget.log_view.toPlainText().splitlines()
+    assert len(shown) == 1
+    assert shown[0].endswith("WARNING indice non aggiornato")
+
+    widget.set_filter(AboutPage.FILTER_ERRORS)
+    shown = widget.log_view.toPlainText().splitlines()
+    assert len(shown) == 1
+    assert shown[0].endswith("ERROR download non riuscito")
+
+    widget.set_filter(AboutPage.FILTER_ALL)
+    assert len(widget.log_view.toPlainText().splitlines()) == 3
 
 
 # -- the tail helper ---------------------------------------------------------
@@ -143,3 +240,27 @@ def test_tail_lines_keeps_only_the_last_lines(tmp_path):
 
 def test_tail_lines_of_a_missing_file_is_empty(tmp_path):
     assert tail_lines(tmp_path / "assente.log", 10) == []
+
+
+# -- the level parser --------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (LOG_LINES[1], "WARNING"),
+        (LOG_LINES[3], "ERROR"),
+        (LEGACY_LINE, None),
+        ("", None),
+        # Only the level FIELD counts: a message that talks about an ERROR is
+        # not one, and neither is an Italian "errore".
+        ("[2026-09-22 09:00:00] INFO nessun ERROR qui", "INFO"),
+        ("[2026-09-22 09:00:00] errore di rete", None),
+    ],
+)
+def test_line_level_reads_the_level_field_only(line: str, expected: str | None):
+    assert line_level(line) == expected
+
+
+def test_line_level_agrees_with_the_real_formatter(real_app_log):
+    logging.getLogger("qtrequestory.test.level").critical("disco pieno")
+    assert line_level(real_app_log.read_text(encoding="utf-8").splitlines()[-1]) == "CRITICAL"

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from qtrequestory.ui import strings
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.settings_page import SettingsPage
+from qtrequestory.ui.pages.settings_presenter import normalised
 
 
 class StubWindow:
@@ -324,6 +325,41 @@ def test_a_cancelled_browse_leaves_the_field_alone(page, monkeypatch):
     page.browse_mirror_button.click()
     assert page.mirror_edit.text() == before
     assert not page.is_dirty()
+
+
+def test_repicking_the_configured_folder_is_not_an_edit(page, fake_core, monkeypatch):
+    """Qt's dialogs hand back forward slashes even on Windows, so without
+    normalisation picking the folder that is already configured would enable
+    [Salva] and broadcast a ``config_changed`` that changed nothing."""
+    configured = str(fake_core.config.load().mirror_root)
+    monkeypatch.setattr(
+        QFileDialog, "getExistingDirectory",
+        staticmethod(lambda *a, **k: configured.replace("\\", "/")),
+    )
+
+    page.browse_mirror_button.click()
+
+    assert not page.is_dirty()
+    assert not page.save_button.isEnabled()
+
+
+def test_normalised_uses_the_platform_spelling_and_keeps_empty_empty(tmp_path):
+    assert normalised(str(tmp_path).replace("\\", "/")) == str(tmp_path)
+    assert normalised("   ") == ""
+
+
+def test_a_failing_reachability_check_reports_instead_of_spinning(
+    page, fake_core, monkeypatch, qtbot
+):
+    def boom(env_name: str, timeout: float = 5.0) -> bool:
+        raise OSError("rete non disponibile")
+
+    monkeypatch.setattr(fake_core.sync, "check_reachable", boom)
+
+    page.check_button.click()
+
+    qtbot.waitUntil(lambda: "rete non disponibile" in page.check_label.text(), timeout=3000)
+    assert page.check_label.text() != strings.SETTINGS_CHECK_RUNNING
 
 
 # -- inside the shell --------------------------------------------------------
