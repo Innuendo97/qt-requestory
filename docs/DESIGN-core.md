@@ -37,7 +37,7 @@ src/qtrequestory/
 ├── core/
 │   ├── paths.py           AppPaths
 │   ├── config.py          Config, Environment, load/save/validate, import_environments_file, detect_editor
-│   ├── logsetup.py        configure_logging(paths, headless)
+│   ├── logsetup.py        configure_logging(paths, headless, level), resolve_level
 │   ├── events.py          Event dataclasses, EventSink, LoggingSink, CancelToken, Cancelled
 │   ├── daily.py           day/file-name helpers, list_local_daily_files, parse_entry_name
 │   ├── autoindex.py       parse_autoindex(html) -> RemoteIndex
@@ -130,12 +130,19 @@ def load_config(path) -> Config      # missing -> defaults, file NOT created (a 
                                      # corrupt -> renamed .broken-<ts> + defaults written back; unknown keys ignored; missing keys defaulted
 def save_config(cfg, path)           # tmp + os.replace
 def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650;
-                                     # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23
+                                     # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23;
+                                     # log_level: a name logging knows (via logsetup.resolve_level)
 def import_environments_file(path) -> list[Environment]   # JSON list [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
 def find_sidecar_environments(exe_dir) -> Path | None     # environments.json next to the exe
 def detect_editor() -> Path | None   # Notepad++ in ProgramFiles / ProgramFiles(x86) / PATH
 CONFIG_VERSION = 1; MIGRATIONS: dict[int, Callable[[dict], dict]] = {}
 ```
+`logsetup.resolve_level(level) -> (int, reason | None)` is shared by `configure_logging` and
+`validate`. `logging.getLevelName("VERBOSE")` returns the *string* `"Level VERBOSE"`, so
+`setLevel` raised `ValueError` on any hand-edited typo — before a window or a log file
+existed, in an exe built with `console=False`: the process died silently. An unknown name
+now falls back to `INFO`, and the reason is logged once the handlers are in place (so it
+lands in `app.log`) and reported by `validate`.
 
 ## `core/daily.py`
 
@@ -212,6 +219,12 @@ throttled `FileProgress` (~10/s); verify `written == size` (else `FileFailed` "t
 Never delete local files. `mark_success` only when `failed == 0` and not dry_run.
 Cancel → `.part` removed, status `cancelled`, state untouched, exit 3.
 
+The UI facade adds one network call the engine has no use for:
+`facade.SyncService.check_reachable(env: Environment, timeout=5.0) -> bool` — one GET of
+`env.url`, True only when `parse_autoindex` finds a daily or loose file (a captive portal
+answers 200 with no log at all). It takes the `Environment`, never a name: its two callers
+probe rows that are still being edited and are not in `config.json` yet. Never raises.
+
 ## Index
 
 SQLite at `<mirror>\.qtrequestory\index.sqlite`, WAL, `busy_timeout`, `PRAGMA user_version`.
@@ -228,11 +241,19 @@ CREATE TABLE entries (id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCE
 CREATE INDEX ix_entries_env_day ON entries(env, day);
 CREATE INDEX ix_entries_fdi ON entries(env, fdi);
 CREATE INDEX ix_entries_key ON entries(env, template_key);
-CREATE TABLE entry_documents (entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-  pos INTEGER NOT NULL, template_key TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY (entry_id, pos));
-CREATE INDEX ix_entry_documents_key ON entry_documents(template_key);
 ```
-Migration policy: any `user_version != SCHEMA_VERSION` → drop everything and rebuild.
+`SCHEMA_VERSION = 2`. Migration policy: any `user_version != SCHEMA_VERSION` → drop everything
+and rebuild (a dropped table keeps its name in `schema.TABLES` so older databases lose it).
+
+**Version 2 removed `entry_documents`** (one row per document per entry, plus
+`ix_entry_documents_key`). Nothing ever selected from it: it was written on every index
+build — the one operation the user waits for — and read by neither `search` nor
+`list_template_keys`, which both go through `entries.template_key` (the principal key only).
+Measured on a synthetic 72 MB / 16 000-entry mirror, a full rebuild went from 2.63 s to
+1.78 s median (2.60 → 1.61 s best of five). It was speculative extensibility; the per-entry
+document keys are still produced by the scanner as `ScannedEntry.doc_keys`, so a future
+"find the pratica that carries attachment X" mode can re-add the table deliberately,
+together with the query that reads it.
 
 ```python
 # scanner.py
@@ -250,7 +271,7 @@ On decode error: `json_ok=0`, `request_date` via `REQDATE_RE`, `ndocs=None`. `ca
 
 ```python
 # builder.py
-class IndexBuilder(conn, root, sink, cancel=None):
+class IndexBuilder(conn, root, sink, cancel=None, *, parse_json=True):   # parse_json is keyword-only
     plan(envs) -> IndexPlan(to_scan: list[LocalDailyFile], to_remove: list[int])   # new or (size,mtime_ns) changed; vanished -> remove
     update(envs, *, full_rebuild=False) -> IndexStats       # one transaction per file; newest first; ANALYZE if >10 files
     rescan_file(env, day) -> int
@@ -259,8 +280,12 @@ class IndexBuilder(conn, root, sink, cancel=None):
     key_mode: Literal["exact","prefix","contains"]="exact"; day_from: date|None=None; day_to: date|None=None; limit: int=1000
 @dataclass(frozen=True) class SearchHit: entry_id; env; day; rel_path; seq; name; fdi; template_key; call_id;
     well_formed; request_date; ndocs; dossier_number; header_offset; body_offset; body_len; json_ok
-def search(conn, q) -> list[SearchHit]     # requires fdi_prefix or template_key (else ValueError)
-def read_body(root, hit) -> bytes          # seek(header_offset), verify header line == '### '+name+'.json', then seek(body_offset).read(body_len); mismatch -> IndexStale(env, day)
+def search(conn, root, q) -> list[SearchHit]   # requires fdi_prefix or template_key (else ValueError);
+                                           # `root` is the mirror root, so every SearchHit carries its file_path
+def read_body(hit) -> bytes                # seek(header_offset), verify header line == '### '+name+'.json',
+                                           # then seek(body_offset) and read body_len+1: that extra byte must be
+                                           # CR, LF or EOF, else body_len is stale.
+                                           # Any mismatch -> IndexStale(env, day)
 class IndexStale(Exception): env; day
 @dataclass(frozen=True) class Coverage: first_day; last_day; n_files; n_entries
 def coverage(conn, env) -> Coverage | None
@@ -279,8 +304,11 @@ SQL: `env=:env AND day BETWEEN … AND (fdi >= :p AND fdi < :p_hi) AND template_
 
 ```python
 def pretty_json(raw: bytes) -> str          # json.dumps(json.loads(raw), ensure_ascii=False, indent=4); on error -> {"_parseError": str, "raw": text}
-def output_name(hit) -> str                 # '<yyyyMMdd>_<fdi or "nofdi">_<TEMPLATE_KEY>.json'
-def write_temp_file(out_dir, hit, text, *, retention_hours=24) -> Path   # housekeeping (delete files older than N h) then write; on name collision append '_<call_id>'
+def output_name(day, fdi, template_key, call_id=None) -> str   # '<yyyyMMdd>_<fdi or "nofdi">_<TEMPLATE_KEY>[_<call_id>].json'
+                                            # search.output_name_for(hit) / output_name_with_id(hit) wrap it for a SearchHit
+def write_temp_file(out_dir, name, text, *, retention_hours=24, alt_name=None) -> Path
+                                            # housekeeping (delete files older than N h) then write; when `name` already
+                                            # exists and `alt_name` (the call-id variant) is given, that one is used instead
 def save_as(path, text) -> None             # utf-8, no BOM
 def find_editor(configured: Path|None) -> Path|None   # configured → Notepad++ standard paths → PATH
 def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor, *paths) else os.startfile each; returns label
@@ -307,9 +335,13 @@ TASK_NAME = "qtRequestory Sync"; LEGACY_TASK_NAME = "NginxLogSync"
 def spec_from_config(schedule: ScheduleSettings, exe) -> TaskSpec   # the saved schedule (through
                                                                     # config.sanitised_schedule) is what gets registered
 @dataclass(frozen=True) class TaskStatus: registered; command: Path|None; args; exe_matches: bool; state; next_run; last_run; last_result: int|None
-def build_task_xml(spec, user_id, description) -> str
-def register(spec, runner=run_schtasks) ; def unregister(runner) ; def status(current_exe, runner) -> TaskStatus
-def run_now(runner) ; def detect_legacy_task(runner) -> bool ; def remove_legacy_task(runner)
+def build_task_xml(spec, user_id, description, today=None) -> str
+# every runner/task_name below is KEYWORD-ONLY (tests inject a fake runner; nothing positional)
+def register(spec, *, runner=run_schtasks, user_id=None, description=None, task_name=TASK_NAME)
+def unregister(*, runner=run_schtasks, task_name=TASK_NAME)
+def status(current_exe, *, runner=run_schtasks, task_name=TASK_NAME) -> TaskStatus
+def run_now(*, runner=run_schtasks, task_name=TASK_NAME)
+def detect_legacy_task(*, runner=run_schtasks) -> bool ; def remove_legacy_task(*, runner=run_schtasks)
 def current_exe_for_task() -> Path | None        # sys.executable when frozen; else None (dev: python -m qtrequestory)
 def is_unstable_location(exe: Path) -> str | None   # %TEMP%, Downloads, network/OneDrive -> reason
 ```
@@ -323,6 +355,13 @@ def is_unstable_location(exe: Path) -> str | None   # %TEMP%, Downloads, network
 `CREATE_NO_WINDOW`, `encoding="oem", errors="replace"`. Status via `/Query /TN name /XML ONE`
 (parse Command/Arguments) + `/Query /TN name /V /FO CSV /NH` (positional columns).
 Pitfalls: never derive paths from argv[0]/cwd; windowed exe has `sys.stdout is None`.
+`status` and `detect_legacy_task` **never raise**: both are called while a UI page (and the
+wizard) is being *built*, and `MainWindow._build_page` turns any exception from a factory
+into "La pagina … non è disponibile in questa versione". `OSError` from the runner
+(`FileNotFoundError` when `%SystemRoot%\System32` is off `PATH`) and `ET.ParseError` from
+garbled output are logged and answered with `NOT_REGISTERED` / `False`. A failure of the
+*second* (`/V /FO CSV`) query only blanks the runtime columns — the registration already
+read from the XML is kept.
 
 ## `core/jobs.py`, `cli.py`
 

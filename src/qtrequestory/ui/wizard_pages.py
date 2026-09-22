@@ -305,15 +305,19 @@ class EnvironmentsPage(QWizardPage):
     def check_reachability(self) -> Job | None:
         """One short HTTP GET per environment, in the shared runner.
 
-        The names are read here, on the GUI thread, and only they travel to the
-        worker: the table is a widget and a worker never touches one.
+        The rows are read here, on the GUI thread, and only the resulting
+        frozen ``Environment`` dataclasses travel to the worker: the table is a
+        widget and a worker never touches one. The URLs go with them — during
+        the wizard nothing has been saved yet, so a probe by name alone would
+        have no configuration to resolve against and would report every
+        environment unreachable.
         """
-        names = [e.name for e in self.environments() if e.name]
-        if not names:
+        envs = [e for e in self.environments() if e.name]
+        if not envs:
             self.reachability_label.setText(strings.WIZARD_P2_CHECK_EMPTY)
             return None
         job = self._runner.submit(
-            REACHABILITY_JOB, _probe_reachability, self._services.sync.check_reachable, names
+            REACHABILITY_JOB, _probe_reachability, self._services.sync.check_reachable, envs
         )
         if job is None:  # the application is shutting down
             return None
@@ -349,7 +353,7 @@ class EnvironmentsPage(QWizardPage):
         )
 
 
-def _probe_reachability(check, names: list[str], *, cancel) -> dict[str, bool]:
+def _probe_reachability(check, envs: list[Environment], *, cancel) -> dict[str, bool]:
     """Runs on a pool thread: plain data in, plain data out, no widgets.
 
     ``cancel`` is injected by the worker and checked between environments. Each
@@ -358,10 +362,10 @@ def _probe_reachability(check, names: list[str], *, cancel) -> dict[str, bool]:
     environment and outlive ``JobRunner.shutdown``'s wait.
     """
     outcome: dict[str, bool] = {}
-    for name in names:
+    for env in envs:
         if cancel.is_set():
             break
-        outcome[name] = check(name)
+        outcome[env.name] = check(env)
     return outcome
 
 

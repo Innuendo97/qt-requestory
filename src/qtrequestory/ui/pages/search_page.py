@@ -478,6 +478,12 @@ class SearchPage(QWidget):
             hints.append(strings.SEARCH_EMPTY_HINT_TODAY.format(file=f"{day_to:%Y%m%d}.txt"))
         if 0 < len(fdi) < FULL_FDI_LEN:
             hints.append(strings.SEARCH_EMPTY_HINT_SHORT_FDI)
+        # The key match is exact (``SearchQuery.key_mode`` defaults to "exact"
+        # and nothing in the UI selects another mode), and no other label on
+        # the page admits it. Half a key returns zero rows and the user is left
+        # widening the period, which cannot help.
+        if query is not None and query.template_key:
+            hints.append(strings.SEARCH_EMPTY_HINT_EXACT_KEY)
         self.empty_no_results.set_text(strings.SEARCH_EMPTY_NO_RESULTS_TITLE, hints)
         self.empty_no_results.button.setVisible((day_to - day_from).days + 1 < WIDE_WINDOW_DAYS)
         self._set_state(STATE_NO_RESULTS)

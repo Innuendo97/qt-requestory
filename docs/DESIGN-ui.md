@@ -1,7 +1,8 @@
 # qtRequestory — UI design (v1)
 
 Stack: **PySide6 (Qt Widgets)**, `PySide6-Essentials >= 6.7`, Qt `windows11` style (native
-look, system light/dark). UI language: **Italian**, all strings in `ui/strings.py`.
+look, system light/dark). UI language: **Italian**, all strings in the `ui/strings/`
+package (one module per page, re-exported: `from qtrequestory.ui import strings`).
 `qtrequestory.ui` is the only package that may import Qt. The UI talks to the core through
 plain Python APIs (`docs/DESIGN-core.md`) and receives progress as core events converted to
 Qt signals. Widgets are dumb; presenters hold state.
@@ -42,7 +43,12 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
    exe) when present, otherwise empty with the hint "Chiedi al collega il file
    environments.json oppure inserisci nome e URL". [Verifica raggiungibilità] optional,
    never blocking: "Gli ambienti sono raggiungibili solo da rete aziendale o VPN Cisco: se
-   ora non lo sono, va bene lo stesso."
+   ora non lo sono, va bene lo stesso." The check passes each **row of the table** to
+   `sync.check_reachable(env)` — the whole `Environment`, URL included. It cannot pass a
+   name: the wizard saves `config.json` only on [Fine], so a probe that resolved names
+   against the stored configuration would find `environments == []` and report every row
+   unreachable. The same holds in Impostazioni for a row added or a URL corrected before
+   [Salva].
 3. **Automazione** — [x] Sincronizza automaticamente i log, with the schedule that would be
    registered spelled out underneath by `schedule_text.schedule_sentence` from the saved
    `schedule` block ("Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login.
@@ -129,7 +135,10 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 - Empty states (centred icon + 2 lines + 1 button, never a modal): no local log for env →
   [Vai a Sincronizzazione]; no results → hints: if `al` = today "Le chiamate di oggi
   arrivano domani con il file YYYYMMDD.txt."; window < 90 days → [Cerca negli ultimi 90
-  giorni]; FDI shorter than 8 chars → "Prova con l'FDI completo".
+  giorni]; FDI shorter than 8 chars → "Prova con l'FDI completo"; a query that carried a
+  template key → "La template key deve essere completa…" pointing at the picker, because
+  the key match is exact (`SearchQuery.key_mode` defaults to `"exact"` and nothing in the
+  UI selects `prefix`/`contains`) and half a key is the natural thing to type.
 - Output contract: the preview/copy/save/open text is exactly `extract.pretty_json(body)`,
   starts with `{\n    "documents": [`; the UI never adds headers or comments.
 
@@ -137,7 +146,8 @@ Shown when `config.is_first_run()`; also from Impostazioni → "Riesegui configu
 
 Cartella dei log locali [Sfoglia…][Apri] (change → "Vuoi indicizzare i log presenti nella
 nuova cartella ora?") · Ambienti table (abilitato/nome/URL, Aggiungi/Rimuovi/Verifica/Importa
-da file…) · Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
+da file…; [Verifica] probes the rows on screen, not what is on disk — see the wizard)
+· Notepad++ [Sfoglia…][Rileva] · Periodo predefinito (7/30/90) · Cartella file
 temporanei · Sincronizzazione automatica: Ora di avvio (`QTimeEdit`), Riprova ogni (1–12 h),
 per (0–23 h, 0 = nessuna ripetizione), [x] Esegui anche al login, plus the live summary
 sentence of `ui/pages/schedule_text.py` (shared with the Sincronizzazione status line); a save
@@ -145,6 +155,9 @@ re-registers the task when one is registered · Avanzate: [Ricostruisci indice] 
 configurazione iniziale] · Config path
 [Apri cartella]. [Annulla] [Salva] (Salva enabled only when dirty; inline validation via
 `config.validate`). Emits `config_changed` consumed by Sync/Search.
+The form is taller than a 1366×768 laptop leaves for a page (~420 px), so it lives in a
+`QScrollArea` (`widgetResizable`, no horizontal bar) and the errors label + [Annulla] [Salva]
+row stay **outside** it: the only button that commits the page can never be below the fold.
 
 ## Info page
 
@@ -157,11 +170,26 @@ tail (last 500 lines, filter Tutti/Avvisi/Errori, [Aggiorna], [Copia tutto]).
 class CancelToken (core)                       # passed to core calls
 class WorkerSignals(QObject): started, progress(object), log(str), result(object), error(str, str), finished, cancelled
 class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions -> error
-class JobRunner(QObject): QThreadPool(maxThreadCount=3); submit(name, fn, ...) -> Job
-    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel token); "search"/"preview" supersede (older results dropped by request id)
-class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> queued signal
+class JobRunner(QObject): QThreadPool(maxThreadCount=len(workers.JOB_NAMES) == 10); submit(name, fn, ...) -> Job
+    # ONE thread per job name. At most one job per name is live (EXCLUSIVE refuses a second, every
+    # other name supersedes), so that count is an exact bound and nothing ever queues: with fewer
+    # threads a [Cerca] could wait for a 20-minute download to free one. JOB_NAMES lists them all.
+    # named singleton jobs: "sync"/"index"/"scheduler" refused if running (schtasks ignores the cancel
+    # token) -> JobRunner.busy(name); every other name supersedes (the older job is silenced by _Delivery).
+    # main_window.JOB_LABELS maps each name to Italian for the status bar: the user never reads "check-envs".
+class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
 - Progress coalesced to ~10/s. Widgets never touched from workers.
+- Which thread runs what (measured in `tests/ui/test_workers.py`, not assumed): `QtEventSink.
+  __call__` — the `FileProgress` throttling included — runs on the **worker**; everything after
+  `event.emit` runs on the **GUI thread**. `JobRunner` connects `sink.event` to
+  `partial(_relay_event, delivery)`, a callable with no receiver `QObject`, and for those Qt
+  takes the **sender** as the connection's context: the sink was created on the GUI thread, so
+  the emission is queued there. (Not "the receiver lives in the GUI thread" — there is no
+  receiver. Hand the connection a worker-affine context object and the same slot would run on
+  the worker.) `Worker._emit` calls `_Delivery.send` from the worker instead, and `_forward` —
+  a signal on a GUI-thread `QObject` — queues it to the same event queue, so progress and result
+  still reach the page in the order the worker produced them.
 - Single instance: `QLocalServer` named `qtrequestory-<username>` (overridable with
   `QTREQUESTORY_INSTANCE_KEY` — a pipe name is machine-global, so the test harness gives each
   pytest process its own); second launch sends `activate` and exits; primary raises its
@@ -183,6 +211,9 @@ page with three log lines + magnifier, accent `#0F6CBD`, exported `.ico` 16/24/3
 
 ## Testability
 
+- `ui/strings/` is a package, one module per page (`common`, `search`, `sync`, `settings`,
+  `wizard`, `about`), all re-exported from `qtrequestory.ui.strings`. Sizes are formatted in
+  exactly one place, `ui/pages/sync_format.format_size` (`whole_kb=True` for the results table).
 - `ui/contracts.py`: Protocols + dataclasses for everything the UI consumes from core
   (`ConfigApi`, `SyncApi`, `SchedulerApi`, `IndexApi`, `ExtractApi`) — the core modules
   satisfy them structurally; `tests/fakes/fake_core.py` implements them in memory (synthetic

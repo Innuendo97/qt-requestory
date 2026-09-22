@@ -17,6 +17,7 @@ from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from qtrequestory.ui import strings
+from qtrequestory.ui.contracts import Environment
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.settings_page import SettingsPage
 from qtrequestory.ui.pages.settings_presenter import form_of, normalised
@@ -58,6 +59,33 @@ def _answer(monkeypatch, button: QMessageBox.StandardButton) -> list[tuple]:
 
     monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     return asked
+
+
+# -- reachable on a small screen ---------------------------------------------
+
+def test_the_form_scrolls_and_salva_stays_put(qtbot, page):
+    """The whole configuration is one tall form; [Salva] must not fall off it.
+
+    On a 1366x768 laptop the page gets roughly 420 px of height once the
+    title bar, the rail and the status bar have taken their share. The form
+    goes in a QScrollArea and the [Annulla]/[Salva] row stays OUTSIDE it, so
+    the one button that commits the page can never be scrolled away.
+    """
+    from PySide6.QtWidgets import QScrollArea
+
+    page.resize(1000, 420)
+    page.show()
+    qtbot.waitExposed(page)
+
+    scroll = page.findChild(QScrollArea)
+    assert scroll is not None, "the tall form is scrollable"
+    assert scroll.widgetResizable(), "the form must still use the full width"
+    assert page.minimumSizeHint().height() <= 420, "the page fits a small screen"
+
+    assert not scroll.widget().isAncestorOf(page.save_button), "pinned, not scrolled"
+    assert not scroll.widget().isAncestorOf(page.cancel_button)
+    assert page.save_button.isVisible()
+    assert page.save_button.geometry().bottom() <= page.height()
 
 
 # -- loading -----------------------------------------------------------------
@@ -371,6 +399,23 @@ def test_verifica_reports_every_environment(page, fake_core, qtbot):
     text = page.check_label.text()
     assert strings.SETTINGS_CHECK_REACHABLE.format(name="coll") in text
     assert strings.SETTINGS_CHECK_UNREACHABLE.format(name="svil") in text
+
+
+def test_verifica_probes_the_url_on_screen_not_the_one_already_saved(
+    page, fake_core, qtbot, monkeypatch
+):
+    """A URL corrected in the table is probed before [Salva] — that correction
+    is the whole reason the user presses [Verifica]."""
+    probed: list[Environment] = []
+    monkeypatch.setattr(fake_core.sync, "check_reachable",
+                        lambda env, timeout=5.0: probed.append(env) or True)
+    edited = [Environment("coll", "https://example.invalid/coll-corretto/", True)]
+    page.env_table.set_environments(edited)
+
+    page.check_button.click()
+
+    qtbot.waitUntil(lambda: bool(probed), timeout=3000)
+    assert probed == edited
 
 
 def test_a_malformed_environments_file_is_reported_and_changes_nothing(

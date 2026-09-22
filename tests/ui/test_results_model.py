@@ -16,6 +16,7 @@ from PySide6.QtCore import QModelIndex, Qt
 
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import SearchHit
+from qtrequestory.ui.pages import sync_format
 from qtrequestory.ui.results_model import (
     ResultsModel,
     ResultsProxy,
@@ -96,10 +97,17 @@ def test_the_formatters_speak_the_page_s_language():
 
 
 def test_sizes_are_whole_kilobytes_rounded_up():
-    assert format_size(4096) == strings.SEARCH_SIZE_KB.format(n="4")
-    assert format_size(300) == strings.SEARCH_SIZE_KB.format(n="1"), "a small body is 1 KB, not 0"
-    assert format_size(0) == strings.SEARCH_SIZE_KB.format(n="0")
-    assert format_size(2 * 1024 * 1024) == strings.SEARCH_SIZE_KB.format(n="2.048")
+    """One unit down the whole column, so rows compare by eye.
+
+    Delegated to ``sync_format.format_size(..., whole_kb=True)``: this module
+    used to round sizes on its own, and the same body then read "1.434 KB" here
+    and "1,4 MB" in the status bar after one click.
+    """
+    assert format_size(4096) == strings.SYNC_UNIT_KB.format(n="4")
+    assert format_size(300) == strings.SYNC_UNIT_KB.format(n="1"), "a small body is 1 KB, not 0"
+    assert format_size(0) == strings.SYNC_UNIT_KB.format(n="0")
+    assert format_size(2 * 1024 * 1024) == strings.SYNC_UNIT_KB.format(n="2.048")
+    assert format_size(1024) == sync_format.format_size(1024, whole_kb=True)
 
 
 # ------------------------------------------------------------------ shape ---
@@ -141,7 +149,7 @@ def test_every_visible_column_renders_its_field(model):
     assert display(model, 0, ResultsModel.COL_KEY) == KEY_LONG, "full text; the delegate elides"
     assert display(model, 0, ResultsModel.COL_FDI) == "aaaaaaaa" + strings.SEARCH_ELLIPSIS
     assert display(model, 0, ResultsModel.COL_NDOCS) == "3"
-    assert display(model, 0, ResultsModel.COL_SIZE) == strings.SEARCH_SIZE_KB.format(n="4")
+    assert display(model, 0, ResultsModel.COL_SIZE) == strings.SYNC_UNIT_KB.format(n="4")
 
 
 def test_a_missing_time_and_an_unknown_document_count_have_their_own_glyphs(model):

@@ -332,6 +332,27 @@ def test_validate_reports_each_problem(tmp_path: Path):
     assert len(errors) == 6
 
 
+@pytest.mark.parametrize("level", ["DEBUG", "info", "Warning", "ERROR", "CRITICAL"])
+def test_validate_accepts_every_level_name_whatever_the_case(tmp_path: Path, level: str):
+    cfg = _sample_config(tmp_path)
+    cfg.log_level = level
+    assert validate(cfg) == []
+
+
+@pytest.mark.parametrize("level", ["VERBOSE", "TRACE", "", "INFOO"])
+def test_validate_reports_an_unusable_log_level(tmp_path: Path, level: str):
+    """``log_level`` had no validation at all, so a hand-edited typo was only
+    discovered by ``configure_logging`` — which runs before any window exists
+    and, in the windowed exe, killed the process without a word. It now falls
+    back to INFO there; here is where the user is *told*."""
+    cfg = _sample_config(tmp_path)
+    cfg.log_level = level
+    errors = validate(cfg)
+    assert len(errors) == 1
+    assert "log_level" in errors[0]
+    assert "INFO" in errors[0], "the message names the levels that do work"
+
+
 def test_validate_window_upper_bound(tmp_path: Path):
     cfg = _sample_config(tmp_path)
     cfg.default_window_days = 3650

@@ -70,8 +70,11 @@ SEARCH_COL_FILE = "File"
 SEARCH_VALUE_MISSING = "—"
 #: Shown where the value should exist but could not be read (unparsable body).
 SEARCH_VALUE_UNKNOWN = "?"
-#: {n} = kilobytes, already grouped with the Italian thousands separator.
-SEARCH_SIZE_KB = "{n} KB"
+# Sizes are NOT spelled here: the whole application formats them through
+# ``ui/pages/sync_format.format_size`` and the ``SYNC_UNIT_*`` constants. Three
+# private size formatters is exactly how the same body came to read
+# "1.434 KB" in this table and "1,4 MB" in the status bar of the same click.
+
 SEARCH_ELLIPSIS = "…"
 
 # --- row context menu -------------------------------------------------------
@@ -99,6 +102,13 @@ SEARCH_EMPTY_NO_RESULTS_HINT = "Controlla l'ambiente, il periodo e i filtri."
 #: {file} = YYYYMMDD.txt of today; shown when the window ends today.
 SEARCH_EMPTY_HINT_TODAY = "Le chiamate di oggi arrivano domani con il file {file}."
 SEARCH_EMPTY_HINT_SHORT_FDI = "Prova con l'FDI completo."
+#: Shown whenever the query carried a template key: the match is exact, and
+#: nothing else on the page says so. Keys come in suffix families
+#: (_LUCE / _GAS / _DUAL / _386), so typing half of one is the natural mistake.
+SEARCH_EMPTY_HINT_EXACT_KEY = (
+    "La template key deve essere completa: la ricerca non accetta parti di key. "
+    "Scegli la key dall'elenco a discesa del campo «Template key»."
+)
 SEARCH_EMPTY_WIDEN_BTN = "Cerca negli ultimi 90 giorni"
 
 # --- preview slot -----------------------------------------------------------
@@ -141,13 +151,10 @@ PREVIEW_ERROR = "Impossibile leggere il body: {message}"
 
 # -- status bar messages -----------------------------------------------------
 
-#: {size} = the size of the copied text ("312 KB").
+#: {size} = the size of the copied text ("312,5 KB"), built by
+#: ``sync_format.format_size`` from the ``SYNC_UNIT_*`` constants — the same
+#: ones the Sincronizzazione page and the results table use.
 PREVIEW_STATUS_COPIED = "Copiato negli appunti ({size})"
-#: The three units that {size} is built from; {value} is already rounded, and
-#: the megabytes carry the Italian decimal comma ("1,4 MB").
-PREVIEW_SIZE_BYTES = "{value} B"
-PREVIEW_SIZE_KB = "{value} KB"
-PREVIEW_SIZE_MB = "{value} MB"
 #: {path} = the file the user chose in the save dialog.
 PREVIEW_STATUS_SAVED = "Salvato in {path}"
 PREVIEW_STATUS_OPENED_EDITOR = "Aperto in Notepad++"

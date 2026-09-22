@@ -200,6 +200,19 @@ def test_sizes_are_italian_with_a_decimal_comma(value: int, expected: str):
     assert fmt.format_size(value) == expected
 
 
+def test_whole_kb_keeps_kilobytes_all_the_way_up_for_the_results_table():
+    """The Ricerca table wants one unit for every row, so a 1,4 MB body and a
+    312 KB one can be compared by eye; every other caller wants the readable
+    unit. One function, one flag, so the same body cannot read "1.434 KB" in
+    the table and "1,4 MB" in the status bar of the same click."""
+    assert fmt.format_size(4096, whole_kb=True) == "4 KB"
+    assert fmt.format_size(0, whole_kb=True) == "0 KB"
+    assert fmt.format_size(300, whole_kb=True) == "1 KB", "a small body is 1 KB, never 0 KB"
+    assert fmt.format_size(2 * MB, whole_kb=True) == "2.048 KB", "Italian thousands separator"
+    assert fmt.format_size(int(1.4 * MB), whole_kb=True) == "1.434 KB"
+    assert fmt.format_size(int(1.4 * MB)) == "1,4 MB", "the same body, in the readable unit"
+
+
 def test_a_rate_is_a_size_per_second():
     assert fmt.format_rate(8.2 * MB) == "8,2 MB/s"
 

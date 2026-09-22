@@ -26,12 +26,16 @@ from qtrequestory.core.events import (
     IndexStarted,
     RemoteIndexRead,
 )
-from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.contracts import CoreServices, Environment
 from tests.fakes.fake_core import ENVS, build_fake_core
 
 #: An environment the fake does not know about: the wizard lets the user import
 #: an environments.json with any names at all, so the knobs must cope.
 UNKNOWN_ENV = "prod"
+
+
+def _env(name: str) -> Environment:
+    return Environment(name, f"https://example.invalid/{name}/")
 
 
 @pytest.fixture
@@ -99,7 +103,7 @@ def test_knobs_tolerate_an_env_the_fake_does_not_know(fake):
     built on an imported environments.json must not die in a KeyError."""
     sync = fake.sync
     sync.set_unreachable(UNKNOWN_ENV)
-    assert sync.check_reachable(UNKNOWN_ENV) is False
+    assert sync.check_reachable(_env(UNKNOWN_ENV)) is False
     assert sync.env_status(UNKNOWN_ENV).env == UNKNOWN_ENV
     assert sync.is_fresh(UNKNOWN_ENV) is False
 

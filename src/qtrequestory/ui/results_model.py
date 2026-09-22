@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QStyledItemDelegate
 
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import SearchHit
+from qtrequestory.ui.pages import sync_format
 
 __all__ = [
     "ElideMiddleDelegate", "ResultsModel", "ResultsProxy",
@@ -67,9 +68,14 @@ def format_time(request_date: str | None) -> str:
 
 
 def format_size(n_bytes: int) -> str:
-    """Whole kilobytes, rounded UP so a small body never reads as ``0 KB``."""
-    kb = -(-int(n_bytes) // 1024)
-    return strings.SEARCH_SIZE_KB.format(n=f"{kb:,}".replace(",", "."))
+    """Whole kilobytes, rounded UP so a small body never reads as ``0 KB``.
+
+    A thin alias over the one size formatter of the UI. It used to be a third
+    independent implementation, and the Ricerca table and the status bar then
+    disagreed about the very same body ("1.434 KB" against "1,4 MB") within one
+    click.
+    """
+    return sync_format.format_size(n_bytes, whole_kb=True)
 
 
 def format_fdi(fdi: str | None) -> str:

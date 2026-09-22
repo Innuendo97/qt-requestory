@@ -379,6 +379,28 @@ def test_no_results_explains_what_to_try_next(qtbot, page):
     assert page.empty_no_results.button.isVisible(), "31 days: widening to 90 is worth offering"
 
 
+def test_a_fruitless_template_key_says_the_key_must_be_complete(qtbot, page):
+    """The key match is exact, and nothing on the page says so.
+
+    Keys come in suffix families (``_LUCE`` / ``_GAS`` / ``_DUAL`` / ``_386``),
+    so typing half of one and pressing Invio is the natural thing to do — and
+    it returns zero rows while the empty state talks about the *period*. Until
+    a "contiene / inizia con / esatta" control exists, the hint has to say it
+    and point at the list that does hold the complete keys.
+    """
+    search(qtbot, page, key="MOD_TEST_SHEET",
+           day_from=date(2026, 1, 1), day_to=date(2026, 1, 31))
+
+    assert page.current_state() == "no_results"
+    assert strings.SEARCH_EMPTY_HINT_EXACT_KEY in page.empty_no_results.text()
+
+
+def test_the_key_hint_is_absent_when_no_key_was_searched(qtbot, page):
+    search(qtbot, page, fdi="aaaa", day_from=date(2026, 1, 1), day_to=date(2026, 1, 31))
+
+    assert strings.SEARCH_EMPTY_HINT_EXACT_KEY not in page.empty_no_results.text()
+
+
 def test_a_window_ending_today_warns_that_today_s_calls_arrive_tomorrow(qtbot, page):
     today = date.today()
     search(qtbot, page, fdi="ffff", day_from=today - timedelta(days=6), day_to=today)

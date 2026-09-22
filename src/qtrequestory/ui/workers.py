@@ -43,7 +43,8 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgress, LogMessage
 
 __all__ = [
-    "SCHEDULER_JOB", "CancelToken", "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals",
+    "DEFAULT_MAX_THREADS", "JOB_NAMES", "SCHEDULER_JOB", "CancelToken", "Job", "JobRunner",
+    "QtEventSink", "Worker", "WorkerSignals",
 ]
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,29 @@ PROGRESS_INTERVAL_S = 0.1
 #: and Impostazioni (a save re-registers it) — and they must share one name to
 #: be mutually exclusive (see :attr:`JobRunner.EXCLUSIVE`).
 SCHEDULER_JOB = "scheduler"
+
+#: Every name a page submits under, in one place. At most ONE job per name is
+#: ever live — :attr:`JobRunner.EXCLUSIVE` refuses a second, and every other
+#: name supersedes the previous one — so this list is an exact upper bound on
+#: the number of jobs that can run at the same time, and therefore the right
+#: size for the pool. A name missing here is a job that may have to WAIT for a
+#: 20-minute download before it starts; ``tests/ui/test_workers.py`` checks the
+#: list against the constants the pages define.
+JOB_NAMES = (
+    "sync",                 # SyncPage: download + index
+    "index",                # Impostazioni: [Ricostruisci indice]
+    SCHEDULER_JOB,          # SyncPage checkbox and a save in Impostazioni
+    "search",               # Ricerca: the query
+    "search_keys",          # Ricerca: the template-key completer
+    "search_plan",          # Ricerca: the stale-index banner
+    "preview",              # Ricerca: the body of the selected row
+    "check-envs",           # Impostazioni: [Verifica]
+    "about-log",            # Info: the app.log tail
+    "wizard-reachability",  # first-run wizard, page 2
+)
+
+#: One thread per name in :data:`JOB_NAMES`, so nothing ever queues.
+DEFAULT_MAX_THREADS = len(JOB_NAMES)
 
 _next_id = itertools.count(1).__next__
 
@@ -82,9 +106,19 @@ class WorkerSignals(QObject):
 class QtEventSink(QObject):
     """A core ``EventSink`` (a callable) that re-emits events as a Qt signal.
 
-    Created on the GUI thread and called from the worker thread: because the
-    object lives in the GUI thread, Qt queues every connected slot there, which
-    is what makes it legal for a slot to touch widgets.
+    Created on the GUI thread and called from the worker thread. The
+    ``__call__`` itself — including the ``FileProgress`` throttling below —
+    runs on the WORKER; everything downstream of ``event.emit`` runs on the
+    GUI thread, and that is what makes it legal for a slot to touch widgets.
+
+    Why it is queued is worth writing down, because the usual explanation ("the
+    receiver lives in the GUI thread") does not apply here: ``JobRunner``
+    connects ``event`` to ``partial(_relay_event, delivery)``, a callable with
+    no receiver ``QObject`` at all. For such a connection Qt takes the SENDER
+    as the context, and this sink was created on the GUI thread — so an
+    emission from a pool thread is queued there. Give the connection a
+    worker-affine context object and the same slot would run on the worker
+    instead. ``tests/ui/test_workers.py`` measures it rather than trusting it.
 
     ``FileProgress`` is throttled to one event per ``min_interval`` seconds —
     the core emits one per downloaded chunk, which is thousands per file. No
@@ -129,13 +163,16 @@ class _Delivery(QObject):
     def __init__(self, job: Job) -> None:
         super().__init__()
         self._job = job
-        self._forward.connect(self._on_forward)  # queued: emitted from the worker
+        # Queued when `send` is called from a worker (Worker._emit does), a
+        # direct call when it is already on the GUI thread (the sink relay,
+        # which Qt has queued here first). Either way the slot runs here.
+        self._forward.connect(self._on_forward)
 
     def is_live(self) -> bool:
         return self._job.is_live()
 
     def send(self, name: str, *args: Any) -> None:
-        """Called from the worker thread; ``name`` is a ``WorkerSignals`` member."""
+        """``name`` is a ``WorkerSignals`` member. Callable from either thread."""
         self._forward.emit(name, args)
 
     def _on_forward(self, name: str, args: tuple) -> None:
@@ -264,12 +301,14 @@ class Job:
 class JobRunner(QObject):
     """The one thread pool of the application, shared by every page.
 
-    Four threads, one per name that can be live at the same time: ``sync`` and
-    ``index`` (both exclusive) plus ``search`` and ``preview``. ``scheduler``
-    (also exclusive) is the fifth name and simply queues behind them — which is
-    fine, it is a short ``schtasks`` call nothing waits on — but the four that
-    the UI actually overlaps must never wait for each other. The runner is
-    created by ``run_gui`` and passed to every page factory.
+    One thread per name in :data:`JOB_NAMES` — ten of them — because exactly
+    one job per name is ever live and therefore nothing can ever queue. The
+    pool used to hold four threads while the UI submitted nine names, which
+    meant a [Cerca] could sit behind a 20-minute download waiting for a
+    *thread*, not for anything it needed. Idle pool threads are not created
+    until a job needs one, so the ceiling costs nothing when the user is doing
+    one thing at a time. The runner is created by ``run_gui`` and passed to
+    every page factory.
     """
 
     #: A submit with one of these names is refused while one is still running,
@@ -282,7 +321,8 @@ class JobRunner(QObject):
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)
 
-    def __init__(self, parent: QObject | None = None, *, max_threads: int = 4,
+    def __init__(self, parent: QObject | None = None, *,
+                 max_threads: int = DEFAULT_MAX_THREADS,
                  progress_interval: float = PROGRESS_INTERVAL_S) -> None:
         super().__init__(parent)
         self._pool = QThreadPool(self)
@@ -319,6 +359,9 @@ class JobRunner(QObject):
         job = Job(_next_id(), name, signals, sink, CancelToken())
         delivery = _Delivery(job)
         job._delivery = delivery
+        # A partial has no receiver QObject, so Qt uses the SENDER as context:
+        # the sink was built here, on the GUI thread, so an emission from the
+        # worker is queued to this thread. See QtEventSink.
         sink.event.connect(partial(_relay_event, delivery))
         self._jobs[name] = job
 
@@ -334,6 +377,11 @@ class JobRunner(QObject):
         """Deferred pool start; skipped when the application is quitting."""
         if not self._closing:
             self._pool.start(worker)
+
+    def max_thread_count(self) -> int:
+        """How many jobs can run at once. Exposed so a test can pin it to
+        ``len(JOB_NAMES)`` rather than to a number written twice."""
+        return self._pool.maxThreadCount()
 
     def job(self, name: str) -> Job | None:
         """The last job submitted under ``name`` (running or not)."""

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import os
 import subprocess
 import tempfile
@@ -34,6 +35,8 @@ from typing import Callable
 
 from qtrequestory.core.config import ScheduleSettings, parse_hhmm, sanitised_schedule
 from qtrequestory.core.paths import executable_path
+
+log = logging.getLogger(__name__)
 
 TASK_NAME = "qtRequestory Sync"
 LEGACY_TASK_NAME = "NginxLogSync"
@@ -270,7 +273,18 @@ def run_now(*, runner: CommandRunner = run_schtasks, task_name: str = TASK_NAME)
 
 
 def detect_legacy_task(*, runner: CommandRunner = run_schtasks) -> bool:
-    return _exists(LEGACY_TASK_NAME, runner)
+    """True when the old PowerShell task is still there — never raises.
+
+    Same reason as :func:`status`: this runs while the first-run wizard's third
+    page is being built, and an unusable ``schtasks`` must not take the wizard
+    down with it. "No legacy task" is the safe answer — the worst case is that
+    nobody offers to remove a task that is not in the way.
+    """
+    try:
+        return _exists(LEGACY_TASK_NAME, runner)
+    except OSError as exc:
+        log.warning("schtasks non eseguibile (%s): nessun task legacy rilevato", exc)
+        return False
 
 
 def remove_legacy_task(*, runner: CommandRunner = run_schtasks) -> None:
@@ -302,21 +316,54 @@ def _same_file(a: Path, b: Path) -> bool:
 
 
 def status(current_exe: Path | None, *, runner: CommandRunner = run_schtasks, task_name: str = TASK_NAME) -> TaskStatus:
-    """Registered? Pointing at *this* exe? Plus the runtime info schtasks reports."""
-    result = runner(["/Query", "/TN", task_name, "/XML", "ONE"])
+    r"""Registered? Pointing at *this* exe? Plus the runtime info schtasks reports.
+
+    **Never raises.** ``SyncPage.__init__`` calls this, and a page factory that
+    raises is degraded by ``MainWindow._build_page`` into "La pagina
+    «Sincronizzazione» non è disponibile in questa versione" — the page the
+    user needs most, replaced by a label, for a reason that has nothing to do
+    with it. Two real triggers, both outside our control:
+
+    * ``subprocess.run(["schtasks", ...])`` raises ``FileNotFoundError`` when
+      ``%SystemRoot%\System32`` is not on ``PATH`` (not rare on a locked-down
+      corporate desktop, and invisible to the user);
+    * ``ET.fromstring`` raises ``ParseError`` when the output is not a task
+      definition — a truncated pipe, or a tool that prepends a banner.
+
+    Either way the honest answer is "I know of no registered task", which is
+    what ``NOT_REGISTERED`` says; the reason goes to the log. The checkbox then
+    simply reads unchecked, and registering the task again is harmless.
+    """
+    try:
+        result = runner(["/Query", "/TN", task_name, "/XML", "ONE"])
+    except OSError as exc:
+        log.warning("schtasks non eseguibile (%s): task considerato non registrato", exc)
+        return NOT_REGISTERED
     if result.returncode != 0:
         return NOT_REGISTERED
 
-    root = _parse_task_xml(result.stdout or "")
+    try:
+        root = _parse_task_xml(result.stdout or "")
+    except ET.ParseError as exc:
+        log.warning("XML del task illeggibile (%s): task considerato non registrato", exc)
+        return NOT_REGISTERED
     command_el = root.find(f".//{{{TASK_NS}}}Exec/{{{TASK_NS}}}Command")
     args_el = root.find(f".//{{{TASK_NS}}}Exec/{{{TASK_NS}}}Arguments")
     command_text = (command_el.text or "").strip().strip('"') if command_el is not None else ""
     command = Path(command_text) if command_text else None
     args = (args_el.text or "") if args_el is not None else None
 
-    verbose = runner(["/Query", "/TN", task_name, "/V", "/FO", "CSV", "/NH"])
+    # The task IS registered: the second call only fills the runtime columns, so
+    # losing it costs a few dashes in the status line, not the registration.
+    try:
+        verbose = runner(["/Query", "/TN", task_name, "/V", "/FO", "CSV", "/NH"])
+    except OSError as exc:
+        log.warning("schtasks /V non eseguibile (%s): nessun dato di esecuzione", exc)
+        verbose = None
     next_run, state, last_run, last_result = (
-        _parse_verbose_csv(verbose.stdout or "") if verbose.returncode == 0 else (None, None, None, None)
+        _parse_verbose_csv(verbose.stdout or "")
+        if verbose is not None and verbose.returncode == 0
+        else (None, None, None, None)
     )
 
     return TaskStatus(

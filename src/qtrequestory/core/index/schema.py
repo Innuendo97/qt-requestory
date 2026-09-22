@@ -2,17 +2,27 @@
 
 The index is a pure cache over the mirrored daily files — every row can be
 rebuilt from disk in minutes. So instead of incremental migrations, any
-``PRAGMA user_version`` mismatch drops the three tables and recreates them;
+``PRAGMA user_version`` mismatch drops every known table and recreates them;
 the next ``IndexBuilder.update`` refills them. Bump ``SCHEMA_VERSION`` on any
-DDL change.
+DDL change, and leave a dropped table's name in ``TABLES`` so that an older
+database still loses it.
+
+Version 2 removed ``entry_documents`` (one row per document per entry, plus its
+index). It was written on every build and selected by nothing: pure write cost
+on the one operation the user waits for. Should a "search by attachment key"
+mode ever be wanted, the data is still on the ``ScannedEntry.doc_keys`` the
+scanner produces — re-add the table deliberately, with the query that reads it.
 """
 from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-TABLES = ("entry_documents", "entries", "files")  # drop order: children first
+#: Drop order: children first. ``entry_documents`` stays in the list although
+#: version 2 no longer creates it — that is how an index.sqlite written by
+#: version 1 gets rid of it.
+TABLES = ("entry_documents", "entries", "files")
 
 DDL = """
 CREATE TABLE files (id INTEGER PRIMARY KEY, env TEXT NOT NULL, day TEXT NOT NULL, rel_path TEXT NOT NULL,
@@ -26,9 +36,6 @@ CREATE TABLE entries (id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCE
 CREATE INDEX ix_entries_env_day ON entries(env, day);
 CREATE INDEX ix_entries_fdi ON entries(env, fdi);
 CREATE INDEX ix_entries_key ON entries(env, template_key);
-CREATE TABLE entry_documents (entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-  pos INTEGER NOT NULL, template_key TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY (entry_id, pos));
-CREATE INDEX ix_entry_documents_key ON entry_documents(template_key);
 """
 
 

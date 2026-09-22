@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import actions, strings
 from qtrequestory.ui.contracts import CoreServices, SearchHit
 from qtrequestory.ui.json_highlighter import JsonHighlighter
+from qtrequestory.ui.pages import sync_format
 from qtrequestory.ui.workers import JobRunner
 
 __all__ = ["MAX_LINES", "PREVIEW_JOB", "PreviewPane"]
@@ -396,13 +397,13 @@ def _thousands(value: int) -> str:
 
 
 def _human_size(n_bytes: int) -> str:
-    """Rounded size for the status bar ("312 KB", "1,4 MB")."""
-    if n_bytes < 1024:
-        return strings.PREVIEW_SIZE_BYTES.format(value=n_bytes)
-    if n_bytes < 1024 * 1024:
-        return strings.PREVIEW_SIZE_KB.format(value=round(n_bytes / 1024))
-    megabytes = f"{n_bytes / (1024 * 1024):.1f}".replace(".", ",")
-    return strings.PREVIEW_SIZE_MB.format(value=megabytes)
+    """Rounded size for the status bar ("312,5 KB", "1,4 MB").
+
+    The UI's one size formatter, not a fourth rounding of its own: the Ricerca
+    table shows the very same body one click earlier, and the two numbers have
+    to be recognisable as the same thing.
+    """
+    return sync_format.format_size(n_bytes)
 
 
 def _mono_font() -> QFont:

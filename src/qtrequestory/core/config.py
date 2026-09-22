@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from qtrequestory.core import paths
+from qtrequestory.core.logsetup import resolve_level
 
 log = logging.getLogger(__name__)
 
@@ -428,6 +429,13 @@ def validate(cfg: Config) -> list[str]:
         errors.append(f"default_window_days deve essere tra 1 e 3650 (trovato {cfg.default_window_days})")
     if cfg.output_retention_hours < 1:
         errors.append(f"output_retention_hours deve essere almeno 1 (trovato {cfg.output_retention_hours})")
+    # Unchecked until now, and the one field whose typo used to stop the
+    # windowed exe from starting at all (``configure_logging`` runs before any
+    # window or log file exists). It now falls back to INFO there; this is
+    # where the user is told why their level was ignored.
+    _, bad_level = resolve_level(cfg.log_level)
+    if bad_level is not None:
+        errors.append(bad_level)
     errors.extend(_schedule_errors(cfg.schedule))
     return errors
 

@@ -262,6 +262,48 @@ def test_read_body_header_check_is_bounded(indexed, monkeypatch):
     assert seen and all(0 < size < 1000 for size in seen)
 
 
+def test_a_body_that_grew_under_the_index_is_stale_not_truncated(indexed):
+    """``body_len`` was taken on trust: the header can still line up.
+
+    Both other staleness tests shift the header, which the header check
+    catches. This one keeps every offset valid and only makes the body longer —
+    an entry edited in place, or a ``.part`` that was replaced while the index
+    held the previous size. Without a check the read simply stops early and
+    hands the UI a JSON document cut in half, which is worse than an error:
+    ``pretty_json`` turns it into ``{"_parseError": ...}`` and the user has no
+    idea the file on disk is fine.
+    """
+    conn, mirror = indexed
+    hit = search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a"))[0]
+    raw = hit.file_path.read_bytes()
+    cut = hit.body_offset + hit.body_len
+    hit.file_path.write_bytes(raw[:cut] + b', "aggiunto": true' + raw[cut:])
+
+    with pytest.raises(IndexStale) as info:
+        read_body(hit)
+    assert (info.value.env, info.value.day) == ("svil", D16)
+
+    # the documented recovery loop heals it
+    IndexBuilder(conn, mirror.root, null_sink).rescan_file("svil", D16)
+    hit2 = search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a"))[0]
+    assert read_body(hit2).endswith(b', "aggiunto": true')
+
+
+def test_a_body_at_the_very_end_of_the_file_is_not_stale(tmp_path):
+    """The byte after the body may legitimately be nothing at all: a daily file
+    whose last line has no trailing newline still reads."""
+    conn = open_index(":memory:")
+    root = tmp_path / "mirror"
+    path = root / "coll" / "2026" / "09" / "20260918.txt"
+    path.parent.mkdir(parents=True)
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    path.write_bytes(f"### {entry_name(FDI_A, KEY_CTE)}.json\n".encode("utf-8") + body)
+
+    IndexBuilder(conn, root, null_sink).update(["coll"])
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert read_body(hit) == body
+
+
 # -------------------------------------------------------------- coverage ---
 
 def test_coverage(indexed):
