@@ -28,8 +28,10 @@ from qtrequestory.core.events import (
     CancelToken,
     CollectingSink,
     EnvFinished,
+    EnvSkipped,
     EnvStarted,
     FileDone,
+    FileFailed,
     FileProgress,
     FileStarted,
     IndexFileScanned,
@@ -294,6 +296,22 @@ class TestReachability:
         assert svc.check_reachable("coll") is True
         assert svc.check_reachable("svil", timeout=1.0) is False
 
+    def test_a_url_urllib_cannot_open_is_not_reachable(self, tmp_path: Path):
+        """An environments.json imported from a colleague may hold anything.
+
+        urllib answers a missing scheme with ``ValueError`` and an unknown one
+        with ``URLError``; the Protocol promises this method never raises, so
+        both end up as "not reachable" (Impostazioni shows the real reason
+        through ``config.validate``).
+        """
+        cfg = dataclasses.replace(_config(tmp_path), environments=[
+            Environment("noscheme", "example.invalid/AutoDeploy/Input/"),
+            Environment("ftp", "ftp://127.0.0.1:1/AutoDeploy/Input/"),
+        ])
+        svc = facade.SyncService(lambda: cfg)
+        assert svc.check_reachable("noscheme", timeout=1.0) is False
+        assert svc.check_reachable("ftp", timeout=1.0) is False
+
     def test_a_login_page_is_not_reachable(self, tmp_path: Path, stub_server: StubServer):
         """A captive portal answers 200 with HTML that holds no log file at all;
         the core treats that as unreachable and so must the UI's check."""
@@ -369,13 +387,16 @@ TASK_XML = (
 
 
 class TestSchedulerService:
-    def _runner(self, tmp_path: Path, calls: list, csv_text: str = CSV_WITH_PLACEHOLDERS, rc: int = 0):
+    def _runner(self, tmp_path: Path, calls: list, csv_text: str = CSV_WITH_PLACEHOLDERS, rc: int = 0,
+                command: str | None = None):
         import subprocess
+
+        xml = TASK_XML.format(command=command if command is not None else tmp_path / "qtRequestory.exe")
 
         def runner(args: list[str]):
             calls.append(args)
             if args[:1] == ["/Query"] and "/XML" in args:
-                return subprocess.CompletedProcess(args, rc, stdout=TASK_XML.format(command=tmp_path / "qtRequestory.exe"), stderr="")
+                return subprocess.CompletedProcess(args, rc, stdout=xml, stderr="")
             if args[:1] == ["/Query"]:
                 return subprocess.CompletedProcess(args, rc, stdout=csv_text, stderr="")
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
@@ -396,6 +417,19 @@ class TestSchedulerService:
         assert st.next_run is None   # "N/D"
         assert st.last_run is None   # ""
         assert st.last_result == 267009
+
+    def test_status_placeholder_command_is_not_a_path(self, tmp_path: Path):
+        """``Path("N/D")`` would be shown to the user as a real command."""
+        calls: list = []
+        exe = tmp_path / "qtRequestory.exe"
+        exe.write_bytes(b"MZ")
+        svc = facade.SchedulerService(
+            runner=self._runner(tmp_path, calls, command="N/D"), exe_provider=lambda: exe
+        )
+        st = svc.status()
+        assert st.registered is True
+        assert st.command is None
+        assert st.exe_matches is False
 
     def test_status_when_not_registered(self, tmp_path: Path):
         calls: list = []
@@ -615,13 +649,49 @@ class TestFakeCore:
         assert len(sink.events) == 1
         assert sink.of(LogMessage)[0].text.startswith("sincronizzazione già in corso (")
 
-    def test_fake_sync_dry_run_does_not_index(self, fake_services: CoreServices):
+    def test_fake_sync_dry_run_emits_exactly_what_the_engine_emits(self, fake_services: CoreServices):
+        """The real engine never starts a transfer under dry_run, so there is no
+        FileStarted/FileProgress either: the UI must not show a progress bar."""
         sink = CollectingSink()
         report = fake_services.sync.run(["coll"], force=True, dry_run=True, sink=sink, cancel=CancelToken())
+        assert [type(e) for e in sink.events] == [
+            SyncStarted, EnvStarted, RemoteIndexRead, EnvFinished, SyncFinished, LogMessage,
+        ]
         assert report.indexed_files == 0
-        assert sink.of(IndexStarted) == []
-        assert sink.of(FileDone) == []
         assert sink.of(SyncStarted)[0].dry_run is True
+        assert sink.of(EnvFinished)[0].result.status == "ok"
+
+    def test_fake_sync_can_report_file_errors(self, fake_services: CoreServices):
+        sync = fake_services.sync
+        sync.set_failing("coll", 2)
+        sink = CollectingSink()
+        report = sync.run(["coll"], force=True, dry_run=False, sink=sink, cancel=CancelToken())
+        assert report.exit_code == 1
+        assert len(sink.of(FileFailed)) == 2
+        result = sink.of(EnvFinished)[0].result
+        assert (result.status, result.failed, result.downloaded) == ("errors", 2, 0)
+        assert sink.of(FileDone) == []
+        assert sink.of(IndexStarted)  # a run with file errors still indexes what arrived
+        assert sync.env_status("coll").fresh is False  # the card follows the outcome
+
+    def test_fake_sync_can_report_an_env_as_already_fresh(self, fake_services: CoreServices):
+        sync = fake_services.sync
+        sync.set_fresh("svil")
+        assert sync.is_fresh("svil") is True
+        sink = CollectingSink()
+        report = sync.run(["svil"], force=False, dry_run=False, sink=sink, cancel=CancelToken())
+        assert report.exit_code == 0
+        assert [type(e) for e in sink.events] == [
+            SyncStarted, EnvStarted, EnvSkipped, EnvFinished, SyncFinished, LogMessage,
+            IndexStarted, IndexFileScanned, IndexFileScanned, IndexFinished,
+        ]
+        assert sink.of(EnvSkipped)[0].reason == "fresh"
+        assert sink.of(EnvFinished)[0].result.status == "fresh"
+        # "Sincronizza ora" is always force=True and must NOT skip
+        sink2 = CollectingSink()
+        sync.run(["svil"], force=True, dry_run=False, sink=sink2, cancel=CancelToken())
+        assert sink2.of(EnvSkipped) == []
+        assert sink2.of(FileDone)
 
     def test_fake_sync_honours_cancel(self, fake_services: CoreServices):
         sink = CollectingSink()
@@ -645,10 +715,13 @@ class TestFakeCore:
         assert sync.check_reachable("svil") is True
         sink = CollectingSink()
         report = sync.run(None, force=True, dry_run=False, sink=sink, cancel=CancelToken())
-        statuses = {e.result.status for e in sink.of(EnvFinished)}
-        assert "unreachable" in statuses
-        assert report.exit_code in (0, 2)
+        assert [e.result.status for e in sink.of(EnvFinished)] == ["unreachable", "ok"]
+        assert report.exit_code == 0  # one env still worked
         assert sync.env_status("coll").never_synced is False
+
+        sync.set_unreachable("svil")
+        report = sync.run(None, force=True, dry_run=False, sink=CollectingSink(), cancel=CancelToken())
+        assert report.exit_code == 2  # nothing reachable, like the real SyncReport
 
     def test_fake_sync_status_and_log(self, fake_services: CoreServices):
         sync = fake_services.sync
@@ -705,6 +778,24 @@ class TestFakeCore:
         assert sched.status().registered is False
         assert sched.exe_path() is None or isinstance(sched.exe_path(), Path)
         assert sched.unstable_location_reason() is None
+
+    def test_fake_index_count_local_files_honours_root(self, fake_services: CoreServices, tmp_path: Path):
+        """The wizard shows "Trovati N file" for the folder just browsed to."""
+        index = fake_services.index
+        assert index.count_local_files() == 3
+        assert index.count_local_files(tmp_path / "vuota") == 0
+        index.set_local_file_count(tmp_path / "piena", 48)
+        assert index.count_local_files(tmp_path / "piena") == 48
+        assert index.count_local_files() == 3
+
+    def test_fake_config_import_can_fail(self, fake_services: CoreServices, tmp_path: Path):
+        cfgsvc = fake_services.config
+        assert cfgsvc.import_environments_file(tmp_path / "environments.json")
+        cfgsvc.set_import_error("environments.json: JSON non valido")
+        with pytest.raises(ValueError, match="JSON non valido"):
+            cfgsvc.import_environments_file(tmp_path / "environments.json")
+        cfgsvc.set_import_error(None)
+        assert cfgsvc.import_environments_file(tmp_path / "environments.json")
 
     def test_fake_config_round_trip(self, fake_services: CoreServices):
         cfgsvc = fake_services.config

@@ -13,7 +13,8 @@ directory and a list of dataclasses.
 
 Knobs the tests use (all plain attributes/setters, no magic):
 
-* ``FakeSyncApi.set_unreachable(env)`` / ``set_reachable(env)``
+* ``FakeSyncApi.set_unreachable(env)`` / ``set_failing(env, n)`` / ``set_fresh(env)``
+  / ``set_ok(env)`` — the four outcomes a Sincronizzazione card can show
 * ``FakeSyncApi.set_lock_holder(text)``, ``FakeSyncApi.set_env_status(env, ...)``
 * ``FakeSyncApi.step_delay`` — seconds between scripted events (default tiny)
 * ``FakeSchedulerApi.set_status(...)`` / ``set_legacy(flag)``
@@ -37,7 +38,9 @@ from qtrequestory.core.events import (
     EnvStarted,
     EnvUnreachable,
     EventSink,
+    EnvSkipped,
     FileDone,
+    FileFailed,
     FileProgress,
     FileStarted,
     IndexFileScanned,
@@ -148,6 +151,12 @@ class FakeConfigApi:
             Environment(name, f"https://example.invalid/{name}/") for name in ENVS
         ]
         self.saved: list[Config] = []
+        self.import_error: str | None = None
+
+    def set_import_error(self, message: str | None) -> None:
+        """Make the next ``import_environments_file`` raise ``ValueError(message)``
+        (the wizard's malformed-file path); ``None`` clears it."""
+        self.import_error = message
 
     def is_first_run(self) -> bool:
         return self.first_run
@@ -166,6 +175,8 @@ class FakeConfigApi:
         return self.editor
 
     def import_environments_file(self, path: Path) -> list[Environment]:
+        if self.import_error is not None:
+            raise ValueError(self.import_error)
         return list(self.sidecar_environments)
 
     def find_sidecar_environments(self) -> Path | None:
@@ -184,7 +195,9 @@ class FakeSyncApi:
         self._root = root
         self._paths = paths
         self.step_delay = DEFAULT_STEP_DELAY_S
-        self.unreachable: set[str] = set()
+        #: env -> "ok" | "unreachable" | "errors" | "fresh" (default "ok")
+        self._outcomes: dict[str, str] = {}
+        self._n_failures: dict[str, int] = {}
         self.holder: str | None = None
         self.runs: list[dict] = []
         self.log_lines = [f"[2026-09-22 09:0{i}:00] coll: scaricato 2026091{i}.txt (12,5 MB)" for i in range(4)]
@@ -206,10 +219,34 @@ class FakeSyncApi:
     # -- knobs -------------------------------------------------------------
 
     def set_unreachable(self, env_name: str) -> None:
-        self.unreachable.add(env_name)
+        """``check_reachable`` says no and a run ends in ``EnvUnreachable``."""
+        self._set_outcome(env_name, "unreachable")
+
+    def set_failing(self, env_name: str, n: int = 1) -> None:
+        """A run emits ``n`` ``FileFailed`` and ends with status ``errors``."""
+        self._set_outcome(env_name, "errors")
+        self._n_failures[env_name] = n
+
+    def set_fresh(self, env_name: str) -> None:
+        """Already synced after the last compaction: a run without ``force``
+        emits ``EnvSkipped(env, "fresh")`` and nothing else, exactly like the
+        engine (with ``force`` — what "Sincronizza ora" uses — it downloads)."""
+        self._set_outcome(env_name, "fresh")
+
+    def set_ok(self, env_name: str) -> None:
+        """Back to the default scripted download."""
+        self._set_outcome(env_name, "ok")
+        self._n_failures.pop(env_name, None)
 
     def set_reachable(self, env_name: str) -> None:
-        self.unreachable.discard(env_name)
+        """Alias of ``set_ok`` kept for readability at the call site."""
+        self.set_ok(env_name)
+
+    def _set_outcome(self, env_name: str, outcome: str) -> None:
+        """Keep the card and the run in step: only a "fresh" env shows the
+        "Aggiornato" pill."""
+        self._outcomes[env_name] = outcome
+        self.set_env_status(env_name, fresh=outcome == "fresh")
 
     def set_lock_holder(self, text: str | None) -> None:
         self.holder = text
@@ -228,7 +265,7 @@ class FakeSyncApi:
         )
 
     def check_reachable(self, env_name: str, timeout: float = 5.0) -> bool:
-        return env_name not in self.unreachable
+        return self._outcomes.get(env_name, "ok") != "unreachable"
 
     def run(
         self,
@@ -255,7 +292,9 @@ class FakeSyncApi:
             return JobReport(sync=None, indexed_files=0, exit_code=0)
         started = datetime.now()
         sink(SyncStarted(names, dry_run))
-        results = tuple(self._run_env(name, dry_run=dry_run, sink=sink, cancel=cancel) for name in names)
+        results = tuple(
+            self._run_env(name, force=force, dry_run=dry_run, sink=sink, cancel=cancel) for name in names
+        )
         report = SyncReport(results, started, datetime.now())
         sink(SyncFinished(report))
         sink(LogMessage(logging.INFO, report.summary_line()))
@@ -288,31 +327,52 @@ class FakeSyncApi:
 
     # -- internals ---------------------------------------------------------
 
-    def _run_env(self, name: str, *, dry_run: bool, sink: EventSink, cancel: CancelToken) -> EnvResult:
+    def _run_env(self, name: str, *, force: bool, dry_run: bool, sink: EventSink,
+                 cancel: CancelToken) -> EnvResult:
         sink(EnvStarted(name))
-        result = self._script(name, dry_run=dry_run, sink=sink, cancel=cancel)
+        result = self._script(name, force=force, dry_run=dry_run, sink=sink, cancel=cancel)
         sink(EnvFinished(name, result))
         return result
 
-    def _script(self, name: str, *, dry_run: bool, sink: EventSink, cancel: CancelToken) -> EnvResult:
+    def _script(self, name: str, *, force: bool, dry_run: bool, sink: EventSink,
+                cancel: CancelToken) -> EnvResult:
+        """One environment, event for event as ``SyncEngine.sync_env`` emits them."""
+        outcome = self._outcomes.get(name, "ok")
         if cancel.is_set():
             return EnvResult(name, "cancelled", error="annullato prima dell'avvio")
-        if name in self.unreachable:
+        if outcome == "fresh" and not force:
+            sink(EnvSkipped(name, "fresh"))
+            return EnvResult(name, "fresh")
+        if outcome == "unreachable":
             error = "endpoint non raggiungibile"
             sink(EnvUnreachable(name, error))
             return EnvResult(name, "unreachable", error=error)
         size = SCRIPT_FILE_SIZE
         sink(RemoteIndexRead(name, n_daily=3, n_empty=1, n_loose=2, bytes_to_download=size))
+        if dry_run:
+            # The engine skips the transfer entirely under dry_run: no
+            # FileStarted, no FileProgress, so no progress bar in the UI.
+            return EnvResult(name, "ok", downloaded=1, bytes=size)
+        if outcome == "errors":
+            return self._fail_files(name, size, sink)
         sink(FileStarted(name, SCRIPT_FILE_NAME, size))
         for step in range(1, SCRIPT_PROGRESS_STEPS + 1):
             self._pause()
             if cancel.is_set():
                 return EnvResult(name, "cancelled", error=f"annullato durante {SCRIPT_FILE_NAME}")
             sink(FileProgress(name, SCRIPT_FILE_NAME, size * step // SCRIPT_PROGRESS_STEPS, size))
-        if dry_run:
-            return EnvResult(name, "ok", downloaded=1, bytes=size)
         sink(FileDone(name, SCRIPT_FILE_NAME, size, self._root / "mirror" / name / SCRIPT_FILE_NAME))
         return EnvResult(name, "ok", downloaded=1, present=2, empty=1, bytes=size)
+
+    def _fail_files(self, name: str, size: int, sink: EventSink) -> EnvResult:
+        """``FileStarted`` then ``FileFailed`` per file, like a truncated transfer."""
+        n = self._n_failures.get(name, 1)
+        for i in range(n):
+            file_name = f"2026091{i}.txt"
+            sink(FileStarted(name, file_name, size))
+            self._pause()
+            sink(FileFailed(name, file_name, "troncato: 512 di 4194304 byte"))
+        return EnvResult(name, "errors", present=2, empty=1, failed=n)
 
     def _pause(self) -> None:
         if self.step_delay:
@@ -392,6 +452,7 @@ class FakeIndexApi:
         self.missing: set[int] = set()
         self.updates: list[dict] = []
         self.pending: list[LocalDailyFile] = []
+        self.local_file_counts: dict[Path, int] = {}
 
     # -- knobs -------------------------------------------------------------
 
@@ -443,9 +504,17 @@ class FakeIndexApi:
             return None
         return Coverage(days[0], days[-1], len(days), sum(1 for h in self.hits if h.env == env))
 
+    def set_local_file_count(self, root: Path, n: int) -> None:
+        """What ``count_local_files(root)`` answers for that folder (wizard)."""
+        self.local_file_counts[Path(root)] = n
+
     def count_local_files(self, root: Path | None = None) -> int:
-        """``root`` is ignored: the fake mirror is the same wherever it is asked about."""
-        return len({(h.env, h.day) for h in self.hits})
+        """The configured mirror by default; a browsed folder answers from the
+        map set with ``set_local_file_count`` (unknown folder -> 0, like an
+        empty directory)."""
+        if root is None:
+            return len({(h.env, h.day) for h in self.hits})
+        return self.local_file_counts.get(Path(root), 0)
 
     def list_template_keys(self, env: str, prefix: str = "") -> list[str]:
         keys = [h.template_key for h in sorted(self.hits, key=lambda h: h.day, reverse=True) if h.env == env]

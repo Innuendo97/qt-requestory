@@ -28,6 +28,7 @@ Opening a WAL database costs well under a millisecond.
 """
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import closing, contextmanager
@@ -196,6 +197,11 @@ class SyncService:
         A captive portal or a proxy error page answers 200 with HTML that holds
         no log file at all; the sync engine treats that as unreachable, and the
         UI's "Verifica raggiungibilità" must agree with it.
+
+        ``ValueError`` is caught too: an ``environments.json`` imported from a
+        colleague may hold a URL with no scheme, and urllib raises that instead
+        of a network error. This method promises never to raise; the malformed
+        URL is reported where it belongs, by ``config.validate``.
         """
         cfg = self._config_source()
         try:
@@ -204,7 +210,7 @@ class SyncService:
             return False
         try:
             html = self._http_factory().get_text(env.url, timeout=timeout)
-        except HttpUnreachable:
+        except (HttpUnreachable, ValueError):
             return False
         index = parse_autoindex(html)
         return bool(index.daily) or index.loose_count > 0
@@ -295,17 +301,22 @@ class SchedulerService:
         self._spec_factory = spec_factory
 
     def status(self) -> TaskStatus:
-        """``scheduler.status`` with the CSV placeholders normalised to None."""
+        """``scheduler.status`` with the schtasks placeholders normalised to None.
+
+        ``command`` goes through the same filter as the text fields: a task
+        whose XML holds "N/D" must not reach the UI as ``Path("N/D")``, which
+        would be shown as a real command and compared against the exe.
+        """
         st = scheduler.status(self.exe_path(), runner=self._runner)
-        return TaskStatus(
-            registered=st.registered,
-            command=st.command,
+        command = _clean_path(st.command)
+        return dataclasses.replace(
+            st,
+            command=command,
             args=_clean_text(st.args),
-            exe_matches=st.exe_matches,
+            exe_matches=st.exe_matches and command is not None,
             state=_clean_text(st.state),
             next_run=_clean_text(st.next_run),
             last_run=_clean_text(st.last_run),
-            last_result=st.last_result,
         )
 
     def register(self) -> None:
@@ -490,6 +501,16 @@ def _clean_text(value: str | None) -> str | None:
         return None
     text = value.strip()
     return None if text.lower() in NO_VALUE_STRINGS else text
+
+
+def _clean_path(value: Path | None) -> Path | None:
+    """None for a path that is only a schtasks placeholder.
+
+    Compared as POSIX text: ``Path("N/D")`` prints as ``N\\D`` on Windows,
+    which would slip past the placeholder list.
+    """
+    text = _clean_text(value.as_posix()) if value is not None else None
+    return Path(text) if text else None
 
 
 def _tail(path: Path, n: int) -> list[str]:
