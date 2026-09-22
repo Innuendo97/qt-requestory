@@ -30,7 +30,6 @@ _INSERT_ENTRY = (
     "header_offset, body_offset, body_len, request_date, ndocs, dossier_id, dossier_number, json_ok) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
-_INSERT_DOCUMENT = "INSERT INTO entry_documents (entry_id, pos, template_key) VALUES (?, ?, ?)"
 
 
 @dataclass
@@ -155,7 +154,7 @@ class IndexBuilder:
         conn = self._conn
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("DELETE FROM files WHERE env=? AND day=?", (f.env, day))  # cascades to entries/documents
+            conn.execute("DELETE FROM files WHERE env=? AND day=?", (f.env, day))  # cascades to entries
             cur = conn.execute(_INSERT_FILE, (
                 f.env, day, relative_path(f.env, f.day), f.size, f.mtime_ns,
                 stats.n_entries, stats.n_orphans,
@@ -163,16 +162,6 @@ class IndexBuilder:
             ))
             file_id = cur.lastrowid
             conn.executemany(_INSERT_ENTRY, [_entry_row(file_id, f.env, day, e) for e in entries])
-            # executemany yields no ids: map seq -> id back from the table.
-            id_by_seq = {
-                row["seq"]: row["id"]
-                for row in conn.execute("SELECT id, seq FROM entries WHERE file_id=?", (file_id,))
-            }
-            conn.executemany(_INSERT_DOCUMENT, [
-                (id_by_seq[e.seq], pos, key)
-                for e in entries
-                for pos, key in enumerate(e.doc_keys)
-            ])
             conn.commit()
         except BaseException:
             conn.rollback()

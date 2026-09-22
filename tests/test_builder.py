@@ -55,18 +55,12 @@ def test_fresh_update_indexes_everything(conn, mirror, events: CollectingSink):
     assert (row["n_entries"], row["n_orphans"]) == (2, 2)
     assert "T" in row["scanned_at"]  # ISO timestamp
 
-    # entry_documents: principal + attachments per body (ndocs 3, 2, 5, 2, 2, 2 on the newest day; the
-    # non-JSON body has none)
+    # ndocs, the only thing the index keeps about documents[] (3, 2, 5, 2, 2, 2 on
+    # the newest day; the non-JSON body has none)
     file_id = conn.execute("SELECT id FROM files WHERE env=? AND day=?", ("coll", "2026-09-18")).fetchone()[0]
-    n_docs = conn.execute(
-        "SELECT COUNT(*) FROM entry_documents d JOIN entries e ON e.id = d.entry_id WHERE e.file_id=?", (file_id,)
-    ).fetchone()[0]
-    assert n_docs == 3 + 2 + 5 + 2 + 2 + 2
-    principal = conn.execute(
-        "SELECT d.template_key FROM entry_documents d JOIN entries e ON e.id = d.entry_id "
-        "WHERE e.file_id=? AND e.seq=0 ORDER BY d.pos", (file_id,)
-    ).fetchall()
-    assert [r[0] for r in principal] == [KEY_SINT, "ATTACH_1", "ATTACH_2"]
+    ndocs = [r[0] for r in conn.execute(
+        "SELECT ndocs FROM entries WHERE file_id=? ORDER BY seq", (file_id,))]
+    assert ndocs == [3, 2, 5, 2, 2, 2, None]
 
     # entry columns: lowercase fdi, key, call_id, well_formed, json_ok, dossier fields
     e = conn.execute("SELECT * FROM entries WHERE file_id=? AND seq=0", (file_id,)).fetchone()
@@ -148,8 +142,6 @@ def test_changed_size_rescans_only_that_file(conn, mirror, events: CollectingSin
     new_ids = {r[0] for r in conn.execute("SELECT id FROM entries WHERE env=? AND day=?", (env, day.isoformat()))}
     assert not (old_ids & new_ids)  # old rows gone, not updated in place
     assert _count(conn, "entries") == TOTAL_ENTRIES + 1
-    # no dangling entry_documents
-    assert _count(conn, "entry_documents", "entry_id NOT IN (SELECT id FROM entries)") == 0
 
 
 def test_touched_mtime_rescans(conn, mirror, events: CollectingSink):
@@ -206,7 +198,6 @@ def test_cancel_after_first_file_leaves_consistent_index(conn, mirror):
     file_id = conn.execute("SELECT id, n_entries FROM files").fetchone()
     assert _count(conn, "entries") == file_id["n_entries"] == 7  # newest coll day was first
     assert _count(conn, "entries", "file_id<>?", file_id["id"]) == 0
-    assert _count(conn, "entry_documents", "entry_id NOT IN (SELECT id FROM entries)") == 0
 
 
 def test_cancel_before_start_writes_nothing(conn, mirror, events):
@@ -238,7 +229,6 @@ def test_full_rebuild_rescans_everything(conn, mirror, events: CollectingSink):
     assert events.of(IndexStarted)[0].n_files_to_scan == 4
     assert len(events.of(IndexFileScanned)) == 4
     assert _count(conn, "files") == 4 and _count(conn, "entries") == TOTAL_ENTRIES
-    assert _count(conn, "entry_documents", "entry_id NOT IN (SELECT id FROM entries)") == 0
 
 
 def test_full_rebuild_only_touches_requested_envs(conn, mirror, events: CollectingSink):
@@ -271,7 +261,7 @@ def test_rescan_file_and_count_local_files(conn, mirror, events: CollectingSink)
 def test_parse_json_false_skips_documents(conn, mirror, events: CollectingSink):
     IndexBuilder(conn, mirror.root, events, parse_json=False).update(ENVS)
     assert _count(conn, "entries") == TOTAL_ENTRIES
-    assert _count(conn, "entry_documents") == 0
+    assert _count(conn, "entries", "ndocs IS NOT NULL") == 0
     # request_date still extracted by regex
     n = conn.execute("SELECT COUNT(*) FROM entries WHERE request_date IS NOT NULL").fetchone()[0]
     assert n == TOTAL_ENTRIES - 2  # the request_date=None body and the non-JSON body lack it

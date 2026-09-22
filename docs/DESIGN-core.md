@@ -241,11 +241,19 @@ CREATE TABLE entries (id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL REFERENCE
 CREATE INDEX ix_entries_env_day ON entries(env, day);
 CREATE INDEX ix_entries_fdi ON entries(env, fdi);
 CREATE INDEX ix_entries_key ON entries(env, template_key);
-CREATE TABLE entry_documents (entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-  pos INTEGER NOT NULL, template_key TEXT NOT NULL COLLATE NOCASE, PRIMARY KEY (entry_id, pos));
-CREATE INDEX ix_entry_documents_key ON entry_documents(template_key);
 ```
-Migration policy: any `user_version != SCHEMA_VERSION` → drop everything and rebuild.
+`SCHEMA_VERSION = 2`. Migration policy: any `user_version != SCHEMA_VERSION` → drop everything
+and rebuild (a dropped table keeps its name in `schema.TABLES` so older databases lose it).
+
+**Version 2 removed `entry_documents`** (one row per document per entry, plus
+`ix_entry_documents_key`). Nothing ever selected from it: it was written on every index
+build — the one operation the user waits for — and read by neither `search` nor
+`list_template_keys`, which both go through `entries.template_key` (the principal key only).
+Measured on a synthetic 72 MB / 16 000-entry mirror, a full rebuild went from 2.63 s to
+1.78 s median (2.60 → 1.61 s best of five). It was speculative extensibility; the per-entry
+document keys are still produced by the scanner as `ScannedEntry.doc_keys`, so a future
+"find the pratica that carries attachment X" mode can re-add the table deliberately,
+together with the query that reads it.
 
 ```python
 # scanner.py
