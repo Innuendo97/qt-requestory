@@ -12,7 +12,7 @@ which is exactly what the buttons do.
 """
 from __future__ import annotations
 
-import pathlib
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -33,6 +33,23 @@ def wizard(qtbot, fake_core, runner):
     widget = FirstRunWizard(fake_core, runner)
     qtbot.addWidget(widget)
     return widget
+
+
+@pytest.fixture
+def shown_wizard(wizard):
+    """The wizard on screen, so ``isVisible()`` means what it says.
+
+    A widget only reports itself visible once its window is shown, and a
+    warning the user cannot see is the bug this fixture exists to catch.
+    """
+    wizard.show()
+    return wizard
+
+
+def first_run(fake_core) -> None:
+    """A genuine first run: ``default_config()`` ships with no environments, and
+    the fake starts with two."""
+    fake_core.config.config = dataclasses.replace(fake_core.config.config, environments=[])
 
 
 def advance_to_automation(wizard, folder: Path, envs=GOOD_ENVS) -> None:
@@ -83,7 +100,7 @@ def test_a_folder_that_cannot_be_created_is_refused(wizard, tmp_path, monkeypatc
     def refuse(self, *args, **kwargs):
         raise PermissionError("accesso negato")
 
-    monkeypatch.setattr(pathlib.Path, "mkdir", refuse)
+    monkeypatch.setattr(Path, "mkdir", refuse)
     wizard.folder_page.set_path(tmp_path / "vietata")
 
     assert wizard.folder_page.validatePage() is False
@@ -135,18 +152,66 @@ def test_browse_cancelled_leaves_the_field_alone(wizard, tmp_path, monkeypatch):
 
 # ------------------------------------------------------------- 2. ambienti ---
 
-def test_environments_are_prefilled_from_the_sidecar(wizard, fake_core, tmp_path):
+def test_environments_are_prefilled_from_the_sidecar_on_a_first_run(wizard, fake_core, tmp_path):
+    first_run(fake_core)
     fake_core.config.sidecar = tmp_path / "environments.json"
     page = wizard.environments_page
 
     page.initializePage()
 
     assert page.environments() == fake_core.config.sidecar_environments
-    assert page.hint_label.text() != ""
     assert "environments.json" in page.hint_label.text()
 
 
-def test_without_a_sidecar_the_hint_asks_for_the_file(wizard, fake_core):
+def test_a_rerun_shows_the_environments_already_configured(wizard, fake_core):
+    """Impostazioni re-runs the wizard: an empty table would be saved over them."""
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.config, environments=GOOD_ENVS
+    )
+    page = wizard.environments_page
+
+    page.initializePage()
+
+    assert page.environments() == GOOD_ENVS
+    assert page.hint_label.text() == strings.WIZARD_P2_CONFIGURED_LOADED
+
+
+def test_what_is_configured_wins_over_the_sidecar(wizard, fake_core, tmp_path):
+    """The sidecar is the *first-run* source, not a reset button."""
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.config, environments=GOOD_ENVS
+    )
+    fake_core.config.sidecar = tmp_path / "environments.json"
+    fake_core.config.sidecar_environments = [
+        Environment("altro", "https://example.invalid/altro/", True)
+    ]
+    page = wizard.environments_page
+
+    page.initializePage()
+
+    assert page.environments() == GOOD_ENVS
+
+
+def test_a_rerun_never_saves_an_empty_list_over_the_configured_environments(
+    wizard, fake_core, tmp_path
+):
+    """The whole point of the prefill, checked end to end at [Fine]."""
+    fake_core.config.config = dataclasses.replace(
+        fake_core.config.config, environments=GOOD_ENVS
+    )
+    fake_core.config.sidecar = None
+
+    wizard.restart()
+    wizard.folder_page.set_path(tmp_path / "logs")
+    wizard.next()
+    wizard.next()
+    wizard.accept()
+
+    assert fake_core.config.saved[-1].environments == GOOD_ENVS
+
+
+def test_without_a_sidecar_or_a_configuration_the_hint_asks_for_the_file(wizard, fake_core):
+    first_run(fake_core)
     fake_core.config.sidecar = None
     page = wizard.environments_page
 
@@ -157,6 +222,7 @@ def test_without_a_sidecar_the_hint_asks_for_the_file(wizard, fake_core):
 
 
 def test_a_malformed_sidecar_is_not_fatal(wizard, fake_core, tmp_path):
+    first_run(fake_core)
     fake_core.config.sidecar = tmp_path / "environments.json"
     fake_core.config.set_import_error("environments.json: JSON non valido")
     page = wizard.environments_page
@@ -259,20 +325,53 @@ def test_valid_environments_pass(wizard):
     assert page.error_label.text() == ""
 
 
-def test_zero_environments_is_allowed_but_warned_about(wizard):
-    page = wizard.environments_page
-    page.table.set_environments([])
+def open_environments_page(wizard, fake_core, tmp_path):
+    """Put the wizard on page 2, on screen, the way the user gets there."""
+    first_run(fake_core)
+    fake_core.config.sidecar = None
+    wizard.restart()
+    wizard.folder_page.set_path(tmp_path / "logs")
+    wizard.next()
+    assert wizard.currentPage() is wizard.environments_page
+    return wizard.environments_page
+
+
+def test_an_empty_table_warns_where_the_user_can_see_it(shown_wizard, fake_core, tmp_path):
+    """A warning written at [Avanti] time lands on a page that is leaving: the
+    user never sees it. It has to be visible *while page 2 is open*."""
+    page = open_environments_page(shown_wizard, fake_core, tmp_path)
+
+    assert page.warning_label.isVisible() is True
+    assert page.warning_label.text() == strings.WIZARD_P2_NO_ENVIRONMENTS
+
+
+def test_the_warning_appears_and_clears_as_the_table_is_edited(
+    shown_wizard, fake_core, tmp_path
+):
+    page = open_environments_page(shown_wizard, fake_core, tmp_path)
+
+    page.table.add_row(GOOD_ENVS[0])
+    assert page.warning_label.isVisible() is False
+
+    page.table.selectAll()
+    page.remove_selected()
+    assert page.warning_label.isVisible() is True
+
+
+def test_only_disabled_environments_warn_too(shown_wizard, fake_core, tmp_path):
+    page = open_environments_page(shown_wizard, fake_core, tmp_path)
+
+    page.table.add_row(Environment("coll", "https://example.invalid/coll/", False))
+
+    assert page.warning_label.isVisible() is True
+    assert page.warning_label.text() == strings.WIZARD_P2_NO_ENVIRONMENTS
+
+
+def test_zero_environments_still_does_not_block_avanti(shown_wizard, fake_core, tmp_path):
+    page = open_environments_page(shown_wizard, fake_core, tmp_path)
 
     assert page.validatePage() is True
-    assert page.error_label.text() == strings.WIZARD_P2_NO_ENVIRONMENTS
-
-
-def test_only_disabled_environments_are_also_warned_about(wizard):
-    page = wizard.environments_page
-    page.table.set_environments([Environment("coll", "https://example.invalid/coll/", False)])
-
-    assert page.validatePage() is True
-    assert page.error_label.text() == strings.WIZARD_P2_NO_ENVIRONMENTS
+    assert page.error_label.text() == "", "a warning is not an error"
 
 
 def test_the_reachability_check_reports_every_environment(wizard, qtbot, fake_core):
@@ -345,7 +444,36 @@ def test_the_legacy_task_notice_appears_only_when_one_is_registered(wizard, fake
     fake_core.scheduler.set_legacy(True)
     page.initializePage()
     assert page.has_legacy_task() is True
-    assert "NginxLogSync" in page.legacy_label.text()
+    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
+
+
+def test_the_legacy_notice_stops_promising_a_replacement_without_autosync(
+    shown_wizard, fake_core, tmp_path
+):
+    """Removal only happens inside the auto-sync branch, so "verrà sostituito"
+    with the box unticked would be a promise the wizard does not keep."""
+    fake_core.scheduler.set_legacy(True)
+    advance_to_automation(shown_wizard, tmp_path / "logs")
+    page = shown_wizard.automation_page
+    assert page.legacy_label.isVisible() is True
+    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
+
+    page.autosync_check.setChecked(False)
+
+    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK_KEPT
+    assert page.legacy_label.isVisible() is True
+
+    page.autosync_check.setChecked(True)
+    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
+
+
+def test_no_legacy_task_means_no_notice_whatever_the_checkbox_says(wizard, fake_core):
+    page = wizard.automation_page
+    page.initializePage()
+
+    page.autosync_check.setChecked(False)
+
+    assert page.legacy_label.text() == ""
 
 
 def test_the_editor_field_is_prefilled_from_the_detected_editor(wizard, fake_core, tmp_path):
@@ -476,6 +604,28 @@ def test_a_scheduler_failure_is_reported_but_never_blocks_fine(
     assert result is not None
     assert result.autosync is False, "the task is not active, whatever was ticked"
     assert fake_core.config.saved, "the configuration is saved before the task is touched"
+
+
+def test_a_save_failure_keeps_the_wizard_open_and_says_why(
+    wizard, fake_core, tmp_path, monkeypatch
+):
+    """Closing on a failed save would throw away everything the user entered."""
+    def boom(_cfg) -> None:
+        raise OSError("disco pieno")
+
+    monkeypatch.setattr(fake_core.config, "save", boom)
+    shown: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", staticmethod(lambda *args, **kw: shown.append(args))
+    )
+    advance_to_automation(wizard, tmp_path / "logs")
+
+    wizard.accept()
+
+    assert shown and "disco pieno" in shown[0][2]
+    assert wizard.wizard_result() is None
+    assert wizard.result() != int(QDialog.DialogCode.Accepted), "still open on page 3"
+    assert fake_core.scheduler.register_calls == 0, "no task for a config that is not saved"
 
 
 def test_a_failure_removing_the_legacy_task_is_swallowed(

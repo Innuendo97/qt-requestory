@@ -43,6 +43,10 @@ WIZARD_P2_HINT = (
 )
 #: {path} = the environments.json found next to the executable.
 WIZARD_P2_SIDECAR_LOADED = "Ambienti caricati da {path}."
+#: The wizard is being re-run: the table shows what is already in config.json.
+WIZARD_P2_CONFIGURED_LOADED = (
+    "Ambienti già configurati: modificali, aggiungine altri oppure importali da file."
+)
 WIZARD_P2_BTN_CHECK = "Verifica raggiungibilità"
 WIZARD_P2_CHECK_NOTE = (
     "Gli ambienti sono raggiungibili solo da rete aziendale o VPN Cisco: "
@@ -72,6 +76,12 @@ WIZARD_P3_AUTOSYNC_NOTE = (
 WIZARD_P3_LEGACY_TASK = (
     "È presente il vecchio task NginxLogSync basato su PowerShell: verrà sostituito."
 )
+#: Same task, auto-sync declined: nothing replaces it, so it keeps running —
+#: promising "verrà sostituito" there would be a promise the wizard breaks.
+WIZARD_P3_LEGACY_TASK_KEPT = (
+    "È presente il vecchio task NginxLogSync basato su PowerShell: senza la "
+    "sincronizzazione automatica resterà attivo."
+)
 WIZARD_P3_EDITOR_LABEL = "Notepad++:"
 WIZARD_P3_EDITOR_CAPTION = "Scegli l'eseguibile di Notepad++"
 WIZARD_P3_EDITOR_FILTER = "Eseguibili (*.exe);;Tutti i file (*)"
@@ -82,6 +92,12 @@ WIZARD_P3_START_SYNC = "Avvia la prima sincronizzazione al termine"
 
 # -- fine --------------------------------------------------------------------
 
+WIZARD_SAVE_FAILED_TITLE = "Configurazione non salvata"
+#: {error} = the exception from config.save; the wizard stays open afterwards.
+WIZARD_SAVE_FAILED = (
+    "Non è stato possibile salvare la configurazione: {error}\n"
+    "Correggi il problema e riprova, oppure annulla la procedura."
+)
 WIZARD_SCHEDULER_FAILED_TITLE = "Automazione non attivata"
 #: {error} = the message of the SchedulerError; shown, never fatal.
 WIZARD_SCHEDULER_FAILED = (

@@ -5,6 +5,7 @@ happens before and after the event loop is what matters here.
 """
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 
@@ -85,8 +86,28 @@ def without_wizard(monkeypatch):
     monkeypatch.setattr(app_module, "_wizard_entry_point", lambda: None)
 
 
-def test_this_build_ships_the_wizard(fake_core, runner):
+def test_this_build_ships_the_wizard():
     assert app_module.wizard_available() is True
+
+
+def test_a_build_packaged_without_the_wizard_has_no_entry_point(monkeypatch):
+    """The lazy import's ``except ImportError`` branch.
+
+    ``_wizard_entry_point`` is what makes the shell tolerate a build that does
+    not bundle ``ui/wizard.py``; the other tests stub the seam itself, so the
+    real import failure is exercised here by making that one import raise.
+    """
+    real_import = builtins.__import__
+
+    def refuse_the_wizard(name, *args, **kwargs):
+        if name == "qtrequestory.ui.wizard":
+            raise ImportError("No module named 'qtrequestory.ui.wizard'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse_the_wizard)
+
+    assert app_module._wizard_entry_point() is None
+    assert app_module.wizard_available() is False
 
 
 def test_without_the_wizard_module_the_app_still_starts(fake_core, runner, without_wizard):

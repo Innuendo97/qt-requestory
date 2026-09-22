@@ -185,7 +185,13 @@ class EnvironmentsPage(QWizardPage):
         self.table = EnvTable()
         self.hint_label = _muted(strings.WIZARD_P2_HINT)
         self.error_label = _muted()
+        # Advisory, not an error, and it must be *seen*: it is shown and hidden
+        # with its text while the page is open, not written at [Avanti] time
+        # onto a page that is about to disappear.
+        self.warning_label = _muted()
+        self.warning_label.setVisible(False)
         self.reachability_label = _muted()
+        self.table.changed.connect(self._refresh_warning)
 
         self.add_button = QPushButton(strings.BTN_ADD)
         self.add_button.clicked.connect(self.add_environment)
@@ -208,10 +214,17 @@ class EnvironmentsPage(QWizardPage):
         layout.addLayout(buttons)
         layout.addWidget(self.reachability_label)
         layout.addWidget(_muted(strings.WIZARD_P2_CHECK_NOTE))
+        layout.addWidget(self.warning_label)
         layout.addWidget(self.error_label)
 
     def initializePage(self) -> None:
-        """Pre-fill from the ``environments.json`` next to the executable.
+        """Pre-fill the table: what is already configured first, sidecar second.
+
+        The wizard is not only a first run — Impostazioni re-runs it — and an
+        empty table here would be written straight over the saved environments
+        by [Fine]. So a configuration that already has some wins; the
+        ``environments.json`` next to the executable is the *first-run* source,
+        used when there is nothing to keep.
 
         A sidecar that cannot be parsed is *not* an error the user must deal
         with here: the page falls back to the hint, exactly as if there were no
@@ -223,6 +236,17 @@ class EnvironmentsPage(QWizardPage):
         if self._prefilled:
             return
         self._prefilled = True
+        try:
+            self._prefill()
+        finally:
+            self._refresh_warning()
+
+    def _prefill(self) -> None:
+        configured = self._services.config.load().environments
+        if configured:
+            self.table.set_environments(configured)
+            self.hint_label.setText(strings.WIZARD_P2_CONFIGURED_LOADED)
+            return
         sidecar = self._services.config.find_sidecar_environments()
         if sidecar is None:
             return
@@ -243,13 +267,9 @@ class EnvironmentsPage(QWizardPage):
         rules and it lives in the core.
         """
         errors = self._services.config.validate(self._candidate_config())
-        if errors:
-            self.error_label.setText("\n".join(errors))
-            return False
-        self.error_label.setText(
-            "" if any(e.enabled for e in self.environments()) else strings.WIZARD_P2_NO_ENVIRONMENTS
-        )
-        return True
+        self.error_label.setText("\n".join(errors))
+        self._refresh_warning()
+        return not errors
 
     # -- the answer ---------------------------------------------------------
 
@@ -302,6 +322,14 @@ class EnvironmentsPage(QWizardPage):
 
     # -- internals ----------------------------------------------------------
 
+    def _refresh_warning(self) -> None:
+        """Zero enabled environments is allowed, so this warns rather than
+        blocks — live, on every edit of the table, while the page is on screen.
+        """
+        nothing_enabled = not any(e.enabled for e in self.environments())
+        self.warning_label.setText(strings.WIZARD_P2_NO_ENVIRONMENTS if nothing_enabled else "")
+        self.warning_label.setVisible(nothing_enabled)
+
     def _show_reachability(self, outcome: dict) -> None:
         self.reachability_label.setText(
             strings.WIZARD_P2_CHECK_SEPARATOR.join(
@@ -351,6 +379,11 @@ class AutomationPage(QWizardPage):
         self.autosync_check = QCheckBox(strings.WIZARD_P3_AUTOSYNC)
         self.autosync_check.setChecked(True)
         self.legacy_label = _muted()
+        self.legacy_label.setVisible(False)
+        # The legacy task is removed only when ours replaces it, so the notice
+        # follows the checkbox: "verrà sostituito" would otherwise be a promise
+        # the wizard does not keep.
+        self.autosync_check.toggled.connect(self._refresh_legacy_notice)
         self.editor_edit = QLineEdit()
         self.editor_hint = _muted()
         self.start_sync_check = QCheckBox(strings.WIZARD_P3_START_SYNC)
@@ -376,7 +409,7 @@ class AutomationPage(QWizardPage):
 
     def initializePage(self) -> None:
         self._legacy = self._services.scheduler.detect_legacy_task()
-        self.legacy_label.setText(strings.WIZARD_P3_LEGACY_TASK if self._legacy else "")
+        self._refresh_legacy_notice()
         if not self.editor_edit.text():
             detected = self._services.config.detect_editor()
             self.editor_edit.setText(str(detected) if detected is not None else "")
@@ -399,6 +432,19 @@ class AutomationPage(QWizardPage):
     def has_legacy_task(self) -> bool:
         """What ``detect_legacy_task`` answered when the page was shown."""
         return self._legacy
+
+    # -- internals ----------------------------------------------------------
+
+    def _refresh_legacy_notice(self) -> None:
+        """Say what will actually happen to ``NginxLogSync``: replaced when our
+        task is registered, left running when the user declines automation."""
+        if not self._legacy:
+            self.legacy_label.setText("")
+        elif self.autosync_check.isChecked():
+            self.legacy_label.setText(strings.WIZARD_P3_LEGACY_TASK)
+        else:
+            self.legacy_label.setText(strings.WIZARD_P3_LEGACY_TASK_KEPT)
+        self.legacy_label.setVisible(bool(self.legacy_label.text()))
 
     # -- buttons ------------------------------------------------------------
 

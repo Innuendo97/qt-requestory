@@ -1,11 +1,11 @@
 """The first-run wizard: three questions, one configuration, one result.
 
 ``run_gui`` shows this before the main window when ``config.is_first_run()``,
-and Impostazioni re-runs it on demand. It is the only place in the application
-that writes a configuration where none existed, so the whole finish step lives
-in one method (:meth:`FirstRunWizard.finish`) that reads exactly the three
-pages of ``wizard_pages`` and does exactly what DESIGN-ui §"First-run wizard"
-lists, in that order:
+and Impostazioni re-runs it on demand — so it both *creates* a configuration
+and *edits* an existing one, which is why every page prefills from what is
+already there. The whole finish step lives in :meth:`FirstRunWizard.accept`,
+which reads exactly the three pages of ``wizard_pages`` and does exactly what
+DESIGN-ui §"First-run wizard" lists, in that order:
 
 1. build the ``Config`` from the pages and ``config.save`` it — first, so a
    failure of anything below still leaves the user configured;
@@ -13,9 +13,10 @@ lists, in that order:
    is registered remove the legacy ``NginxLogSync`` one it replaces;
 3. hand the caller a :class:`WizardResult` saying what to do next.
 
-Neither step 2 nor step 3 can stop the wizard from closing: a scheduled task
-that could not be registered is reported and forgotten (the Sincronizzazione
-page can register it later), and the configuration is already on disk.
+Only step 1 can stop the wizard from closing, and then it says why: a scheduled
+task that could not be registered is reported and forgotten (the
+Sincronizzazione page can register it later), because by then the configuration
+is already on disk.
 """
 from __future__ import annotations
 
@@ -88,32 +89,44 @@ class FirstRunWizard(QWizard):
         return self._result
 
     def accept(self) -> None:
-        """[Fine]: do the work first, close afterwards.
+        """[Fine]: do the work first, close only if the configuration was saved.
 
         Qt calls this only after ``validatePage`` accepted the last page, so
-        everything :meth:`finish` reads has already been validated.
+        everything read here has already been validated. A save that fails
+        (a read-only profile, a full disk) leaves the wizard open on this page
+        with the reason on screen: closing it would throw away everything the
+        user just entered, and there is nothing for the caller to return.
         """
-        self._result = self.finish()
+        cfg = self.build_config()
+        try:
+            self._services.config.save(cfg)
+        except Exception as exc:  # noqa: BLE001 - shown to the user, not swallowed
+            log.exception("salvataggio della configurazione non riuscito")
+            QMessageBox.critical(
+                self,
+                strings.WIZARD_SAVE_FAILED_TITLE,
+                strings.WIZARD_SAVE_FAILED.format(error=exc),
+            )
+            return
+        autosync = self.automation_page.autosync_enabled() and self._enable_automation()
+        self._result = WizardResult(
+            config=cfg,
+            start_sync=self.automation_page.start_sync_requested(),
+            autosync=autosync,
+        )
         super().accept()
 
-    def finish(self) -> WizardResult:
-        """Save the configuration and set the automation up. See the module docstring."""
+    def build_config(self) -> Config:
+        """The three pages' answers on top of the current configuration."""
         base = self._services.config.load()
         folder = self.folder_page.folder()
-        cfg = dataclasses.replace(
+        return dataclasses.replace(
             base,
             # The page cannot be left empty, but ``mirror_root`` is not
             # optional: a None here would be written into config.json.
             mirror_root=folder if folder is not None else base.mirror_root,
             environments=self.environments_page.environments(),
             editor_path=self.automation_page.editor_path(),
-        )
-        self._services.config.save(cfg)
-        autosync = self.automation_page.autosync_enabled() and self._enable_automation()
-        return WizardResult(
-            config=cfg,
-            start_sync=self.automation_page.start_sync_requested(),
-            autosync=autosync,
         )
 
     # -- internals ----------------------------------------------------------
