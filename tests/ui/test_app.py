@@ -73,14 +73,29 @@ def test_the_key_is_free_again_after_the_first_instance_stops(qtbot, key):
 
 # ------------------------------------------------------------ first run ---
 
-def test_without_the_wizard_module_the_app_still_starts(fake_core, runner):
-    """Task 10 delivers ui/wizard.py; until then this returns None, not a crash."""
+@pytest.fixture
+def without_wizard(monkeypatch):
+    """A build that does not ship ``ui/wizard.py``.
+
+    It does ship now (Task 10), so the absence is simulated at the seam both
+    ``wizard_available`` and ``show_first_run_wizard`` go through — which is
+    what these two tests were always about: the shell must survive a wizard
+    that is not there, not the wizard being genuinely missing.
+    """
+    monkeypatch.setattr(app_module, "_wizard_entry_point", lambda: None)
+
+
+def test_this_build_ships_the_wizard(fake_core, runner):
+    assert app_module.wizard_available() is True
+
+
+def test_without_the_wizard_module_the_app_still_starts(fake_core, runner, without_wizard):
     assert app_module.wizard_available() is False
     assert show_first_run_wizard(fake_core, runner) is None
 
 
 def test_a_first_run_without_the_wizard_still_opens_the_window(
-    qtbot, fake_core, monkeypatch, key, stub_exec
+    qtbot, fake_core, monkeypatch, key, stub_exec, without_wizard
 ):
     monkeypatch.setattr(app_module, "instance_key", lambda: key)
     fake_core.config.first_run = True

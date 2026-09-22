@@ -372,8 +372,17 @@ def _must_not_be_called(parent):  # pragma: no cover - guard
 
 # ------------------------------------------------------- rerun the wizard ---
 
-def test_rerun_wizard_says_so_when_the_wizard_is_not_part_of_this_build(window):
-    """Impostazioni offers "Riesegui configurazione iniziale" through this."""
+def test_rerun_wizard_says_so_when_the_wizard_is_not_part_of_this_build(window, monkeypatch):
+    """Impostazioni offers "Riesegui configurazione iniziale" through this.
+
+    This build ships the wizard (Task 10) and running it would open a modal
+    dialog, so the missing-module case is simulated at the seam the window
+    asks — the point of the test is the message, not the absence.
+    """
+    from qtrequestory.ui import app as app_module
+
+    monkeypatch.setattr(app_module, "wizard_available", lambda: False)
+
     assert window.rerun_wizard() is None
     assert window.statusBar().currentMessage() == strings.WIZARD_UNAVAILABLE
 
