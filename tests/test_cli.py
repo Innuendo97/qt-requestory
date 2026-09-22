@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from datetime import date
@@ -207,7 +208,34 @@ def test_sync_configures_logging_and_writes_the_sync_log(home: Path):
     assert (home / "logs" / "app.log").exists()
 
 
-def test_ctrl_c_during_the_sync_exits_3(home: Path, monkeypatch):
+def test_ctrl_c_cancels_the_running_job_and_exits_3(home: Path, monkeypatch):
+    """The real Ctrl+C path: the installed handler only sets the token.
+
+    Python raises no ``KeyboardInterrupt`` while our handler is installed, so
+    the job must see the cancellation, unwind through its own check points
+    (which is what releases the lock) and report ``EXIT_CANCELLED``. The
+    previous handler has to be back afterwards.
+    """
+    seen: list[CancelToken] = []
+
+    def job_that_gets_interrupted(config, **kw):
+        cancel = kw["cancel"]
+        seen.append(cancel)
+        assert signal.getsignal(signal.SIGINT) is not before, "the handler must be installed"
+        signal.getsignal(signal.SIGINT)(signal.SIGINT, None)  # the Ctrl+C itself
+        assert cancel.is_set(), "the handler cancels instead of raising"
+        return JobReport(sync=None, indexed_files=0, exit_code=3)
+
+    before = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(cli, "run_sync_job", job_that_gets_interrupted)
+
+    assert cli.main(["--sync"]) == 3
+    assert seen[0].is_set() is True
+    assert signal.getsignal(signal.SIGINT) is before, "the previous handler is restored"
+
+
+def test_a_keyboard_interrupt_that_escapes_still_exits_3(home: Path, monkeypatch):
+    """The fallback: no handler could be installed (``main`` off the main thread)."""
     def interrupted(config, **kw):
         raise KeyboardInterrupt
 
@@ -268,7 +296,8 @@ def test_find_by_fdi_takes_the_entry_with_the_whole_pratica(indexed: Path, capsy
     cli.main(["--find", "-e", "coll", "-f", FDI_A[:8],
               "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"])
     out = capsys.readouterr().out
-    assert f"trovato in 20260918.txt: {FDI_A}_{KEY_EMAIL}" in out
+    # Two spaces before the parenthesis: the legacy script's exact shape.
+    assert f"trovato in 20260918.txt: {FDI_A}_{KEY_EMAIL}_1a2b3c0200000031.json  (" in out
     assert "5 documenti" in out
 
 
@@ -355,6 +384,20 @@ def test_find_needs_exactly_one_environment(indexed: Path):
 def test_find_needs_an_fdi_or_a_key(indexed: Path):
     with pytest.raises(SystemExit):
         cli.main(["--find", "-e", "coll"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["--sync", "--days", "0"],       # falsy but GIVEN: must not slip through
+    ["--sync", "--rebuild"],
+    ["--index", "--force"],
+    ["--index", "--no-open"],
+    ["--version", "--rebuild"],      # --version must not skip the check either
+    ["--version", "--out", "x.json"],
+])
+def test_an_option_of_another_mode_is_refused_not_ignored(home: Path, argv: list[str]):
+    """Accepting --rebuild on a --sync would tell the user the index was rebuilt."""
+    with pytest.raises(SystemExit):
+        cli.main(argv)
 
 
 # ------------------------------------------------------------------ --task ---

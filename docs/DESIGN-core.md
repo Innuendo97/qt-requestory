@@ -281,6 +281,17 @@ def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor
 Output contract (non-negotiable): the file content is the pure body, starts with
 `{\n    "documents": [`, no wrapper, no comments, UTF-8 without BOM, accents intact.
 
+Two differences from the legacy `nginx/find-call.py`, for the user-facing README:
+
+- The extracted file ends with **a single trailing newline** and uses LF; the old
+  script wrote CRLF and no final newline (it opened the file in text mode). The body
+  is byte-for-byte the same otherwise — Postman, curl and every JSON parser read the
+  two identically.
+- Extracting the **same entry twice no longer overwrites** the first file: the second
+  one is written as `..._<call_id>.json`, so a file still open in the editor is never
+  replaced under the user's hands. The old script wiped its whole output folder on
+  every run; here the folder is pruned by age (`output_retention_hours`, default 24 h).
+
 ## `core/scheduler.py`
 
 ```python

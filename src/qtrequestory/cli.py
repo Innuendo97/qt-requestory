@@ -2,7 +2,7 @@
 
 Everything this module does is argument handling and printing; the behaviour
 lives in ``core/jobs.py`` (sync/index), ``core/index/search.py`` (find),
-``core/extract.py`` + ``core/opener.py`` (the extracted file) and
+``core/extract.py`` (the extracted file, through ``facade.ExtractService``) and
 ``core/scheduler.py`` (the Windows task).
 
 Two rules shape the file:
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from qtrequestory import __version__
-from qtrequestory.core import facade, opener, scheduler
+from qtrequestory.core import facade, scheduler
 from qtrequestory.core.config import Config, load_config
 from qtrequestory.core.events import CancelToken, EventSink, LoggingSink
 from qtrequestory.core.index.search import SearchHit, SearchQuery, pick_best
@@ -103,13 +103,16 @@ def _check_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) 
     Silently dropping ``--rebuild`` from a ``--sync`` invocation would make the
     user believe the index was rebuilt.
     """
+    # ``is not None``, not truthiness: ``--days 0`` is given, and this check
+    # exists precisely so a given option is never silently ignored.
     find_only = {"--fdi": args.fdi, "--template-key": args.template_key, "--days": args.days,
-                 "--from": args.day_from, "--to": args.day_to, "--out": args.out,
-                 "--no-open": args.no_open}
+                 "--from": args.day_from, "--to": args.day_to, "--out": args.out}
     if not args.find:
         for name, value in find_only.items():
-            if value:
+            if value is not None:
                 parser.error(f"{name} si usa solo con --find")
+        if args.no_open:  # a flag: "not given" really is False
+            parser.error("--no-open si usa solo con --find")
     if args.rebuild and not args.index:
         parser.error("--rebuild si usa solo con --index")
     if (args.force or args.dry_run) and not args.sync:
@@ -130,10 +133,10 @@ def main(argv: list[str] | None = None) -> int:
     _guard_std_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
+    _check_arguments(parser, args)
     if args.version:
         print(f"qtRequestory {__version__}")
         return 0
-    _check_arguments(parser, args)
 
     paths = _resolve_paths(args.config)
     config = load_config(paths.config_file)
@@ -241,7 +244,8 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
     else:
         out = extract.write_temp_file(hit, text)
 
-    print(f"trovato in {hit.file_path.name}: {hit.name}.json "
+    # Two spaces before the parenthesis, exactly as the legacy script printed it.
+    print(f"trovato in {hit.file_path.name}: {hit.name}.json  "
           f"(requestDate {hit.request_date or '?'}, {_documents(hit)} documenti)")
     _print_others(others)
     print(f"scritto: {out}")
