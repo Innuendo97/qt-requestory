@@ -68,10 +68,13 @@ for _page in ("search_page", "sync_page", "settings_page", "about_page"):
 # which under onefile resolves inside the extraction dir — hence the same relative
 # path here. Without them the navigation rail renders with no icons at all and
 # nothing crashes, which is why tests/test_packaging.py guards the wheel side too.
-# app.ico is deliberately NOT bundled: it is the exe's icon resource (see `icon=`
-# below), nothing opens it at runtime.
+# app.ico is both the exe's icon resource (see `icon=` below) and bundled: at
+# runtime icons.app_icon() loads every size from it (the hand-tuned 16 px one
+# included) for the window icon, which is what the taskbar shows while the app
+# runs. Without it app_icon() falls back to rendering app.svg.
 datas = [
     (str(ICON_DIR / "*.svg"), "qtrequestory/ui/icons"),
+    (str(ICON_DIR / "app.ico"), "qtrequestory/ui/icons"),
     (str(ICON_DIR / "LICENSE.md"), "qtrequestory/ui/icons"),
 ]
 

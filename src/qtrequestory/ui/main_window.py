@@ -1,9 +1,11 @@
-"""The application shell: navigation rail, stacked pages, status bar.
+"""The application shell: top app bar, stacked pages, status bar, toast.
 
 The window itself owns no feature. It builds the pages listed in :data:`PAGES`,
-switches between them and offers three services to whichever page is showing:
-:meth:`MainWindow.show_page`, :meth:`MainWindow.set_status` and
-:meth:`MainWindow.set_sync_summary`.
+switches between them and offers a few services to whichever page is showing:
+:meth:`MainWindow.show_page`, :meth:`MainWindow.set_status` (transient hint in
+the status bar), :meth:`MainWindow.show_toast` (confirmation over the content),
+:meth:`MainWindow.set_context` (window title) and the sync-status chip
+(:meth:`MainWindow.set_sync_state`, :meth:`MainWindow.set_sync_summary`).
 
 Adding a page is one tuple in :data:`PAGES` plus one widget — that is the whole
 extension mechanism (DESIGN-ui §Navigation: "future Replay / Statistiche / Diff
@@ -13,11 +15,30 @@ are in.
 
 Optional hooks a page may expose (all duck-typed, all optional):
 
-``summary_changed``     ``Signal(str)`` → the right-hand status bar segment
-``config_changed``      ``Signal(object)`` → broadcast to every other page's
+``state_changed``       ``Signal(list)`` of ``(env, tone, text)`` -> the status chip
+``summary_changed``     ``Signal(str)`` -> the status chip as one plain line (only
+                        wired when the page has no ``state_changed``)
+``emit_initial_state()`` called once, after every hook above is connected: a
+                        page that computes its state in ``__init__`` has no
+                        listener yet at that point
+``config_changed``      ``Signal(object)`` -> broadcast to every other page's
                         ``on_config_changed(cfg)``
 ``on_config_changed``   receives that broadcast
-``start_sync()``        called for Ctrl+Shift+S and after the first-run wizard
+``start_sync()``        called for Ctrl+Shift+S and after the first-run wizard;
+                        the Sincronizzazione page also takes ``force=False``
+                        for the startup sync
+``initial_focus()``     the first page puts the keyboard focus where typing
+                        should go at startup (Ricerca: the FDI field)
+``on_data_changed()``   a sync or an index job finished: coverage, keys and
+                        counts may have moved (``JobRunner.job_finished``)
+``refresh_sync_state()`` the window's slow refresh (every
+                        :data:`SYNC_STATE_REFRESH_MS` and on activation): a
+                        scheduled ``--sync`` may have changed the state behind
+                        the window's back; cheap reads only
+``progress_counts()``   ``(done, total)`` files of the running sync, or None,
+                        for the quit question
+``can_leave()``         asked before switching away from the page; False keeps
+                        it on screen (Impostazioni with unsaved changes)
 """
 from __future__ import annotations
 
@@ -25,78 +46,61 @@ import importlib
 import logging
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
-from PySide6.QtCore import QSettings, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QKeySequence, QPalette, QShortcut
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QSizePolicy,
-    QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
-    QMessageBox,
-    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from qtrequestory.ui import actions, icons, strings
+from qtrequestory.ui.app_bar import AppBar
 from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.quit_dialog import (  # noqa: F401 - JOB_LABELS/build_quit_dialog re-exported
+    JOB_LABELS,
+    build_quit_dialog,
+    confirm_quit_during_job,
+    job_label,
+)
+from qtrequestory.ui.startup import StartupTasks
+from qtrequestory.ui.toast import DEFAULT_MS as TOAST_MS
+from qtrequestory.ui.toast import Toast
 from qtrequestory.ui.workers import JobRunner
 
 log = logging.getLogger(__name__)
 
-RAIL_WIDTH = 200
 STATUS_TIMEOUT_MS = 4000
-#: Item data: the icon name, so the rail can re-tint itself on a theme switch.
-ICON_NAME_ROLE = Qt.ItemDataRole.UserRole + 1
-
-#: ``JobRunner`` name -> what to call that operation in front of the user. The
-#: names are identifiers chosen by the pages ("check-envs", "search_plan",
-#: "about-log"); only ``EXCLUSIVE`` ones can currently be refused, but the map
-#: covers every name in ``workers.JOB_NAMES`` — a test pins the two together —
-#: so a new exclusive one is never a surprise in the status bar.
-JOB_LABELS = {
-    "sync": strings.JOB_SYNC,
-    "index": strings.JOB_INDEX,
-    "scheduler": strings.JOB_SCHEDULER,
-    "search": strings.JOB_SEARCH,
-    "search_keys": strings.JOB_SEARCH_KEYS,
-    "search_plan": strings.JOB_SEARCH_PLAN,
-    "preview": strings.JOB_PREVIEW,
-    "check-envs": strings.JOB_CHECK_ENVS,
-    "about-log": strings.JOB_ABOUT_LOG,
-    "wizard-reachability": strings.JOB_WIZARD_REACHABILITY,
-}
-
-
-def job_label(name: str) -> str:
-    """The Italian name of an operation; the raw job name if it has none.
-
-    Falling back to the name is deliberate: a message naming something the user
-    does not recognise is poor, but saying nothing at all about a refused
-    operation is worse.
-    """
-    return JOB_LABELS.get(name, name)
+#: Page key -> its navigation shortcut; also shown in the tab/icon tooltip.
+PAGE_SHORTCUTS = {"search": "Ctrl+1", "sync": "Ctrl+2", "settings": "Ctrl+,", "about": "F1"}
+SYNC_NOW_SHORTCUT = "Ctrl+Shift+S"
+#: Jobs after which every page's ``on_data_changed`` runs — and which closing
+#: the window would interrupt, so it asks first.
+DATA_JOBS = ("sync", "index")
+#: How often the pages' ``refresh_sync_state`` runs (the app-bar chip would
+#: otherwise stay stale after a scheduled sync until the user opened
+#: Sincronizzazione). Slow on purpose: it only re-reads a state file.
+SYNC_STATE_REFRESH_MS = 60_000
 
 
 class PageSpec(NamedTuple):
-    """One entry of :data:`PAGES` — a plain ``(key, label, icon, factory, section)``.
+    """One entry of :data:`PAGES` — a plain ``(key, label, icon, factory, placement)``.
 
     ``factory(services, runner, window) -> QWidget`` is called once, while the
-    window is being built; ``section`` is ``"top"`` or ``"bottom"`` and decides
-    which rail group the entry appears in.
+    window is being built; ``placement`` decides how the app bar offers the
+    page: a labelled ``"tab"`` on the left or an ``"icon"`` button (label as
+    tooltip) on the right.
     """
 
     key: str
     label: str
     icon_name: str
     factory: Callable[[CoreServices, JobRunner, "MainWindow"], QWidget]
-    section: str
+    placement: Literal["tab", "icon"]
 
 
 #: Where the page modules live; a ModuleNotFoundError about anything else is a
@@ -119,67 +123,28 @@ def page_factory(module: str, class_name: str) -> Callable[..., QWidget]:
     return factory
 
 
-#: The v1 pages, in rail order. No disabled placeholders: a page is here only
-#: when it exists (DESIGN-ui §Navigation).
+#: The v1 pages, in app-bar order. No disabled placeholders: a page is here
+#: only when it exists (DESIGN-ui §Navigation).
 PAGES: list[PageSpec] = [
     PageSpec("search", strings.NAV_SEARCH, "search",
-             page_factory("search_page", "SearchPage"), "top"),
-    PageSpec("sync", strings.NAV_SYNC, "arrow-sync", page_factory("sync_page", "SyncPage"), "top"),
+             page_factory("search_page", "SearchPage"), "tab"),
+    PageSpec("sync", strings.NAV_SYNC, "arrow-sync", page_factory("sync_page", "SyncPage"), "tab"),
     PageSpec("settings", strings.NAV_SETTINGS, "settings",
-             page_factory("settings_page", "SettingsPage"), "bottom"),
-    PageSpec("about", strings.NAV_ABOUT, "info", page_factory("about_page", "AboutPage"), "bottom"),
+             page_factory("settings_page", "SettingsPage"), "icon"),
+    PageSpec("about", strings.NAV_ABOUT, "info", page_factory("about_page", "AboutPage"), "icon"),
 ]
 
 
-class ClickableLabel(QLabel):
-    """The status bar's sync summary: a label that can be clicked."""
-
-    clicked = Signal()
-
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        inside = self.rect().contains(event.position().toPoint())
-        if inside and event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mouseReleaseEvent(event)
-
-
-def build_quit_dialog(parent: QWidget) -> tuple[QMessageBox, QPushButton]:
-    """The "sincronizzazione in corso" question, without showing it.
-
-    Split from :func:`confirm_quit_during_sync` so the wording can be tested
-    without a modal event loop.
-    """
-    box = QMessageBox(parent)
-    box.setIcon(QMessageBox.Icon.Question)
-    box.setWindowTitle(strings.QUIT_DURING_SYNC_TITLE)
-    box.setText(strings.QUIT_DURING_SYNC_TEXT)
-    stop = box.addButton(strings.QUIT_STOP, QMessageBox.ButtonRole.AcceptRole)
-    keep = box.addButton(strings.QUIT_CONTINUE, QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(keep)
-    box.setEscapeButton(keep)
-    return box, stop
-
-
-def confirm_quit_during_sync(parent: QWidget) -> bool:
-    """True when the user chose "Interrompi ed esci".
-
-    The box is destroyed afterwards: answering "Continua" keeps the window open,
-    and without this every refused close would leave a dialog parented to it.
-    """
-    box, stop = build_quit_dialog(parent)
-    try:
-        box.exec()
-        return box.clickedButton() is stop
-    finally:
-        box.deleteLater()
+def nav_tooltip(spec: PageSpec) -> str:
+    """"Impostazioni (Ctrl+,)": the label, plus the shortcut when there is one."""
+    shortcut = PAGE_SHORTCUTS.get(spec.key)
+    if not shortcut:
+        return spec.label
+    return strings.NAV_TOOLTIP.format(label=spec.label, shortcut=shortcut)
 
 
 class MainWindow(QMainWindow):
-    """Rail + stack + status bar. Everything else is a page."""
+    """App bar + stack + status bar. Everything else is a page."""
 
     def __init__(
         self,
@@ -197,21 +162,28 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(strings.WINDOW_TITLE)
         self.setWindowIcon(icons.app_icon())
-        self.rail_top = self._make_rail()
-        self.rail_bottom = self._make_rail()
+        self.app_bar = AppBar()
         self.stack = QStackedWidget()
-        self.sync_summary = ClickableLabel(strings.STATUS_SYNC_SUMMARY_EMPTY)
-        self.sync_summary.setToolTip(strings.STATUS_SYNC_SUMMARY_TOOLTIP)
 
         self._build_layout()
+        self.toast = Toast(self.centralWidget())
         self._build_pages()
         self._build_shortcuts()
-        self.sync_summary.clicked.connect(lambda: self.show_page("sync"))
+        self.app_bar.page_requested.connect(self.show_page)
         self._runner.busy.connect(self._on_job_refused)
-        QGuiApplication.styleHints().colorSchemeChanged.connect(self._on_color_scheme_changed)
+        self._runner.job_finished.connect(self._on_job_finished)
+        self._startup: StartupTasks | None = None
+        self.sync_state_timer = QTimer(self)
+        self.sync_state_timer.setInterval(SYNC_STATE_REFRESH_MS)
+        self.sync_state_timer.timeout.connect(self.refresh_sync_state)
+        self.sync_state_timer.start()
         self._restore_geometry()
         if self._pages:
-            self.show_page(next(iter(self._pages)))  # the first entry of PAGES
+            first = next(iter(self._pages))  # the first entry of PAGES
+            self.show_page(first)
+            focus = getattr(self._pages[first], "initial_focus", None)
+            if callable(focus):
+                focus()  # remembered by Qt and applied when the window activates
 
     # -- public API for the pages -----------------------------------------
 
@@ -221,21 +193,36 @@ class MainWindow(QMainWindow):
         if page is None:
             log.debug("pagina sconosciuta: %s", key)
             return
+        current = self.stack.currentWidget()
+        leave = getattr(current, "can_leave", None)
+        if current is not page and callable(leave) and not leave():
+            # The bar already checked the clicked entry: put the check back.
+            self.app_bar.set_current(self.current_page_key() or key)
+            return
         self.stack.setCurrentWidget(page)
-        for rail in (self.rail_top, self.rail_bottom):
-            row = _row_of(rail, key)
-            with QSignalBlocker(rail):  # moving the selection must not re-enter
-                rail.setCurrentRow(row)
-                if row == -1:
-                    rail.clearSelection()
+        self.app_bar.set_current(key)
 
     def set_status(self, text: str, ms: int = STATUS_TIMEOUT_MS) -> None:
         """Transient message in the left segment ("Copiato negli appunti…")."""
         self.statusBar().showMessage(text, ms)
 
+    def show_toast(self, text: str, tone: str = "neutral", ms: int = TOAST_MS) -> None:
+        """A confirmation over the content ("JSON copiato · 157 KB"); see ``ui/toast``."""
+        self.toast.show_message(text, tone, ms)
+
+    def set_sync_state(self, items: Sequence[tuple[str, str, str]]) -> None:
+        """The app-bar chip: ``(env, tone, text)`` per environment."""
+        self.app_bar.status_chip.set_envs(list(items))
+
     def set_sync_summary(self, text: str) -> None:
-        """Permanent right segment ("svil: oggi 11:23 · coll: oggi 11:24")."""
-        self.sync_summary.setText(text)
+        """The chip as one plain line — for a page that has no per-env state."""
+        self.app_bar.status_chip.set_envs([("", "neutral", text)] if text else [])
+
+    def set_context(self, text: str | None) -> None:
+        """Window title "qtRequestory — coll · 1a2b3c4d", or just the name."""
+        self.setWindowTitle(
+            strings.WINDOW_TITLE_CONTEXT.format(context=text) if text else strings.WINDOW_TITLE
+        )
 
     def current_page_key(self) -> str | None:
         current = self.stack.currentWidget()
@@ -254,71 +241,78 @@ class MainWindow(QMainWindow):
         """Ctrl+Shift+S, and the wizard's "avvia la prima sincronizzazione"."""
         self.show_page("sync")
         page = self._pages.get("sync")
+        if page is not None and self.stack.currentWidget() is not page:
+            return  # the page on screen refused to be left (unsaved changes)
         starter = getattr(page, "start_sync", None)
         if callable(starter):
             starter()
 
+    def refresh_sync_state(self) -> None:
+        """Every page's ``refresh_sync_state`` hook (the chip follows)."""
+        for page in self._pages.values():
+            refresh = getattr(page, "refresh_sync_state", None)
+            if callable(refresh):
+                refresh()
+
+    def startup_tasks(self) -> None:
+        """Index what is pending, then a non-forced sync (see ``ui/startup``).
+
+        ``run_gui`` calls this once the window is visible; nothing else does,
+        so a window built by a test starts no background job by itself.
+        """
+        self._startup = StartupTasks(self._services, self._runner,
+                                     self._start_background_sync, self)
+        self._startup.run()
+
     def rerun_wizard(self) -> object | None:
-        """Impostazioni → "Riesegui configurazione iniziale"."""
+        """Impostazioni → "Riesegui configurazione iniziale".
+
+        The wizard saves the configuration itself, so every page is told, as
+        after a save in Impostazioni; then the first sync it offers.
+        """
         from qtrequestory.ui import app  # local: app imports this module
 
         if not app.wizard_available():
             self.set_status(strings.WIZARD_UNAVAILABLE)
             return None
-        return app.show_first_run_wizard(self._services, self._runner, self)
+        result = app.show_first_run_wizard(self._services, self._runner, self)
+        if result is None:
+            return None
+        cfg = getattr(result, "config", None) or self._services.config.load()
+        self._broadcast_config(None, cfg)
+        if getattr(result, "start_sync", False):
+            self.start_sync()
+        return result
 
     # -- construction ------------------------------------------------------
 
-    def _make_rail(self) -> QListWidget:
-        """One rail group: a borderless list that hugs its items.
-
-        Painting it with the *Window* brush instead of the default *Base* one is
-        what makes the two groups look like a single panel rather than two white
-        boxes — palette-derived, so it follows light and dark on its own (no QSS,
-        DESIGN-ui §Visual style).
-        """
-        rail = QListWidget()
-        rail.setFixedWidth(RAIL_WIDTH)
-        rail.setFrameShape(QListWidget.Shape.NoFrame)
-        rail.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        rail.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        rail.setBackgroundRole(QPalette.ColorRole.Window)
-        rail.viewport().setBackgroundRole(QPalette.ColorRole.Window)
-        rail.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
-        rail.currentItemChanged.connect(self._on_rail_selection)
-        return rail
-
     def _build_layout(self) -> None:
-        rail_box = QWidget()
-        rail_layout = QVBoxLayout(rail_box)
-        rail_layout.setContentsMargins(0, 0, 0, 0)
-        rail_layout.setSpacing(0)
-        rail_layout.addWidget(self.rail_top)
-        rail_layout.addStretch(1)
-        rail_layout.addWidget(self.rail_bottom)
-        rail_box.setFixedWidth(RAIL_WIDTH)
-
         central = QWidget()
-        layout = QHBoxLayout(central)
+        layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(rail_box)
+        layout.addWidget(self.app_bar)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
-
-        self.statusBar().addPermanentWidget(self.sync_summary)
+        self.statusBar()  # transient hints only; the sync state lives in the app bar
 
     def _build_pages(self) -> None:
+        # The bar entries first: a widget joins the Tab chain when it enters the
+        # window, so this puts the whole bar before every page.
+        for spec in self._specs:
+            if spec.placement == "icon":
+                self.app_bar.add_icon_button(spec.key, spec.icon_name, nav_tooltip(spec))
+            else:
+                self.app_bar.add_tab(spec.key, spec.label, spec.icon_name, nav_tooltip(spec))
+        chain = self.app_bar.focus_chain()
+        for before, after in zip(chain, chain[1:]):
+            QWidget.setTabOrder(before, after)  # the chip was created before the tabs
         for spec in self._specs:
             widget = self._build_page(spec)
             self._pages[spec.key] = widget
             self.stack.addWidget(widget)
-            rail = self.rail_top if spec.section == "top" else self.rail_bottom
-            item = QListWidgetItem(icons.icon(spec.icon_name), spec.label)
-            item.setData(Qt.ItemDataRole.UserRole, spec.key)
-            item.setData(ICON_NAME_ROLE, spec.icon_name)
-            rail.addItem(item)
         self._connect_page_hooks()
+        self._emit_initial_states()
 
     def _build_page(self, spec: PageSpec) -> QWidget:
         try:
@@ -339,21 +333,29 @@ class MainWindow(QMainWindow):
     def _connect_page_hooks(self) -> None:
         """Wire the optional hooks a page may expose (see the module docstring)."""
         for key, page in self._pages.items():
+            state = getattr(page, "state_changed", None)
             summary = getattr(page, "summary_changed", None)
-            if summary is not None and hasattr(summary, "connect"):
+            if state is not None and hasattr(state, "connect"):
+                state.connect(self.set_sync_state)
+            elif summary is not None and hasattr(summary, "connect"):
                 summary.connect(self.set_sync_summary)
             changed = getattr(page, "config_changed", None)
             if changed is not None and hasattr(changed, "connect"):
                 # The key is bound here so the broadcast can skip its sender.
                 changed.connect(partial(self._broadcast_config, key))
 
+    def _emit_initial_states(self) -> None:
+        """Ask each page for its state now that someone listens (Important #9)."""
+        for page in self._pages.values():
+            emit = getattr(page, "emit_initial_state", None)
+            if callable(emit):
+                emit()
+
     def _build_shortcuts(self) -> None:
         bindings: list[tuple[str, Callable[[], None]]] = [
-            ("Ctrl+1", lambda: self.show_page("search")),
-            ("Ctrl+2", lambda: self.show_page("sync")),
-            ("Ctrl+,", lambda: self.show_page("settings")),
-            ("Ctrl+Shift+S", self.start_sync),
+            (sequence, partial(self.show_page, key)) for key, sequence in PAGE_SHORTCUTS.items()
         ]
+        bindings.append((SYNC_NOW_SHORTCUT, self.start_sync))
         for sequence, slot in bindings:
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.activated.connect(slot)
@@ -361,22 +363,26 @@ class MainWindow(QMainWindow):
 
     # -- reactions ---------------------------------------------------------
 
-    def _on_rail_selection(self, current: QListWidgetItem | None, _previous=None) -> None:
-        if current is not None:
-            self.show_page(current.data(Qt.ItemDataRole.UserRole))
-
-    def _on_color_scheme_changed(self, _scheme) -> None:
-        """Light/dark switched: the glyphs were tinted for the old palette."""
-        icons.clear_cache()
-        for rail in (self.rail_top, self.rail_bottom):
-            for row in range(rail.count()):
-                item = rail.item(row)
-                item.setIcon(icons.icon(item.data(ICON_NAME_ROLE)))
-
     def _on_job_refused(self, name: str) -> None:
         self.set_status(strings.STATUS_BUSY.format(name=job_label(name)))
 
-    def _broadcast_config(self, sender_key: str, cfg: object) -> None:
+    def _on_job_finished(self, name: str, _ok: bool) -> None:
+        """After a sync or an index — even a failed one, which may have written
+        half the files — every page re-reads what it shows."""
+        if name not in DATA_JOBS:
+            return
+        for page in self._pages.values():
+            refresh = getattr(page, "on_data_changed", None)
+            if callable(refresh):
+                refresh()
+
+    def _start_background_sync(self) -> None:
+        """The startup sync: non-forced, and without leaving the current page."""
+        starter = getattr(self._pages.get("sync"), "start_sync", None)
+        if callable(starter):
+            starter(force=False)
+
+    def _broadcast_config(self, sender_key: str | None, cfg: object) -> None:
         """Impostazioni saved: let the OTHER pages reload.
 
         The sender is skipped on purpose: it already has the configuration it
@@ -392,6 +398,15 @@ class MainWindow(QMainWindow):
 
     # -- window state ------------------------------------------------------
 
+    def _job_detail(self, name: str) -> str:
+        """"12 di 48 file" for a running sync, from the page's progress model."""
+        counts = getattr(self._pages.get(name), "progress_counts", None)
+        done_total = counts() if callable(counts) else None
+        if not done_total:
+            return ""
+        done, total = done_total
+        return strings.QUIT_PROGRESS.format(done=done, total=total)
+
     def settings(self) -> QSettings:
         """The user's store; see ``actions.user_settings`` for why not ``QSettings(org, app)``."""
         return actions.user_settings()
@@ -405,20 +420,22 @@ class MainWindow(QMainWindow):
         if state is not None:
             self.restoreState(state)
 
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Coming back to the window is when a stale chip would be noticed."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self.refresh_sync_state()
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        """Ask before abandoning a running sync, then remember the geometry."""
-        if self._runner.is_running("sync") and not confirm_quit_during_sync(self):
-            event.ignore()
-            return
-        self._runner.cancel("sync")
+        """Ask before abandoning a sync or an index job, then remember the geometry."""
+        for name in DATA_JOBS:
+            if self._runner.is_running(name) and not confirm_quit_during_job(
+                    self, name, self._job_detail(name)):
+                event.ignore()
+                return
+        for name in DATA_JOBS:
+            self._runner.cancel(name)
         stored = self.settings()
         stored.setValue("window/geometry", self.saveGeometry())
         stored.setValue("window/state", self.saveState())
         super().closeEvent(event)
-
-
-def _row_of(rail: QListWidget, key: str) -> int:
-    for row in range(rail.count()):
-        if rail.item(row).data(Qt.ItemDataRole.UserRole) == key:
-            return row
-    return -1

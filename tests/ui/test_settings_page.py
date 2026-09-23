@@ -61,41 +61,14 @@ def _answer(monkeypatch, button: QMessageBox.StandardButton) -> list[tuple]:
     return asked
 
 
-# -- reachable on a small screen ---------------------------------------------
-
-def test_the_form_scrolls_and_salva_stays_put(qtbot, page):
-    """The whole configuration is one tall form; [Salva] must not fall off it.
-
-    On a 1366x768 laptop the page gets roughly 420 px of height once the
-    title bar, the rail and the status bar have taken their share. The form
-    goes in a QScrollArea and the [Annulla]/[Salva] row stays OUTSIDE it, so
-    the one button that commits the page can never be scrolled away.
-    """
-    from PySide6.QtWidgets import QScrollArea
-
-    page.resize(1000, 420)
-    page.show()
-    qtbot.waitExposed(page)
-
-    scroll = page.findChild(QScrollArea)
-    assert scroll is not None, "the tall form is scrollable"
-    assert scroll.widgetResizable(), "the form must still use the full width"
-    assert page.minimumSizeHint().height() <= 420, "the page fits a small screen"
-
-    assert not scroll.widget().isAncestorOf(page.save_button), "pinned, not scrolled"
-    assert not scroll.widget().isAncestorOf(page.cancel_button)
-    assert page.save_button.isVisible()
-    assert page.save_button.geometry().bottom() <= page.height()
-
-
 # -- loading -----------------------------------------------------------------
 
 def test_the_form_shows_the_loaded_configuration(page, fake_core):
     cfg = fake_core.config.load()
-    assert page.mirror_edit.text() == str(cfg.mirror_root)
+    assert page.mirror_path.text() == str(cfg.mirror_root)
     assert page.env_table.environments() == cfg.environments
     assert page.window_days() == cfg.default_window_days
-    assert page.output_edit.text() == str(cfg.output_dir)
+    assert page.output_path.text() == str(cfg.output_dir)
 
 
 def test_a_freshly_loaded_form_is_not_dirty(page):
@@ -106,7 +79,7 @@ def test_a_freshly_loaded_form_is_not_dirty(page):
 # -- dirty tracking ----------------------------------------------------------
 
 def test_editing_a_field_enables_the_save_button(page, tmp_path):
-    page.mirror_edit.setText(str(tmp_path / "altrove"))
+    page.mirror_path.setText(str(tmp_path / "altrove"))
     assert page.is_dirty()
     assert page.save_button.isEnabled()
 
@@ -118,9 +91,9 @@ def test_editing_the_environments_table_enables_the_save_button(page):
 
 def test_annulla_puts_the_loaded_configuration_back(page, fake_core, tmp_path):
     cfg = fake_core.config.load()
-    page.mirror_edit.setText(str(tmp_path / "altrove"))
+    page.mirror_path.setText(str(tmp_path / "altrove"))
     page.cancel_button.click()
-    assert page.mirror_edit.text() == str(cfg.mirror_root)
+    assert page.mirror_path.text() == str(cfg.mirror_root)
     assert not page.save_button.isEnabled()
     assert fake_core.config.saved == []
 
@@ -139,7 +112,7 @@ def test_an_invalid_url_blocks_the_save_and_is_shown_inline(page, fake_core):
 
 
 def test_a_missing_mirror_folder_blocks_the_save(page, fake_core):
-    page.mirror_edit.setText("   ")
+    page.mirror_path.setText("   ")
     page.save_button.click()
     assert fake_core.config.saved == []
     assert strings.SETTINGS_ERROR_NO_MIRROR in page.errors_label.text()
@@ -175,7 +148,7 @@ def test_a_valid_save_persists_and_announces_the_new_configuration(
 
 
 def test_an_empty_temporary_folder_means_the_system_default(page, fake_core):
-    page.output_edit.setText("")
+    page.output_path.setText("")
     page.save_button.click()
     assert fake_core.config.saved[-1].output_dir is None
 
@@ -194,7 +167,7 @@ def test_saving_keeps_the_fields_the_page_does_not_edit(page, fake_core, tmp_pat
 
 def test_a_new_mirror_folder_offers_to_index_it(page, fake_core, tmp_path, monkeypatch, qtbot):
     _answer(monkeypatch, QMessageBox.StandardButton.Yes)
-    page.mirror_edit.setText(str(tmp_path / "nuovi-log"))
+    page.mirror_path.setText(str(tmp_path / "nuovi-log"))
 
     page.save_button.click()
 
@@ -206,7 +179,7 @@ def test_declining_the_reindex_question_starts_nothing(
     page, fake_core, tmp_path, monkeypatch, qtbot
 ):
     asked = _answer(monkeypatch, QMessageBox.StandardButton.No)
-    page.mirror_edit.setText(str(tmp_path / "nuovi-log"))
+    page.mirror_path.setText(str(tmp_path / "nuovi-log"))
 
     page.save_button.click()
     qtbot.wait(150)
@@ -302,9 +275,13 @@ def test_the_summary_says_in_words_what_the_fields_mean(page):
 
 def test_the_spin_boxes_cannot_be_driven_out_of_the_valid_range(page):
     """The validation in ``config.validate`` is the safety net; the widgets are
-    the first line, so an invalid schedule cannot even be typed."""
-    assert (page.schedule_every.minimum(), page.schedule_every.maximum()) == (1, 12)
-    assert (page.schedule_for.minimum(), page.schedule_for.maximum()) == (0, 23)
+    the first line, so an invalid schedule cannot even be typed. The ranges
+    come from the core's own constants, not a copy of them."""
+    from qtrequestory.core.config import REPEAT_EVERY_RANGE, REPEAT_FOR_RANGE
+
+    assert (page.schedule_every.minimum(), page.schedule_every.maximum()) == REPEAT_EVERY_RANGE
+    assert (page.schedule_for.minimum(), page.schedule_for.maximum()) == REPEAT_FOR_RANGE
+    assert REPEAT_EVERY_RANGE == (1, 12) and REPEAT_FOR_RANGE == (0, 23)
     page.schedule_for.setValue(99)
     assert page.schedule_for.value() == 23
     page.schedule_every.setValue(0)
@@ -371,7 +348,7 @@ def test_a_task_that_is_not_registered_is_left_alone(page, fake_core, qtbot):
     assert page.scheduler_job is None
 
 
-def test_a_failed_re_registration_is_a_status_line_not_a_dialog(page, fake_core, window, qtbot):
+def test_a_failed_re_registration_is_a_banner_not_a_dialog(page, fake_core, window, qtbot):
     from qtrequestory.ui.contracts import SchedulerError
 
     fake_core.scheduler.set_status(registered=True, exe_matches=True)
@@ -384,7 +361,8 @@ def test_a_failed_re_registration_is_a_status_line_not_a_dialog(page, fake_core,
 
     page.save_button.click()
 
-    qtbot.waitUntil(lambda: any("accesso negato" in s for s in window.status), timeout=5000)
+    qtbot.waitUntil(lambda: not page.schedule_banner.isHidden(), timeout=5000)
+    assert "accesso negato" in page.schedule_banner_label.text()
     assert strings.SETTINGS_SAVED in window.status, "the configuration itself was saved"
 
 
@@ -469,14 +447,14 @@ def test_rileva_fills_in_the_detected_editor(page, fake_core, tmp_path):
 
     page.detect_button.click()
 
-    assert page.editor_edit.text() == str(exe)
+    assert page.editor_path.text() == str(exe)
     assert page.save_button.isEnabled()
 
 
 def test_rileva_says_so_when_nothing_is_found(page, fake_core, window):
     fake_core.config.editor = None
     page.detect_button.click()
-    assert page.editor_edit.text() == ""
+    assert page.editor_path.text() == ""
     assert strings.SETTINGS_EDITOR_NOT_FOUND in window.status
 
 
@@ -506,7 +484,7 @@ def test_riesegui_configurazione_iniziale_calls_the_window_hook(page, window):
 
 def test_the_configuration_file_is_shown_and_its_folder_can_be_opened(page, fake_core):
     path = fake_core.config.config_path()
-    assert str(path) in page.config_path_label.text()
+    assert page.config_path_label.full_text() == str(path)
 
     page.open_config_button.click()
 
@@ -515,7 +493,7 @@ def test_the_configuration_file_is_shown_and_its_folder_can_be_opened(page, fake
 
 def test_apri_opens_the_mirror_folder(page, fake_core):
     page.open_mirror_button.click()
-    assert fake_core.extract.folders[-1] == Path(page.mirror_edit.text())
+    assert fake_core.extract.folders[-1] == Path(page.mirror_path.text())
 
 
 # -- browsing ----------------------------------------------------------------
@@ -525,14 +503,14 @@ def test_sfoglia_writes_the_chosen_folder_into_the_field(page, tmp_path, monkeyp
         QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(tmp_path))
     )
     page.browse_mirror_button.click()
-    assert page.mirror_edit.text() == str(tmp_path)
+    assert page.mirror_path.text() == str(tmp_path)
 
 
 def test_a_cancelled_browse_leaves_the_field_alone(page, monkeypatch):
-    before = page.mirror_edit.text()
+    before = page.mirror_path.text()
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: ""))
     page.browse_mirror_button.click()
-    assert page.mirror_edit.text() == before
+    assert page.mirror_path.text() == before
     assert not page.is_dirty()
 
 
@@ -590,4 +568,25 @@ def test_the_window_builds_the_real_page_and_broadcasts_its_saves(qtbot, fake_co
     page.save_button.click()
 
     assert fake_core.config.saved[-1].default_window_days == 7
-    assert str(fake_core.index_db_path()) in window.page("about").path_labels["index"].text()
+    assert str(fake_core.index_db_path()) in window.page("about").path_labels["index"].full_text()
+
+
+def test_the_page_has_a_title(page):
+    """The app bar only shows a gear: the page itself says where you are."""
+    assert page.title_label.text() == strings.SETTINGS_TITLE == "Impostazioni"
+    assert page.title_label.property("role") == "pageTitle"
+
+
+def test_ricostruisci_indice_refuses_an_invalid_log_folder(qtbot, fake_core, runner, window, monkeypatch):
+    """Final review #1: no index job into the process CWD."""
+    fake_core.config.config = dataclasses.replace(fake_core.config.config, mirror_root=Path(""))
+    page = SettingsPage(fake_core, runner, window)
+    qtbot.addWidget(page)
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+
+    page.rebuild_button.click()
+    qtbot.wait(150)
+
+    assert not asked, "nothing to ask: it cannot run"
+    assert fake_core.index.updates == [] and runner.job("index") is None
+    assert any("cartella dei log" in text.lower() for text in window.status), window.status

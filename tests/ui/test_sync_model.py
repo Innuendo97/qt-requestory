@@ -213,6 +213,18 @@ def test_whole_kb_keeps_kilobytes_all_the_way_up_for_the_results_table():
     assert fmt.format_size(int(1.4 * MB)) == "1,4 MB", "the same body, in the readable unit"
 
 
+def test_the_registro_and_the_cards_share_one_size_formatter():
+    """sync.log (written by the core) and the page (written by the UI) used to
+    say "4.0 MB" and "4 MB" for the same file: one function now does both."""
+    from qtrequestory.core.events import format_size as core_format_size
+
+    for value in (0, 512, 2560, 41 * MB, int(80.4 * MB), int(1.5 * GB)):
+        assert fmt.format_size(value) == core_format_size(value)
+    assert fmt.message(FileDone("coll", "a.txt", int(80.4 * MB), Path("x"))) == (
+        f"coll: scaricato a.txt ({fmt.format_size(int(80.4 * MB))})"
+    )
+
+
 def test_a_rate_is_a_size_per_second():
     assert fmt.format_rate(8.2 * MB) == "8,2 MB/s"
 
@@ -246,9 +258,9 @@ def test_last_sync_reads_as_today_yesterday_or_a_date():
 
 def test_a_rendered_event_reuses_the_core_wording_verbatim():
     line = fmt.message(FileDone("coll", "20260918.txt", 4 * MB, Path("x")))
-    assert line == "coll: scaricato 20260918.txt (4.0 MB)"
-    assert fmt.message(RemoteIndexRead("coll", 4, 1, 2, 4 * MB)) == (
-        "coll: index letto: 4 file giornalieri, 1 vuoti, 2 sciolti, 4.0 MB da scaricare"
+    assert line == "coll: scaricato 20260918.txt (4 MB)"
+    assert fmt.message(RemoteIndexRead("coll", 4, 1, 2, int(4.5 * MB))) == (
+        "coll: elenco del server letto: 4 file giornalieri, 1 vuoti, 2 sciolti, 4,5 MB da scaricare"
     )
     assert fmt.message(EnvUnreachable("coll", "timeout")) == (
         "coll: endpoint non raggiungibile, riprovo al prossimo giro (timeout)"
@@ -258,9 +270,17 @@ def test_a_rendered_event_reuses_the_core_wording_verbatim():
     )
     assert fmt.message(LogMessage(logging.INFO, "ciao")) == "ciao"
     assert fmt.message(EnvFinished("coll", EnvResult("coll", "ok", downloaded=1, present=2))) == (
-        "coll: 1 scaricati, 2 già presenti, 0 vuoti saltati, 0 errori (ok)"
+        "coll: 1 scaricati, 2 già presenti, 0 vuoti saltati, 0 errori (completato)"
     )
     assert fmt.message(FileFailed("coll", "a.txt", "troncato")) == "coll: ERRORE su a.txt: troncato"
+
+
+def test_the_registro_has_no_english_status_words_and_a_decimal_comma():
+    unreachable = EnvResult("svil", "unreachable", error="timeout")
+    assert fmt.message(EnvFinished("svil", unreachable)).endswith("(non raggiungibile)")
+    errors = EnvResult("coll", "errors", failed=2)
+    assert fmt.message(EnvFinished("coll", errors)).endswith("(con errori)")
+    assert fmt.message(IndexFinished(2, 0, 0.12)) == "indice: 2 file indicizzati, 0 rimossi in 0,1 s"
 
 
 def test_the_chatty_events_produce_no_line_at_all():
@@ -276,7 +296,7 @@ def test_a_log_line_carries_the_same_timestamp_prefix_as_sync_log():
 
     ts = datetime(2026, 9, 22, 9, 3, 0).timestamp()
     line = fmt.log_line(FileDone("coll", "a.txt", 0, Path("x"), ts=ts))
-    assert line == "[2026-09-22 09:03:00] coll: scaricato a.txt (0.0 MB)"
+    assert line == "[2026-09-22 09:03:00] coll: scaricato a.txt (0 B)"
     assert fmt.log_line(FileStarted("coll", "a.txt", 1)) is None
 
 
@@ -301,7 +321,6 @@ def test_the_task_status_line_says_active_schedule_next_and_last():
     task = TaskStatus(registered=True, command=Path("q.exe"), args="--sync", exe_matches=True,
                       state="Pronto", next_run="domani 09:00", last_run="oggi 11:24", last_result=0)
     line = fmt.format_task_status(task, ScheduleSettings())
-    assert strings.SYNC_AUTO_ON in line
     assert "Ogni giorno alle 09:00" in line  # the schedule, in words
     assert "domani 09:00" in line and "oggi 11:24" in line and "0" in line
 
@@ -309,7 +328,7 @@ def test_the_task_status_line_says_active_schedule_next_and_last():
 def test_an_unregistered_task_says_only_that():
     from qtrequestory.ui.contracts import NOT_REGISTERED, ScheduleSettings
 
-    assert fmt.format_task_status(NOT_REGISTERED, ScheduleSettings()) == strings.SYNC_AUTO_OFF
+    assert fmt.format_task_status(NOT_REGISTERED, ScheduleSettings()) == strings.SYNC_AUTO_OFF_HINT
 
 
 # ------------------------------------------------------------- strip texts ---
@@ -327,7 +346,7 @@ def test_the_strip_reads_file_totals_rate_and_eta_together(model, clock):
     model.handle(FileProgress("coll", "20260716.txt", int(8.2 * MB), int(80.4 * MB)))
 
     strip = build_strip(model)
-    assert strip.label == "coll · 20260716.txt (80,4 MB)"
+    assert strip.label == "20260716.txt (80,4 MB)", "the card already names the env"
     assert strip.totals.startswith("file 1 di 48 · ")
     assert strip.totals.endswith("/1,4 GB")
     assert strip.rate.startswith("8,2 MB/s · circa ")
@@ -345,7 +364,7 @@ def test_the_strip_says_nothing_about_the_file_before_there_is_one(model):
     model.handle(SyncStarted(("coll", "svil"), False))
     assert build_strip(model).label == "", "an empty label keeps 'Avvio…' on screen"
     model.handle(EnvStarted("coll"))
-    assert build_strip(model).label == "coll · lettura index…"
+    assert build_strip(model).label == strings.SYNC_PROGRESS_ENV
 
 
 def test_the_index_phase_counts_files_and_shows_no_rate(model):
@@ -358,3 +377,144 @@ def test_the_index_phase_counts_files_and_shows_no_rate(model):
     assert strip.label == "Indicizzazione · 20260918.txt"
     assert strip.totals == "file 1 di 2"
     assert strip.rate == "" and strip.percent == 0
+
+
+# ------------------------------------------------------------------ badges ---
+#
+# One function decides what an environment "is" right now; the card's badge
+# and the app-bar chip both read it, so they cannot disagree.
+
+from datetime import date, datetime  # noqa: E402
+
+from qtrequestory.ui.contracts import CoverageDays, EnvStatus  # noqa: E402
+from qtrequestory.ui.pages import sync_badge as sb  # noqa: E402
+
+
+def _status(**kw) -> EnvStatus:
+    base = dict(env="coll", last_success=datetime(2026, 9, 22, 11, 23), fresh=False,
+                n_local_files=3, local_bytes=MB, latest_day=None, index_pending=0)
+    return EnvStatus(**{**base, **kw})
+
+
+@pytest.mark.parametrize(
+    ("kw", "kind", "tone", "text"),
+    [
+        (dict(status=_status(fresh=True)), sb.FRESH, "ok", "aggiornato"),
+        (dict(status=_status()), sb.STALE, "warn", strings.SYNC_BADGE_STALE),
+        (dict(status=_status(last_success=None, n_local_files=0)), sb.NEVER, "neutral",
+         "mai sincronizzato"),
+        (dict(status=None), sb.NEVER, "neutral", "mai sincronizzato"),
+        (dict(status=_status(fresh=True), running=True), sb.RUNNING, "neutral", "in corso"),
+        (dict(status=_status(fresh=True), queued=True), sb.QUEUED, "neutral", "in attesa"),
+        (dict(status=_status(fresh=True), missing=3), sb.MISSING, "warn", "3 giorni mancanti"),
+        (dict(status=_status(fresh=True), missing=1), sb.MISSING, "warn", "1 giorno mancante"),
+        (dict(status=_status(fresh=True), reachable=False), sb.UNREACHABLE, "warn",
+         "non raggiungibile"),
+        (dict(status=_status(fresh=True), failed=2), sb.ERRORS, "warn", "errori"),
+    ],
+)
+def test_every_badge_has_one_readable_text_and_one_tone(kw, kind, tone, text):
+    badge = sb.badge_for(**kw)
+    assert (badge.kind, badge.tone, badge.text) == (kind, tone, text)
+
+
+def test_what_is_happening_beats_what_happened():
+    assert sb.badge_for(_status(), running=True, reachable=False, failed=2).kind == sb.RUNNING
+    assert sb.badge_for(_status(), queued=True, reachable=False).kind == sb.QUEUED
+    assert sb.badge_for(_status(), reachable=False, failed=2, missing=1).kind == sb.UNREACHABLE
+    assert sb.badge_for(_status(), failed=2, missing=1).kind == sb.ERRORS
+    assert sb.badge_for(_status(fresh=True), missing=1).kind == sb.MISSING, (
+        "a lost day matters more than a fresh mirror")
+
+
+def test_no_badge_is_ever_red():
+    """An unreachable endpoint is the normal state outside the VPN."""
+    for kw in (dict(reachable=False), dict(failed=5), dict(missing=9), {}):
+        assert sb.badge_for(_status(), **kw).tone in ("ok", "warn", "neutral")
+
+
+# --------------------------------------------------------- coverage strip ---
+
+from qtrequestory.ui.pages import coverage_strip as cs  # noqa: E402
+
+TODAY = date(2026, 9, 23)  # a Wednesday
+
+
+def test_coverage_days_are_present_missing_weekend_today_or_before_the_archive():
+    cov = CoverageDays(present=frozenset({date(2026, 9, 21), date(2026, 9, 19)}),
+                       missing=(date(2026, 9, 22),), first_local=date(2026, 9, 18))
+    kinds = cs.day_kinds(cov, TODAY, days=30)
+    assert len(kinds) == 30
+    assert kinds[-1] == (TODAY, cs.TODAY)
+    assert dict(kinds)[date(2026, 9, 22)] == cs.MISSING
+    assert dict(kinds)[date(2026, 9, 21)] == cs.PRESENT
+    assert dict(kinds)[date(2026, 9, 20)] == cs.WEEKEND
+    assert dict(kinds)[date(2026, 9, 19)] == cs.PRESENT, "a weekend file that exists is present"
+    assert dict(kinds)[date(2026, 9, 17)] == cs.BEFORE, "nothing to miss before the archive began"
+    assert kinds[0][0] == date(2026, 8, 25)
+
+
+def test_each_square_explains_itself():
+    assert cs.tooltip(date(2026, 9, 22), cs.MISSING) == "22/09/2026: mancante"
+    assert cs.tooltip(date(2026, 9, 21), cs.PRESENT) == "21/09/2026: presente"
+    assert cs.tooltip(date(2026, 9, 20), cs.WEEKEND) == "20/09/2026: weekend"
+    assert cs.tooltip(TODAY, cs.TODAY) == "23/09/2026: oggi (arriva domani)"
+
+
+# ------------------------------------------------------ missing-days banner ---
+
+def test_the_missing_days_banner_names_the_env_the_dates_and_the_server_limit():
+    text = fmt.missing_days_text({"svil": (date(2026, 9, 17),), "coll": ()})
+    assert "svil" in text and "17/09/2026" in text and "coll" not in text
+    assert "circa un giorno" in text
+    many = fmt.missing_days_text({"svil": tuple(date(2026, 9, d) for d in (1, 2, 3, 4, 7, 8, 9))})
+    assert "01/09/2026" in many and "7" in many
+    assert fmt.missing_days_text({"svil": ()}) == ""
+
+
+# ------------------------------------------------------------ run outcome ---
+
+def test_completata_only_when_every_environment_is_fine():
+    ok = fmt.run_outcome(0, {"coll": ("ok", 0), "svil": ("fresh", 0)})
+    assert (ok.text, ok.tone) == ("Sincronizzazione completata", "ok")
+    partial = fmt.run_outcome(0, {"coll": ("ok", 0), "svil": ("unreachable", 0)})
+    assert (partial.text, partial.tone) == ("Completata · svil non raggiungibile", "warn")
+    errors = fmt.run_outcome(1, {"coll": ("errors", 2), "svil": ("ok", 0)})
+    assert errors.text == "Completata · coll con 2 errori" and errors.tone == "warn"
+    assert fmt.run_outcome(3, {}).text == strings.SYNC_CANCELLED
+    assert fmt.run_outcome(2, {"coll": ("unreachable", 0)}).text == strings.SYNC_DONE_UNREACHABLE
+
+
+def test_the_log_header_says_when_and_how_the_last_run_ended():
+    assert fmt.log_header(None, None) == "Registro dell'ultima esecuzione"
+    assert fmt.log_header("11:24", "completata") == (
+        "Registro dell'ultima esecuzione · 11:24 · completata")
+
+
+def test_the_log_header_time_comes_from_the_last_sync_log_line():
+    assert fmt.last_log_time(["[2026-09-22 09:03:00] coll: scaricato a.txt (1 MB)"],
+                             now=datetime(2026, 9, 22, 12, 0)) == "oggi 09:03"
+    assert fmt.last_log_time(["garbage"], now=datetime(2026, 9, 22, 12, 0)) is None
+    assert fmt.last_log_time([], now=datetime(2026, 9, 22, 12, 0)) is None
+
+
+# ----------------------------------------------------- automatic sync line ---
+
+def test_the_auto_sync_line_is_schedule_next_and_last_without_the_title():
+    from qtrequestory.ui.contracts import ScheduleSettings, TaskStatus
+
+    task = TaskStatus(registered=True, command=Path("q.exe"), args="--sync", exe_matches=True,
+                      state="Pronto", next_run="24/09/2026 09:00", last_run=None, last_result=None)
+    line = fmt.format_task_status(task, ScheduleSettings())
+    assert line.startswith("Ogni giorno alle 09:00")
+    assert "24/09/2026 09:00" in line
+    assert fmt.auto_title(task) == "Sincronizzazione automatica attiva"
+    from qtrequestory.ui.contracts import NOT_REGISTERED
+    assert fmt.auto_title(NOT_REGISTERED) == "Sincronizzazione automatica non attiva"
+    assert fmt.auto_title(None) == "Sincronizzazione automatica"
+
+
+def test_a_run_the_core_skipped_for_a_held_lock_is_not_completata():
+    skipped = fmt.run_outcome(0, {}, skipped=True)
+    assert (skipped.text, skipped.tone) == (strings.SYNC_LOCK_HELD, "neutral")
+    assert skipped.log == strings.SYNC_LOG_SKIPPED

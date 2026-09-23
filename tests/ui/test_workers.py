@@ -353,21 +353,68 @@ def test_shutdown_does_not_claim_a_job_finished_when_the_pool_did_not_drain(qapp
 
 # ------------------------------------------------------------- pool sizing ---
 
-def test_the_pool_has_one_thread_per_name_that_can_be_live():
+def test_the_pool_has_a_thread_per_name_plus_room_for_superseded_jobs():
     """Four threads for nine names meant a search could WAIT for a sync.
 
-    Exactly one job per name is ever live (``EXCLUSIVE`` refuses a second,
-    every other name supersedes the previous one), so the number of names is an
-    exact upper bound on concurrent jobs. Anything smaller means a 20-minute
-    download can hold the only free thread while the user presses [Cerca].
+    One job per name is *live*, but a superseded job keeps its thread until
+    the core function reaches a cancel check point (``read_body`` has none),
+    so the pool holds a few threads more than there are names. Anything
+    smaller means a 20-minute download plus a couple of superseded searches
+    can hold every thread while the user presses [Cerca].
     """
-    from qtrequestory.ui.workers import JOB_NAMES
+    from qtrequestory.ui.workers import JOB_NAMES, SUPERSEDED_HEADROOM
 
     runner = JobRunner()
     try:
-        assert runner.max_thread_count() == len(JOB_NAMES) >= 9
+        assert SUPERSEDED_HEADROOM == 4
+        assert runner.max_thread_count() == len(JOB_NAMES) + 4
+        assert len(JOB_NAMES) >= 9
     finally:
         runner.shutdown()
+
+
+# ------------------------------------------------------------ job_finished ---
+
+def test_job_finished_reports_the_name_and_success(qtbot, runner):
+    seen: list[tuple[str, bool]] = []
+    runner.job_finished.connect(lambda name, ok: seen.append((name, ok)))
+
+    job = runner.submit("index", lambda: 42)
+    with qtbot.waitSignal(job.signals.finished, timeout=3000):
+        pass
+    qtbot.waitUntil(lambda: bool(seen), timeout=3000)
+    assert seen == [("index", True)]
+
+
+def test_job_finished_reports_a_failure_and_a_cancellation_as_not_ok(qtbot, runner):
+    seen: list[tuple[str, bool]] = []
+    runner.job_finished.connect(lambda name, ok: seen.append((name, ok)))
+
+    def boom():
+        raise RuntimeError("no")
+
+    def cancelled():
+        raise Cancelled()
+
+    for name, fn in (("sync", boom), ("index", cancelled)):
+        job = runner.submit(name, fn)
+        with qtbot.waitSignal(job.signals.finished, timeout=3000):
+            pass
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=3000)
+    assert seen == [("sync", False), ("index", False)]
+
+
+def test_a_superseded_job_never_reports_job_finished(qtbot, runner):
+    seen: list[tuple[str, bool]] = []
+    runner.job_finished.connect(lambda name, ok: seen.append((name, ok)))
+    gate = threading.Event()
+    runner.submit("search", lambda: gate.wait(5.0))
+    second = runner.submit("search", lambda: "b")
+    with qtbot.waitSignal(second.signals.finished, timeout=3000):
+        pass
+    gate.set()
+    qtbot.wait(100)
+    assert seen == [("search", True)]
 
 
 def test_every_name_a_page_submits_is_declared():
@@ -378,12 +425,14 @@ def test_every_name_a_page_submits_is_declared():
     from qtrequestory.ui.pages.about_page import LOG_JOB
     from qtrequestory.ui.pages.preview_pane import PREVIEW_JOB
     from qtrequestory.ui.pages.settings_page import CHECK_JOB, INDEX_JOB
+    from qtrequestory.ui.pages.sync_auto_card import TASK_STATUS_JOB
+    from qtrequestory.ui.pages.sync_page import REACHABILITY_JOB as SYNC_REACHABILITY_JOB
     from qtrequestory.ui.wizard_pages import REACHABILITY_JOB
     from qtrequestory.ui.workers import JOB_NAMES, SCHEDULER_JOB
 
     declared = set(JOB_NAMES)
     assert {LOG_JOB, PREVIEW_JOB, CHECK_JOB, INDEX_JOB, REACHABILITY_JOB,
-            SCHEDULER_JOB} <= declared
+            SCHEDULER_JOB, TASK_STATUS_JOB, SYNC_REACHABILITY_JOB} <= declared
     assert {"sync", "search", "search_keys", "search_plan"} <= declared
     assert set(JOB_LABELS) == declared, "every job name gets a label the user can read"
 

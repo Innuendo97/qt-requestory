@@ -11,35 +11,42 @@ keeps the formatted message instead of writing it anywhere. So the page copies
 no format string from the core, and a change to the core's wording reaches the
 window without anybody editing the UI.
 
-That one import is the documented exception to "the UI only sees
+That import — and ``events.format_size``, the size wording the ``LoggingSink``
+itself uses — is the documented exception to "the UI only sees
 ``ui/contracts.py``" (Task 11 brief: *"ok to import ``LoggingSink`` text style
 but produce str"*); nothing else from ``core`` is touched here.
 
 **The numbers.** Sizes, rates, ETAs and "oggi 11:23" — Italian, with a decimal
 comma, and rounded the way DESIGN-ui shows them ("41 MB", "1,5 GB",
 "8,2 MB/s", "circa 2 min rimanenti").
+
+**The page's sentences.** The auto-sync line, the missing-days banner, the
+final message of a run and the registro header: small rules ("completata"
+only when every environment is fine) that deserve tests without a widget.
 """
 from __future__ import annotations
 
 import logging
+import re
 import threading
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from qtrequestory.core.events import LoggingSink  # see the module docstring
+from qtrequestory.core.events import format_size as core_format_size  # ditto
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import Event, ScheduleSettings, TaskStatus
 from qtrequestory.ui.pages.progress_model import PHASE_INDEX, ProgressSnapshot
 from qtrequestory.ui.pages.schedule_text import schedule_sentence
 
 __all__ = [
-    "StripTexts", "format_eta", "format_rate", "format_size", "format_task_status",
-    "format_when", "log_line", "message", "strip_texts",
+    "RunOutcome", "StripTexts", "auto_title", "format_days", "format_eta", "format_rate",
+    "format_size", "format_task_status", "format_when", "last_log_time", "log_header",
+    "log_line", "message", "missing_days_text", "run_outcome", "status_text", "strip_texts",
 ]
 
 KB = 1024
-MB = 1024 * KB
-GB = 1024 * MB
 
 #: Mirrors ``core.logsetup.DATE_FORMAT`` so an appended line and a line read
 #: back from ``sync.log`` are indistinguishable.
@@ -103,6 +110,23 @@ def log_line(ev: Event) -> str | None:
     return f"[{stamp}] {text}"
 
 
+def status_text(snap: ProgressSnapshot) -> str | None:
+    """The status-bar line of a running sync, or None when there is none yet.
+
+    "Sincronizzazione coll 3/48…" while downloading, "Indicizzazione 2/5…"
+    while indexing. Nothing before the first file: "0/48" says nothing the
+    strip does not already say better.
+    """
+    if snap.file_index <= 0 or snap.n_files <= 0:
+        return None
+    if snap.phase == PHASE_INDEX:
+        return strings.SYNC_STATUS_INDEXING.format(i=snap.file_index, n=snap.n_files)
+    if snap.env:
+        return strings.SYNC_STATUS_PROGRESS.format(env=snap.env, i=snap.file_index,
+                                                   n=snap.n_files)
+    return None
+
+
 # ----------------------------------------------------------------- numbers ---
 
 def _decimal(value: float) -> str:
@@ -124,18 +148,15 @@ def format_size(n_bytes: float, *, whole_kb: bool = False) -> str:
     with the Italian thousands separator. One unit down the whole column is
     what makes rows comparable at a glance; the sort is on the raw byte count
     either way.
+
+    The readable unit is the core's :func:`~qtrequestory.core.events.format_size`
+    — the same function ``sync.log`` is written with — so a registro line and
+    a card never disagree about the same file.
     """
     if whole_kb:
-        kb = -(-int(max(0, n_bytes)) // 1024)  # ceil, so a small body is 1 KB
+        kb = -(-int(max(0, n_bytes)) // KB)  # ceil, so a small body is 1 KB
         return strings.SYNC_UNIT_KB.format(n=f"{kb:,}".replace(",", "."))
-    n = max(0.0, float(n_bytes))
-    if n < KB:
-        return strings.SYNC_UNIT_B.format(n=int(n))
-    if n < MB:
-        return strings.SYNC_UNIT_KB.format(n=_decimal(n / KB))
-    if n < GB:
-        return strings.SYNC_UNIT_MB.format(n=_decimal(n / MB))
-    return strings.SYNC_UNIT_GB.format(n=_decimal(n / GB))
+    return core_format_size(n_bytes)
 
 
 def format_rate(bytes_per_second: float | None) -> str:
@@ -178,16 +199,29 @@ def format_when(moment: datetime | None, *, now: datetime | None = None) -> str:
     return strings.SYNC_WHEN_OLDER.format(date=moment.strftime("%d/%m/%Y"), time=clock)
 
 
+def format_days(n: int) -> str:
+    """"1 giorno" / "68 giorni"."""
+    return strings.SYNC_DAYS_ONE if n == 1 else strings.SYNC_DAYS.format(n=n)
+
+
+def auto_title(task: TaskStatus | None) -> str:
+    """The auto-sync card's title; ``None`` = status not known yet."""
+    if task is None:
+        return strings.SYNC_AUTO_TITLE
+    return strings.SYNC_AUTO_TITLE_ON if task.registered else strings.SYNC_AUTO_TITLE_OFF
+
+
 def format_task_status(task: TaskStatus, schedule: ScheduleSettings) -> str:
-    """The line under the auto-sync checkbox: active, schedule, next run, last outcome.
+    """The muted line under the auto-sync title: schedule, next run, last outcome.
 
     ``schedule`` is the saved configuration rather than anything read back from
-    the task: the same sentence is what Impostazioni shows, and describing a
-    schedule the user did not choose would be worse than saying nothing.
+    the task (``TaskStatus`` carries no trigger): the same sentence is what
+    Impostazioni shows, and describing a schedule the user did not choose would
+    be worse than saying nothing. The next run and the last one are the task's.
     """
     if not task.registered:
-        return strings.SYNC_AUTO_OFF
-    parts = [strings.SYNC_AUTO_ON, schedule_sentence(schedule)]
+        return strings.SYNC_AUTO_OFF_HINT
+    parts = [schedule_sentence(schedule)]
     if task.next_run:
         parts.append(strings.SYNC_AUTO_NEXT.format(next=task.next_run))
     if task.last_run:
@@ -228,10 +262,9 @@ def strip_texts(snap: ProgressSnapshot) -> StripTexts:
             percent=0,
         )
     if snap.name:
-        label = strings.SYNC_PROGRESS_FILE.format(
-            env=snap.env, name=snap.name, size=format_size(snap.file_size))
+        label = strings.SYNC_PROGRESS_FILE.format(name=snap.name, size=format_size(snap.file_size))
     elif snap.env:
-        label = strings.SYNC_PROGRESS_ENV.format(env=snap.env)
+        label = strings.SYNC_PROGRESS_ENV
     else:
         label = ""
     return StripTexts(
@@ -253,3 +286,104 @@ def _rate_text(snap: ProgressSnapshot) -> str:
     if not eta:
         return strings.SYNC_PROGRESS_RATE.format(rate=rate)
     return strings.SYNC_PROGRESS_RATE_ETA.format(rate=rate, eta=eta)
+
+
+# ------------------------------------------------------- page sentences ---
+
+#: Dates listed by name in the missing-days banner before "e altri N".
+MISSING_LISTED = 5
+
+
+def missing_days_text(missing: Mapping[str, Sequence[date]]) -> str:
+    """The warn banner above the cards, or "" when nothing is missing.
+
+    One sentence per environment with gaps, naming the dates, then why it
+    matters: the server keeps about one day, so they cannot be fetched again.
+    """
+    lines = []
+    for env, days in missing.items():
+        if not days:
+            continue
+        listed = [d.strftime("%d/%m/%Y") for d in sorted(days)[:MISSING_LISTED]]
+        dates = strings.SYNC_MISSING_DATES_SEP.join(listed)
+        if len(days) > MISSING_LISTED:
+            dates += strings.SYNC_MISSING_MORE.format(n=len(days) - MISSING_LISTED)
+        if len(days) == 1:
+            lines.append(strings.SYNC_MISSING_ONE.format(env=env, dates=dates))
+        else:
+            lines.append(strings.SYNC_MISSING_MANY.format(env=env, n=len(days), dates=dates))
+    if not lines:
+        return ""
+    return " ".join([*lines, strings.SYNC_MISSING_TAIL])
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    """How a run ended: the message, its tone, and the word for the registro header."""
+
+    text: str
+    tone: str
+    log: str
+
+    @property
+    def expand_log(self) -> bool:
+        """The run itself failed: open the registro so the user sees why.
+
+        Failed files open it as they happen (the page watches ``FileFailed``);
+        an unreachable environment does not — off the VPN that is the normal
+        state, and the final message already names it.
+        """
+        return self.log == strings.SYNC_LOG_FAILED
+
+
+def run_outcome(exit_code: int, results: Mapping[str, tuple[str, int]], *,
+                dry_run: bool = False, skipped: bool = False) -> RunOutcome:
+    """"Sincronizzazione completata" only when every environment is ok/fresh.
+
+    ``results`` maps each environment of the run to ``(EnvResult.status,
+    failed)``. Anything else is named: "Completata · svil non raggiungibile",
+    in warn tone — the old "completata" next to an unreachable environment read
+    as if everything had been fetched. ``skipped``: the core found the lock
+    held by the scheduled task and ran nothing (``JobReport.sync is None``).
+    """
+    if skipped:
+        return RunOutcome(strings.SYNC_LOCK_HELD, "neutral", strings.SYNC_LOG_SKIPPED)
+    if exit_code == 3:
+        return RunOutcome(strings.SYNC_CANCELLED, "neutral", strings.SYNC_LOG_CANCELLED)
+    if exit_code == 2:
+        return RunOutcome(strings.SYNC_DONE_UNREACHABLE, "warn", strings.SYNC_LOG_WARNINGS)
+    details = []
+    for env, (status, failed) in results.items():
+        if status == "unreachable":
+            details.append(strings.SYNC_DETAIL_UNREACHABLE.format(env=env))
+        elif failed == 1:
+            details.append(strings.SYNC_DETAIL_ERROR_ONE.format(env=env))
+        elif failed:
+            details.append(strings.SYNC_DETAIL_ERRORS.format(env=env, n=failed))
+    if details:
+        text = strings.SYNC_DONE_PARTIAL.format(details=strings.SYNC_DETAIL_SEP.join(details))
+        return RunOutcome(text, "warn", strings.SYNC_LOG_WARNINGS)
+    text = strings.SYNC_DONE_DRY_RUN if dry_run else strings.SYNC_DONE
+    return RunOutcome(text, "ok", strings.SYNC_LOG_DONE)
+
+
+def log_header(when: str | None, outcome: str | None) -> str:
+    """"Registro dell'ultima esecuzione · 11:24 · completata"; parts may be missing."""
+    text = strings.SYNC_LOG_HEADER
+    for part in (when, outcome):
+        if part:
+            text += strings.SYNC_LOG_HEADER_PART.format(part=part)
+    return text
+
+
+_STAMP_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+
+
+def last_log_time(lines: Sequence[str], *, now: datetime | None = None) -> str | None:
+    """"oggi 09:03" from the last timestamped line of ``sync.log``, or None."""
+    for line in reversed(lines):
+        match = _STAMP_RE.match(line)
+        if match:
+            moment = datetime.strptime(match.group(1), TIMESTAMP_FORMAT)
+            return format_when(moment, now=now)
+    return None

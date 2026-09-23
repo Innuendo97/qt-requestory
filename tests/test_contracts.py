@@ -59,7 +59,7 @@ from qtrequestory.ui.contracts import (
 )
 from tests.fakes import fake_core
 
-from .conftest import FDI_A, FDI_B, KEY_CTE, KEY_SINT, StubServer, autoindex_html, synthetic_body
+from .conftest import FDI_A, FDI_B, KEY_CTE, KEY_SINT, StubServer, autoindex_html, entry_name, make_daily_file, synthetic_body
 
 D18, D16 = date(2026, 9, 18), date(2026, 9, 16)
 
@@ -290,7 +290,8 @@ class TestEnvStatus:
         state_file = cfg.state_path
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(
-            '{"envs": {"coll": {"last_success": "2026-09-22T09:00:00", "last_remote_daily": 3, "last_downloaded": 2}}}',
+            '{"envs": {"coll": {"last_success": "2026-09-22T09:00:00", "last_remote_daily": 3, '
+            '"last_downloaded": 2, "newest_day": "2026-09-21"}}}',
             encoding="utf-8",
         )
         svc = facade.SyncService(lambda: cfg, clock=fake_clock)
@@ -413,6 +414,22 @@ class TestSyncMisc:
         finally:
             other.release()
         assert svc.lock_holder() is None
+
+    def test_lock_holder_never_takes_the_lock(self, tmp_path: Path, monkeypatch):
+        """A poll that took the lock could make a scheduled run skip an hour."""
+        from qtrequestory.core import lock as lock_mod
+        from qtrequestory.core.lock import ProcessLock
+        cfg = _config(tmp_path)
+        other = ProcessLock(cfg.lock_path)
+        assert other.acquire()
+        try:
+            monkeypatch.setattr(lock_mod, "_try_lock", lambda fd: pytest.fail("the probe took the lock"))
+            monkeypatch.setattr(ProcessLock, "acquire", lambda self, blocking=False: pytest.fail("acquire"))
+            assert facade.SyncService(lambda: cfg).lock_holder() is not None
+        finally:
+            monkeypatch.undo()
+            other.release()
+        assert facade.SyncService(lambda: cfg).lock_holder() is None
 
     def test_lock_holder_of_an_unusable_mirror_is_none(self, tmp_path: Path):
         """The page polls this on a timer: a bad path must not raise there."""
@@ -560,17 +577,24 @@ class TestSchedulerService:
         assert trigger.find(f"{{{ns}}}Repetition") is None
         assert root.find(f"{{{ns}}}Triggers/{{{ns}}}LogonTrigger") is None
 
-    def test_exe_path_and_unstable_location(self, tmp_path: Path):
+    def test_exe_path_and_unstable_location(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
         svc = self._service(tmp_path, calls)
         assert svc.exe_path() == tmp_path / "qtRequestory.exe"
-        # tmp_path lives under %TEMP%: exactly the location the core warns about
-        assert "%TEMP%" in (svc.unstable_location_reason() or "")
+
+        # Fixed paths, independent of where %TEMP% and the home folder really
+        # are (an isolated run may put USERPROFILE itself under %TEMP%).
+        temp = Path("C:/FakeTemp")
+        monkeypatch.setenv("TEMP", str(temp))
+        monkeypatch.setenv("TMP", str(temp))
+        monkeypatch.setattr("tempfile.tempdir", str(temp))
 
         def elsewhere(exe: Path) -> facade.SchedulerService:
             return facade.SchedulerService(runner=self._runner(tmp_path, calls), exe_provider=lambda: exe)
 
-        assert "Downloads" in (elsewhere(Path.home() / "Downloads" / "qtRequestory.exe").unstable_location_reason() or "")
+        assert "%TEMP%" in (elsewhere(temp / "x" / "qtRequestory.exe").unstable_location_reason() or "")
+        downloads = Path("C:/Users/someone/Downloads/qtRequestory.exe")
+        assert "Downloads" in (elsewhere(downloads).unstable_location_reason() or "")
         assert elsewhere(Path("C:/Tools/qtRequestory/qtRequestory.exe")).unstable_location_reason() is None
 
     def test_without_an_exe_nothing_can_be_registered(self, tmp_path: Path):
@@ -628,6 +652,27 @@ class TestIndexService:
         # after the rescan the index agrees with the file again
         hit2 = svc.search(SearchQuery("coll", fdi_prefix=FDI_B, template_key=KEY_SINT))[0]
         assert core_read_body(hit2) == original
+
+    def test_read_body_self_heal_picks_the_same_copy_of_a_duplicated_name(self, mirror, tmp_path: Path):
+        """A replayed call leaves the same name twice in one day. After a
+        rewrite (here CRLF -> LF: same order, new offsets) the second copy must
+        still come back as the second copy."""
+        name = entry_name(FDI_A, "MOD_TEST_A")
+        # the first copy is the newer one, so search lists it first
+        first = synthetic_body(FDI_A, "MOD_TEST_A", request_date="2026-09-18T09:00:00.000Z", noise=False)
+        second = synthetic_body(FDI_A, "MOD_TEST_A", request_date="2026-09-18T08:00:00.000Z", noise=False)
+        day = date(2026, 9, 18)
+        make_daily_file(tmp_path / "m", "coll", day, [(name, first), (name, second)])
+        cfg = dataclasses.replace(_config(tmp_path), mirror_root=tmp_path / "m")
+        svc = facade.IndexService(lambda: cfg)
+        svc.update(["coll"], full_rebuild=False, sink=CollectingSink(), cancel=CancelToken())
+        hit = next(h for h in svc.search(SearchQuery("coll", fdi_prefix=FDI_A)) if h.seq == 1)
+        assert svc.read_body(hit) == second
+        make_daily_file(tmp_path / "m", "coll", day, [(name, first), (name, second)], crlf=False)
+
+        with pytest.raises(IndexStale):
+            core_read_body(hit)
+        assert svc.read_body(hit) == second
 
     def test_read_body_raises_when_the_entry_is_really_gone(self, index_svc):
         svc, mirror, _ = index_svc

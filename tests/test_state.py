@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 
 import pytest
@@ -56,7 +56,7 @@ def test_mark_success_roundtrip_is_iso_and_atomic(state_path):
     st = SyncState(state_path)
     st.load()
     when = datetime(2026, 9, 21, 18, 45, 12)
-    st.mark_success("coll", when, last_remote_daily=7, last_downloaded=2)
+    st.mark_success("coll", when, last_remote_daily=7, last_downloaded=2, newest_day=date(2026, 9, 21))
     st.mark_success("svil", datetime(2026, 9, 20, 10, 0))
 
     raw = state_path.read_bytes()
@@ -65,11 +65,13 @@ def test_mark_success_roundtrip_is_iso_and_atomic(state_path):
     assert data["envs"]["coll"]["last_success"] == "2026-09-21T18:45:12"
     assert data["envs"]["coll"]["last_remote_daily"] == 7
     assert data["envs"]["coll"]["last_downloaded"] == 2
+    assert data["envs"]["coll"]["newest_day"] == "2026-09-21"
+    assert data["envs"]["svil"]["newest_day"] is None
     assert [p.name for p in state_path.parent.iterdir()] == ["sync-state.json"]  # no .tmp left behind
 
     again = SyncState(state_path)
     again.load()
-    assert again.get("coll") == EnvSyncState(when, 7, 2)
+    assert again.get("coll") == EnvSyncState(when, 7, 2, date(2026, 9, 21))
     assert again.get("svil") == EnvSyncState(datetime(2026, 9, 20, 10, 0), 0, 0)
     assert again.get("prod") == EnvSyncState()
 
@@ -91,22 +93,69 @@ def test_mark_success_without_explicit_load_does_not_clobber_other_envs(state_pa
 # --------------------------------------------------------------- is_fresh ---
 
 @pytest.mark.parametrize(
-    "last_success, now, expected",
+    "last_success, now, newest_day, expected",
     [
-        (datetime(2026, 9, 21, 19, 0), datetime(2026, 9, 22, 9, 30), True),    # after yesterday's compaction
-        (datetime(2026, 9, 21, 17, 0), datetime(2026, 9, 22, 9, 30), False),   # before yesterday's compaction
-        (datetime(2026, 9, 22, 17, 0), datetime(2026, 9, 22, 19, 0), False),   # today's compaction already passed
-        (datetime(2026, 9, 22, 18, 45), datetime(2026, 9, 22, 19, 0), True),   # synced after today's compaction
-        (datetime(2026, 9, 22, 18, 30), datetime(2026, 9, 22, 18, 30), True),  # boundary: >= is fresh
-        (None, datetime(2026, 9, 22, 9, 30), False),
+        # after yesterday's compaction, and the compacted day is mirrored
+        (datetime(2026, 9, 21, 19, 0), datetime(2026, 9, 22, 9, 30), date(2026, 9, 21), True),
+        # before yesterday's compaction: fails rule 1 regardless of newest_day
+        (datetime(2026, 9, 21, 17, 0), datetime(2026, 9, 22, 9, 30), None, False),
+        # today's compaction already passed, synced before it: fails rule 1
+        (datetime(2026, 9, 22, 17, 0), datetime(2026, 9, 22, 19, 0), None, False),
+        # synced after today's compaction, and the compacted day is mirrored
+        (datetime(2026, 9, 22, 18, 45), datetime(2026, 9, 22, 19, 0), date(2026, 9, 22), True),
+        # boundary: last_success == compaction moment is fresh
+        (datetime(2026, 9, 22, 18, 30), datetime(2026, 9, 22, 18, 30), date(2026, 9, 22), True),
+        (None, datetime(2026, 9, 22, 9, 30), None, False),
+        # synced after compaction but the compacted day itself was never mirrored (C1)
+        (datetime(2026, 9, 21, 19, 0), datetime(2026, 9, 22, 9, 30), date(2026, 9, 20), False),
     ],
 )
-def test_is_fresh_matrix(state_path, last_success, now, expected):
+def test_is_fresh_matrix(state_path, last_success, now, newest_day, expected):
     st = SyncState(state_path)
     st.load()
     if last_success is not None:
-        st.mark_success("coll", last_success)
+        st.mark_success("coll", last_success, newest_day=newest_day)
     assert st.is_fresh("coll", now, COMPACTION) is expected
+
+
+def _state(tmp_path, **kw):
+    s = SyncState(tmp_path / "sync-state.json").load()
+    s.mark_success("coll", **kw)
+    return SyncState(tmp_path / "sync-state.json").load()  # round-trip through disk
+
+
+def test_not_fresh_when_the_compacted_day_was_not_mirrored(tmp_path):
+    # listing read 22/09 18:29 (only 21/09 on the server), run ended after compaction
+    s = _state(tmp_path, when=datetime(2026, 9, 22, 18, 29), newest_day=date(2026, 9, 21))
+    assert not s.is_fresh("coll", datetime(2026, 9, 23, 9, 0), COMPACTION)
+
+
+def test_fresh_when_the_compacted_day_is_mirrored(tmp_path):
+    s = _state(tmp_path, when=datetime(2026, 9, 22, 18, 45), newest_day=date(2026, 9, 22))
+    assert s.is_fresh("coll", datetime(2026, 9, 23, 9, 0), COMPACTION)
+
+
+def test_a_timestamp_in_the_future_is_never_fresh(tmp_path, caplog):
+    s = _state(tmp_path, when=datetime(2027, 3, 1, 12, 0), newest_day=date(2027, 3, 1))
+    assert not s.is_fresh("coll", datetime(2026, 9, 23, 9, 0), COMPACTION)
+    assert "futuro" in caplog.text
+
+
+def test_a_state_written_before_newest_day_existed_is_not_fresh(tmp_path):
+    (tmp_path / "sync-state.json").write_text(
+        '{"envs": {"coll": {"last_success": "2026-09-22T19:00:00", '
+        '"last_remote_daily": 1, "last_downloaded": 1}}}', encoding="utf-8")
+    s = SyncState(tmp_path / "sync-state.json").load()
+    assert not s.is_fresh("coll", datetime(2026, 9, 23, 9, 0), COMPACTION)
+
+
+def test_newest_day_none_is_never_fresh(state_path):
+    # mark_success with no newest_day at all (e.g. an unreachable/errors path never calls it,
+    # but a defensive caller might) must not be treated as fresh.
+    st = SyncState(state_path)
+    st.load()
+    st.mark_success("coll", datetime(2026, 9, 22, 18, 45))
+    assert not st.is_fresh("coll", datetime(2026, 9, 23, 9, 0), COMPACTION)
 
 
 # ---------------------------------------------------------- legacy import ---
@@ -166,3 +215,26 @@ def test_corrupt_legacy_file_is_ignored(state_path, caplog):
         st.load()
     assert st.get("coll") == EnvSyncState()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_legacy_import_on_read_only_mirror_does_not_raise(state_path, monkeypatch, caplog):
+    """A read-only mirror (or AV holding the new file) must not turn a legacy
+    import into a crash: the imported values are still usable this run, and
+    the write is simply retried on the next successful save."""
+    root = state_path.parent.parent
+    root.mkdir(parents=True)
+    legacy = root / ".last-sync.json"
+    legacy.write_bytes(b"\xef\xbb\xbf" + json.dumps({"coll": "2026-09-21"}).encode("utf-8"))
+
+    def _boom(self) -> None:
+        raise PermissionError("mirror is read-only")
+
+    monkeypatch.setattr(SyncState, "_save", _boom)
+    st = SyncState(state_path)
+    with caplog.at_level(logging.WARNING):
+        result = st.load()
+
+    assert result is st
+    assert st.get("coll").last_success == datetime(2026, 9, 21, 12, 0)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert not state_path.exists()

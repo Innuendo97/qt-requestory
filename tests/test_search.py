@@ -113,28 +113,28 @@ def test_template_key_exact_is_case_insensitive(indexed):
 
 def test_template_key_exact_does_not_match_prefix(indexed):
     conn, mirror = indexed
-    assert search(conn, mirror.root, SearchQuery("coll", template_key="MOD_TEST")) == []
+    assert search(conn, mirror.root, SearchQuery("coll", template_key="MOD_ALPHA")) == []
 
 
 def test_template_key_prefix_and_contains(indexed):
     conn, mirror = indexed
-    prefix = search(conn, mirror.root, SearchQuery("coll", template_key="mod_test", key_mode="prefix"))
+    prefix = search(conn, mirror.root, SearchQuery("coll", template_key="mod_alpha", key_mode="prefix"))
     assert {h.template_key for h in prefix} == {KEY_SINT, KEY_EMAIL}
     assert len(prefix) == 4
-    contains = search(conn, mirror.root, SearchQuery("coll", template_key="plan", key_mode="contains"))
+    contains = search(conn, mirror.root, SearchQuery("coll", template_key="offer", key_mode="contains"))
     assert {h.template_key for h in contains} == {KEY_SINT, KEY_CTE}
-    assert search(conn, mirror.root, SearchQuery("coll", template_key="plan", key_mode="prefix")) == []
+    assert search(conn, mirror.root, SearchQuery("coll", template_key="offer", key_mode="prefix")) == []
 
 
 def test_like_metacharacters_are_literal(indexed):
     conn, mirror = indexed
-    # "_" is a LIKE wildcard: "CTR_PLAN" as a prefix must NOT match "CTEXPLAN"; here we check the
+    # "_" is a LIKE wildcard: "CTR_OFFER" as a prefix must NOT match "CTRXOFFER"; here we check the
     # inverse: a pattern with the wildcard chars replaced must not match anything.
-    assert search(conn, mirror.root, SearchQuery("coll", template_key="CTE%PLAN", key_mode="prefix")) == []
-    assert search(conn, mirror.root, SearchQuery("coll", template_key="CTR_PLAN", key_mode="prefix")) != []
+    assert search(conn, mirror.root, SearchQuery("coll", template_key="CTR%OFFER", key_mode="prefix")) == []
+    assert search(conn, mirror.root, SearchQuery("coll", template_key="CTR_OFFER", key_mode="prefix")) != []
     assert search(conn, mirror.root, SearchQuery("coll", template_key="MOD_TEST_R", key_mode="prefix")) != []
     assert search(conn, mirror.root, SearchQuery("coll", template_key="MOD%RIC_D", key_mode="contains")) == []
-    assert search(conn, mirror.root, SearchQuery("coll", template_key="C_E_PLAN", key_mode="prefix")) == []
+    assert search(conn, mirror.root, SearchQuery("coll", template_key="C_R_OFFER", key_mode="prefix")) == []
     assert search(conn, mirror.root, SearchQuery("coll", template_key="\\", key_mode="contains")) == []
 
 
@@ -320,10 +320,10 @@ def test_list_template_keys_order_and_prefix(indexed):
     keys = list_template_keys(conn, "coll")
     # every key was last seen on 09-18 -> by count desc (CTE 4, SINT 3), then singles by key
     assert keys == [KEY_CTE, KEY_SINT, KEY_NUMERIC, KEY_EMAIL, "MOD_TEST_R"]
-    assert list_template_keys(conn, "coll", prefix="MOD_TEST") == [KEY_SINT, KEY_EMAIL]
-    assert list_template_keys(conn, "coll", prefix="mod_test_e") == [KEY_EMAIL]
+    assert list_template_keys(conn, "coll", prefix="MOD_ALPHA") == [KEY_SINT, KEY_EMAIL]
+    assert list_template_keys(conn, "coll", prefix="mod_alpha_e") == [KEY_EMAIL]
     assert list_template_keys(conn, "coll", prefix="MOD%") == []
-    assert list_template_keys(conn, "coll", prefix="  MOD_TEST ") == [KEY_SINT, KEY_EMAIL]
+    assert list_template_keys(conn, "coll", prefix="  MOD_ALPHA ") == [KEY_SINT, KEY_EMAIL]
     assert list_template_keys(conn, "coll", prefix="   ") == list_template_keys(conn, "coll")
     assert list_template_keys(conn, "coll", limit=1) == [KEY_CTE]
     assert list_template_keys(conn, "prod") == []
@@ -414,3 +414,105 @@ def test_pick_best_ranks_an_unknown_ndocs_last(indexed):
 
 def test_pick_best_of_nothing():
     assert pick_best([]) == (None, [])
+
+
+# ---------------------------------------------- stricter header/body checks ---
+
+def _index_one_file(tmp_path: Path, content: bytes):
+    """Index a single coll/2026-09-18 file holding ``content``; return (conn, root, path)."""
+    conn = open_index(":memory:")
+    root = tmp_path / "mirror"
+    path = root / "coll" / "2026" / "09" / "20260918.txt"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(content)
+    IndexBuilder(conn, root, null_sink).update(["coll"])
+    return conn, root, path
+
+
+def test_a_renamed_entry_at_the_same_offsets_is_stale(indexed):
+    """Kills the "delete the header check" mutant: every offset and length stays
+    valid, only the entry name in the header changes."""
+    conn, mirror = indexed
+    hit = search(conn, mirror.root, SearchQuery("svil", fdi_prefix="a"))[0]
+    raw = hit.file_path.read_bytes()
+    start = hit.header_offset + 4  # after "### "
+    assert raw[start:start + 1] == b"a"
+    hit.file_path.write_bytes(raw[:start] + b"f" + raw[start + 1:])  # same length, other FDI
+    with pytest.raises(IndexStale):
+        read_body(hit)
+
+
+def test_trailing_blanks_after_the_header_are_not_stale(tmp_path):
+    """The scanner accepts ``### name.json \t``: read_body must too, or the
+    entry is stale forever (a rescan finds the same header again)."""
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    header = f"### {entry_name(FDI_A, KEY_CTE)}.json  \t".encode()
+    conn, root, _ = _index_one_file(tmp_path, header + b"\r\n" + body + b"\r\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert hit.header_len == len(header)
+    assert read_body(hit) == body
+
+
+def test_non_utf8_header_bytes_read_back_byte_exact(tmp_path):
+    raw_name = FDI_A.encode() + b"_MOD_TEST_\xe0\xff_1a2b3c0200000031"
+    body = synthetic_body(FDI_A, "MOD_TEST_A", noise=False)
+    conn, root, _ = _index_one_file(tmp_path, b"### " + raw_name + b".json\n" + body + b"\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert hit.name.encode("utf-8", "surrogateescape") == raw_name
+    assert read_body(hit) == body
+
+
+def test_the_header_line_must_end_where_the_body_starts(tmp_path):
+    """Blanks appended to the header push the body along; with a tiny body the
+    old slice then lands on those blanks and still ends on the terminator.
+    Only "the header line ends at ``body_offset``" tells them apart."""
+    name = entry_name(FDI_A, KEY_CTE)
+    conn, root, path = _index_one_file(tmp_path, f"### {name}.json\n{{}}\n".encode())
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert read_body(hit) == b"{}"
+    path.write_bytes(f"### {name}.json\t\t\t\n{{}}\n".encode())
+    with pytest.raises(IndexStale):
+        read_body(hit)
+
+
+def test_a_body_that_shrank_into_the_next_header_is_stale(tmp_path):
+    """A rewritten, shorter body can leave ``body_len`` bytes that end exactly on
+    a newline, with the next header inside the slice. Never hand that out."""
+    name = entry_name(FDI_A, KEY_CTE)
+    head = f"### {name}.json\n".encode()
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    conn, root, path = _index_one_file(tmp_path, head + body + b"\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    filler = b"z" * (len(body) - len(b"{}\n### .json"))
+    shrunk = b"{}\n### " + filler + b".json"
+    assert len(shrunk) == len(body)
+    path.write_bytes(head + shrunk + b"\n{}\n")
+    with pytest.raises(IndexStale):
+        read_body(hit)
+
+
+def test_a_carriage_return_in_the_middle_of_a_body_is_data(tmp_path):
+    """The scanner splits on LF only, so a lone CR inside a body is part of it:
+    it must come back byte-exact, not make the entry stale forever."""
+    name = entry_name(FDI_A, KEY_CTE)
+    head = f"### {name}.json\r\n".encode()
+    plain = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    body = plain[:-3] + b"\r" + plain[-2:]
+    conn, root, _ = _index_one_file(tmp_path, head + body + b"\r\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert hit.body_len == len(body)
+    assert read_body(hit) == body
+
+
+def test_a_crlf_body_shrunk_by_one_byte_is_stale(tmp_path):
+    """Rewritten one byte shorter, a CRLF body leaves a slice that ends on its
+    own CR, followed by the LF: every other check passes. Why a TRAILING CR is
+    stale."""
+    name = entry_name(FDI_A, KEY_CTE)
+    head = f"### {name}.json\r\n".encode()
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    conn, root, path = _index_one_file(tmp_path, head + body + b"\r\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    path.write_bytes(head + body[:-1] + b"\r\n")
+    with pytest.raises(IndexStale):
+        read_body(hit)

@@ -31,6 +31,7 @@ def table(qtbot):
 def test_headers_are_the_italian_column_names(table):
     labels = [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())]
     assert labels == [strings.ENV_COL_ENABLED, strings.ENV_COL_NAME, strings.ENV_COL_URL]
+    assert labels == ["Attivo", "Nome", "URL"], "capitalised like every other header"
 
 
 def test_environments_roundtrip_including_the_enabled_flag(table):

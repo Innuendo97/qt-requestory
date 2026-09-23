@@ -1,273 +1,220 @@
-"""The Sincronizzazione page: cards, progress strip, registro, auto-sync.
+"""The Sincronizzazione page: auto-sync card, env cards, coverage, registro.
 
-One long-running job, four things that watch it. The page keeps almost no
-state of its own: the arithmetic lives in :class:`~.progress_model.ProgressModel`,
-the wording in :mod:`~.sync_format`, the per-environment verdicts in the cards,
-and :class:`SyncPresenter` holds what is left — which run is in flight, what
-each environment ended up doing, and the one-line summary the window shows in
-its status bar.
+The page answers two questions before anything else — *is the automatic sync
+on?* and *is any day missing?* — then shows one card per environment and,
+collapsed at the bottom, the registro. It keeps almost no state of its own:
 
-Three things are deliberately *not* here:
+* :class:`~.sync_auto_card.AutoSyncCard` owns the scheduled task (read in a
+  worker, cached, errors in a banner) and the command buttons;
+* :class:`~.sync_presenter.SyncPresenter` owns the per-environment run state,
+  reachability and coverage, and computes the one badge that both a card and
+  the app-bar chip show;
+* :class:`~.env_card.EnvCard` paints one environment, including its own
+  progress while the run is on it (the others say "in attesa");
+* :mod:`~.sync_format` owns every sentence.
 
-* **No request ids.** ``JobRunner`` refuses a second ``"sync"`` while one runs
-  and silences superseded jobs on the GUI thread, so a stale event cannot reach
-  a live strip (``ui/workers.py``).
-* **No blocking calls.** ``sync.run`` and the scheduler's ``register`` /
-  ``unregister`` are subprocess-and-network work and go through the runner.
-  ``env_status`` and ``lock_holder`` are the documented cheap ones (a state
-  file and a directory listing) and are called inline.
-* **No wording.** Every literal the user reads comes from ``strings.sync``,
-  except the registro lines, which come from the core's own ``LoggingSink`` via
-  :func:`~.sync_format.log_line` so the panel and ``sync.log`` cannot drift.
+Nothing blocking runs here: the sync, ``schtasks`` and the reachability probe
+go through the runner. ``env_status``, ``coverage_days`` and ``lock_holder``
+are the documented cheap calls (a state file, a directory listing, a
+read-only peek at the lock file) and are called inline; the lock is polled
+only while the page is visible. A run started here also writes ``sync.log``
+(:mod:`~.sync_job`), exactly like the scheduled ``--sync``.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from datetime import datetime
 
-from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMenu,
-    QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QToolButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import (
     Config,
     CoreServices,
     EnvFinished,
     EnvStarted,
     Event,
+    FileFailed,
     JobReport,
 )
 from qtrequestory.ui.pages import progress_model as pm
 from qtrequestory.ui.pages import sync_format as fmt
-from qtrequestory.ui.pages.env_card import EnvCard
-from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
+from qtrequestory.ui.pages import coverage_strip as cs
+from qtrequestory.ui.pages.coverage_strip import CoverageLegend
+from qtrequestory.ui.pages.env_card import CARD_MIN_WIDTH, EnvCard
+from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
+from qtrequestory.ui.pages.sync_auto_card import AutoSyncCard
+from qtrequestory.ui.pages.sync_job import run_logged
+from qtrequestory.ui.pages.sync_log_panel import SyncLogPanel
+from qtrequestory.ui.pages.sync_presenter import SyncPresenter
+from qtrequestory.ui.pages.sync_probe import REACHABILITY_JOB, ReachabilityProbe
+from qtrequestory.ui.workers import Job, JobRunner
 
-__all__ = ["SyncPage", "SyncPresenter"]
+__all__ = ["REACHABILITY_JOB", "SyncPage", "SyncPresenter"]
 
 #: Lines of ``sync.log`` the registro opens with.
 LOG_TAIL_LINES = 50
-#: Blocks the registro keeps (DESIGN-ui: "max 2000 righe").
-LOG_MAX_BLOCKS = 2000
-
-
-class SyncPresenter(QObject):
-    """What the page knows between two events: outcomes and the summary.
-
-    A plain object with one signal so the summary can be asserted — and one
-    day recomputed — without a widget in sight.
-    """
-
-    summary_changed = Signal(str)
-
-    def __init__(self, services: CoreServices, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._services = services
-        self.progress = pm.ProgressModel()
-        #: env -> ``EnvResult.status`` of the last finished run.
-        self.outcomes: dict[str, str] = {}
-        #: env -> how many files failed in that run (the amber pill needs it).
-        self.failures: dict[str, int] = {}
-
-    def handle(self, ev: Event) -> None:
-        self.progress.handle(ev)
-        if isinstance(ev, EnvFinished):
-            self.outcomes[ev.env] = ev.result.status
-            self.failures[ev.env] = ev.result.failed
-
-    def environments(self) -> list[str]:
-        return [e.name for e in self._services.config.load().enabled_environments()]
-
-    def summary(self) -> str:
-        """"svil: oggi 11:23 · coll: non raggiungibile" for the status bar.
-
-        An environment the last run could not reach says so: "ieri 15:48" on
-        its own would suggest the mirror is merely a little old, when in fact
-        nothing got through this time.
-        """
-        parts = []
-        for name in self.environments():
-            if self.outcomes.get(name) == "unreachable":
-                when = strings.SYNC_WHEN_UNREACHABLE
-            else:
-                when = fmt.format_when(self._services.sync.env_status(name).last_success)
-            parts.append(strings.SYNC_SUMMARY_ENTRY.format(env=name, when=when))
-        return strings.SYNC_SUMMARY_SEP.join(parts)
-
-    def emit_summary(self) -> str:
-        text = self.summary()
-        self.summary_changed.emit(text)
-        return text
 
 
 class SyncPage(QWidget):
-    """Rail entry ``"sync"``. Built by ``main_window.PAGES``."""
+    """App-bar tab ``"sync"``. Built by ``main_window.PAGES``."""
 
     summary_changed = Signal(str)
+    state_changed = Signal(list)
 
-    #: How often the lock file is checked while the page is alive (DESIGN-ui).
+    #: How often the lock file is peeked at while the page is visible.
     LOCK_POLL_MS = 2000
+    #: The reachability probe runs on show at most this often.
+    REACHABILITY_INTERVAL_S = ReachabilityProbe.INTERVAL_S
+    #: Below this width the cards stack in one column.
+    TWO_COLUMNS_MIN_WIDTH = 2 * CARD_MIN_WIDTH + 3 * theme.SPACE[3]
 
     def __init__(self, services: CoreServices, runner: JobRunner,
-                 window: object | None = None, parent: QWidget | None = None) -> None:
+                 window: object | None = None, parent: QWidget | None = None, *,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         super().__init__(parent)
         self._services = services
         self._runner = runner
         self._window = window
         self._cards: list[EnvCard] = []
+        self._columns = 2
         self.presenter = SyncPresenter(services, self)
         self.sync_job: Job | None = None
-        self.scheduler_job: Job | None = None
+        self.probe = ReachabilityProbe(services, runner, clock, self)
+        self._last_status: str | None = None
+        self._outcome: fmt.RunOutcome | None = None
+        self._dry_run = False
 
         self._build()
         self.presenter.summary_changed.connect(self.summary_changed)
+        self.presenter.state_changed.connect(self.state_changed)
+        self.auto_card.sync_requested.connect(
+            lambda envs, dry_run: self.start_sync(envs, dry_run=dry_run))
+        self.auto_card.cancel_requested.connect(self.cancel)
+        self.probe.answered.connect(self._on_reachability)
         self.rebuild_cards()
-        self._rebuild_menu()
-        self.refresh_scheduler()
-        self.log_view.setPlainText("\n".join(services.sync.tail_sync_log(LOG_TAIL_LINES)))
+        self.mirror_banner.refresh()
+        self.auto_card.rebuild_menu(self.presenter.environments())
+        self.auto_card.refresh_scheduler()
+        tail = services.sync.tail_sync_log(LOG_TAIL_LINES)
+        self.log_panel.set_lines(tail)
+        self.log_panel.set_header(fmt.last_log_time(tail), None)
 
         self.lock_timer = QTimer(self)
         self.lock_timer.setInterval(self.LOCK_POLL_MS)
         self.lock_timer.timeout.connect(self.refresh_lock)
-        self.lock_timer.start()
         self.refresh_lock()
+        # No summary here: nobody is connected yet. The shell calls
+        # emit_initial_state() once its hooks are wired.
+
+    def emit_initial_state(self) -> None:
+        """The shell's startup call: publish the state computed so far."""
         self.presenter.emit_summary()
-        # One connection for the whole page instead of one per card; Qt drops
-        # it when the page is destroyed, so a rebuilt cards row leaks nothing.
-        QGuiApplication.styleHints().colorSchemeChanged.connect(self.retune)
 
     # -- construction ------------------------------------------------------
 
     def _build(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-        layout.addLayout(self._build_header())
-        self.cards_row = QHBoxLayout()
-        self.cards_row.setSpacing(12)
-        layout.addLayout(self.cards_row)
-        self.lock_label = QLabel(strings.SYNC_LOCK_HELD)
-        self.lock_label.hide()
-        layout.addWidget(self.lock_label)
-        layout.addWidget(self._build_strip())
-        layout.addWidget(QLabel(strings.SYNC_LOG_TITLE))
-        layout.addWidget(self._build_log(), 1)
-        layout.addWidget(self._build_auto())
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(theme.SPACE[3], theme.SPACE[3], theme.SPACE[3], theme.SPACE[3])
+        layout.setSpacing(theme.SPACE[2])
 
-    def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
         title = QLabel(strings.SYNC_TITLE)
-        title_font = title.font()
-        title_font.setPointSize(title_font.pointSize() + 3)
-        title_font.setBold(True)
-        title.setFont(title_font)
+        theme.set_role(title, "pageTitle")
+        self.mirror_banner = MirrorRootBanner(self._services, self._window)
+        self.auto_card = AutoSyncCard(self._services, self._runner, self._window)
+        self.lock_label = QLabel(strings.SYNC_LOCK_HELD)
+        theme.set_role(self.lock_label, "muted")
+        self.lock_label.hide()
 
-        self.sync_menu = QMenu(self)  # filled by _rebuild_menu (it follows the config)
-        self.sync_button = QToolButton()
-        self.sync_button.setText(strings.SYNC_BTN_NOW)
-        self.sync_button.setToolTip(strings.SYNC_BTN_NOW_TOOLTIP)
-        self.sync_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.sync_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        self.sync_button.setMenu(self.sync_menu)
-        self.sync_button.clicked.connect(lambda: self.start_sync())
+        self.missing_banner = QFrame()
+        theme.set_role(self.missing_banner, "syncBanner")
+        banner = QHBoxLayout(self.missing_banner)
+        banner.setContentsMargins(theme.SPACE[2], theme.SPACE[1], theme.SPACE[2], theme.SPACE[1])
+        self.missing_label = QLabel()
+        self.missing_label.setWordWrap(True)
+        banner.addWidget(self.missing_label)
+        self.missing_banner.hide()
 
-        self.cancel_button = QPushButton(strings.BTN_CANCEL)
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self.cancel)
+        self.cards_grid = QGridLayout()
+        self.cards_grid.setHorizontalSpacing(theme.SPACE[2])
+        self.cards_grid.setVerticalSpacing(theme.SPACE[2])
+        self.legend = CoverageLegend()
+        self.run_label = QLabel()
+        self.run_label.setWordWrap(True)
+        self.run_label.hide()
+        self.log_panel = SyncLogPanel()
 
-        row.addWidget(title)
-        row.addStretch(1)
-        row.addWidget(self.sync_button)
-        row.addWidget(self.cancel_button)
-        return row
-
-    def _build_strip(self) -> QWidget:
-        box = QFrame()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        top = QHBoxLayout()
-        self.progress_label = QLabel()
-        self.totals_label = QLabel()
-        self.totals_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        top.addWidget(self.progress_label, 1)
-        top.addWidget(self.totals_label)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setTextVisible(False)
-        self.rate_label = QLabel()
-        self.outcome_label = QLabel()
-        layout.addLayout(top)
-        layout.addWidget(self.progress_bar)
-        layout.addWidget(self.rate_label)
-        layout.addWidget(self.outcome_label)
-        self._show_strip(False)
-        return box
-
-    def _build_log(self) -> QPlainTextEdit:
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(LOG_MAX_BLOCKS)
-        self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.log_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.log_view.setMinimumHeight(120)
-        return self.log_view
-
-    def _build_auto(self) -> QWidget:
-        box = QFrame()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        self.auto_check = QCheckBox(strings.SYNC_AUTO_TITLE)
-        self.auto_check.toggled.connect(self._on_auto_toggled)
-        self.auto_status = QLabel()
-        self.auto_status.setWordWrap(True)
-        warning = QHBoxLayout()
-        self.exe_warning = QLabel()
-        self.exe_warning.setWordWrap(True)
-        self.exe_button = QPushButton(strings.SYNC_AUTO_EXE_UPDATE)
-        self.exe_button.clicked.connect(lambda: self._run_scheduler(True))
-        warning.addWidget(self.exe_warning, 1)
-        warning.addWidget(self.exe_button)
-        layout.addWidget(self.auto_check)
-        layout.addWidget(self.auto_status)
-        layout.addLayout(warning)
-        return box
+        for widget in (title, self.mirror_banner, self.auto_card, self.lock_label,
+                       self.missing_banner):
+            layout.addWidget(widget)
+        layout.addLayout(self.cards_grid)
+        layout.addWidget(self.legend)
+        layout.addWidget(self.run_label)
+        layout.addWidget(self.log_panel)
+        layout.addStretch(1)
+        # The commands live on the auto card; short names for the page's callers.
+        self.sync_button = self.auto_card.sync_button
+        self.sync_menu = self.auto_card.sync_menu
+        self.cancel_button = self.auto_card.cancel_button
 
     # -- cards -------------------------------------------------------------
 
     def rebuild_cards(self) -> None:
-        """One card per *enabled* environment, filled from ``sync.env_status``."""
-        while self.cards_row.count():
-            item = self.cards_row.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self._cards = []
-        for env in self._services.config.load().enabled_environments():
-            card = EnvCard(env.name, env.url, self)
-            self._cards.append(card)
-            self.cards_row.addWidget(card)
-        self.cards_row.addStretch(1)
+        """One card per *enabled* environment."""
+        for card in self._cards:
+            self.cards_grid.removeWidget(card)
+            card.deleteLater()
+        self._cards = [EnvCard(env.name, env.url, self)
+                       for env in self._services.config.load().enabled_environments()]
+        self._place_cards()
         self.refresh_cards()
 
-    def refresh_cards(self) -> None:
+    def _place_cards(self) -> None:
         for card in self._cards:
-            card.set_status(self._services.sync.env_status(card.env_name))
-            outcome = self.presenter.outcomes.get(card.env_name)
-            if outcome is not None:
-                card.set_outcome(outcome, self.presenter.failures.get(card.env_name, 0))
+            self.cards_grid.removeWidget(card)
+        for i, card in enumerate(self._cards):
+            self.cards_grid.addWidget(card, i // self._columns, i % self._columns,
+                                      Qt.AlignmentFlag.AlignTop)
+        for column in range(2):
+            self.cards_grid.setColumnStretch(column, 1 if column < self._columns else 0)
+
+    def columns(self) -> int:
+        return self._columns
+
+    def refresh_cards(self) -> None:
+        """Rows, calendar, badge and the missing-days banner, from the disk."""
+        self.presenter.refresh_coverage()
+        for card in self._cards:
+            card.set_status(self._services.sync.env_status(card.env_name),
+                            self.presenter.coverage.get(card.env_name))
+        self._refresh_badges()
+        self.legend.set_before_visible(any(
+            kind == cs.BEFORE for card in self._cards for _day, kind in card.strip.kinds()))
+        text = fmt.missing_days_text(self.presenter.missing())
+        self.missing_label.setText(text)
+        self.missing_banner.setVisible(bool(text))
+
+    def _refresh_badges(self) -> None:
+        for card in self._cards:
+            card.set_badge(self.presenter.badge(card.env_name))
 
     def cards(self) -> list[EnvCard]:
         return list(self._cards)
@@ -276,37 +223,60 @@ class SyncPage(QWidget):
         return next((c for c in self._cards if c.env_name == env_name), None)
 
     def on_config_changed(self, cfg: Config | None = None) -> None:
-        """Impostazioni saved: the environments — or the schedule — may have changed.
-
-        The broadcast payload is only a notification: every service reads the
-        configuration back through ``ConfigService.current``, so reloading is
-        what keeps the cards, the menu and the core agreeing on one list.
-        """
+        """Impostazioni saved: the environments — or the schedule — may have changed."""
         self.rebuild_cards()
-        self._rebuild_menu()
+        self.mirror_banner.refresh()
+        self.auto_card.rebuild_menu(self.presenter.environments())
         self.presenter.emit_summary()
-        self.refresh_scheduler()  # the status line describes the saved schedule
+        self.auto_card.refresh_scheduler()  # the line describes the saved schedule
+        self.probe.reset()
+        if self.isVisible():
+            self.probe.check()
 
-    def retune(self) -> None:
-        """Light/dark switched: the pills were coloured for the old palette."""
-        for card in self._cards:
-            card.retune()
+    def on_data_changed(self) -> None:
+        """A sync or an index finished somewhere: re-read the disk."""
+        if not self._runner.is_running("sync"):
+            self.refresh_cards()
+            self.presenter.emit_summary()
+
+    def refresh_sync_state(self) -> None:
+        """The window's slow refresh: a scheduled ``--sync`` may have run.
+
+        Only the cheap reads (state file; the cards' directory listing when
+        on screen) — no lock peek, no ``schtasks``. A run of ours keeps its
+        own live state.
+        """
+        if self._runner.is_running("sync"):
+            return
+        if self.isVisible():
+            self.refresh_cards()
+        self.presenter.emit_summary()
 
     # -- running a sync ----------------------------------------------------
 
-    def start_sync(self, envs: Sequence[str] | None = None, *, dry_run: bool = False) -> None:
-        """"Sincronizza ora" — always ``force=True`` (DESIGN-ui).
+    def start_sync(self, envs: Sequence[str] | None = None, *, dry_run: bool = False,
+                   force: bool = True) -> None:
+        """"Sincronizza ora" — ``force=True``; the startup sync passes False.
 
         ``envs=None`` means every enabled environment, which is what the core
-        does with it too; the page does not expand the list itself so the two
-        cannot disagree about what "enabled" means.
+        does with it too; the list below is only which cards say "in attesa".
+
+        The lock peek does NOT gate this: a stale holder line must never lock
+        the user out. The core takes the real lock and, when the scheduled
+        task holds it, runs nothing and reports ``sync=None`` (see
+        :meth:`_on_result`).
+
+        An invalid log folder (empty or relative ``mirror_root``) DOES gate
+        it, like the CLI: the page says why and submits nothing.
         """
-        if self._services.sync.lock_holder() is not None and not self._runner.is_running("sync"):
-            self.refresh_lock()  # the scheduled task got there first
-            self._show_status(strings.SYNC_LOCK_HELD)
+        problems = self.mirror_banner.refresh()
+        if problems:
+            text = strings.SYNC_REFUSED_MIRROR_ROOT.format(problem=problems[0])
+            self._set_run_label(text, "warn")
+            self._show_status(text)
             return
-        job = self._runner.submit("sync", self._services.sync.run, envs,
-                                  force=True, dry_run=dry_run)
+        job = self._runner.submit("sync", run_logged, self._services.sync.run, envs,
+                                  force=force, dry_run=dry_run)
         if job is None:  # the runner refuses a second sync; it says so itself
             return
         self.sync_job = job
@@ -314,192 +284,168 @@ class SyncPage(QWidget):
         job.signals.result.connect(self._on_result)
         job.signals.error.connect(self._on_error)
         job.signals.finished.connect(self._on_finished)
-        self.presenter.progress.reset()
-        self.outcome_label.clear()
-        self._set_running(True)
-        self.progress_label.setText(strings.SYNC_PROGRESS_STARTING)
-        for card in self._cards:
-            if envs is None or card.env_name in envs:
-                card.set_running(True)
+        self._outcome, self._dry_run, self._last_status = None, dry_run, None
+        known = self.presenter.environments()
+        self.presenter.begin_run([e for e in known if envs is None or e in envs])
+        self.log_panel.clear()
+        self.log_panel.set_header(None, strings.SYNC_LOG_RUNNING)
+        self._set_run_label(strings.SYNC_PROGRESS_STARTING, "neutral")
+        self.auto_card.set_running(True)
+        self.refresh_lock()
+        self._refresh_badges()
+        self.presenter.emit_state()
 
     def cancel(self) -> None:
-        """Ask the core to stop; the strip says so until ``finished`` arrives."""
+        """Ask the core to stop; the page says so until ``finished`` arrives."""
         if self.sync_job is None or not self.sync_job.is_running():
             return
         self.sync_job.cancel()
         self.cancel_button.setEnabled(False)
-        self.progress_label.setText(strings.SYNC_PROGRESS_CANCELLING)
-        self.totals_label.clear()
-        self.rate_label.clear()
+        self.run_label.setText(strings.SYNC_PROGRESS_CANCELLING)
+        running = self.card(self.presenter.running or "")
+        if running is not None:
+            running.set_progress_text(strings.SYNC_PROGRESS_CANCELLING)
 
     def handle_event(self, ev: Event) -> None:
-        """One core event: the strip, the registro and the cards."""
+        """One core event: the cards, the chip, the registro and the status bar."""
         self.presenter.handle(ev)
-        if isinstance(ev, EnvStarted):
+        if isinstance(ev, (EnvStarted, EnvFinished)):
             card = self.card(ev.env)
-            if card is not None:
-                card.set_running(True)
-        elif isinstance(ev, EnvFinished):
-            card = self.card(ev.env)
-            if card is not None:
-                card.set_running(False)
-                card.set_outcome(ev.result.status, ev.result.failed)
+            if card is not None and isinstance(ev, EnvFinished):
+                card.set_progress(None)
+            self._refresh_badges()
+            self.presenter.emit_state()
+        if isinstance(ev, FileFailed) or (isinstance(ev, EnvFinished) and ev.result.failed):
+            self.log_panel.expand()
         line = fmt.log_line(ev)
         if line is not None:
-            self.log_view.appendPlainText(line)
+            self.log_panel.append(line)
         if not self._cancelling():
-            self._render_strip()
+            self._render_progress()
+            self._show_progress_status()
 
-    # -- strip -------------------------------------------------------------
+    def progress_counts(self) -> tuple[int, int] | None:
+        """``(done, total)`` files of the run in flight, for the quit question."""
+        snap = self.presenter.progress.snapshot()
+        if snap.n_files <= 0:
+            return None
+        return snap.file_index, snap.n_files
 
-    def _render_strip(self) -> None:
-        """Repaint from one snapshot; an empty label keeps what is on screen."""
-        texts = fmt.strip_texts(self.presenter.progress.snapshot())
-        if texts.label:
-            self.progress_label.setText(texts.label)
-        self.totals_label.setText(texts.totals)
-        self.rate_label.setText(texts.rate)
-        self.progress_bar.setValue(texts.percent)
-
-    def _show_strip(self, visible: bool) -> None:
-        for widget in (self.progress_label, self.totals_label, self.progress_bar,
-                       self.rate_label):
-            widget.setVisible(visible)
-        if not visible:
-            self.progress_bar.setValue(0)
+    def _render_progress(self) -> None:
+        """The running env's card, or the page line while indexing."""
+        snap = self.presenter.progress.snapshot()
+        texts = fmt.strip_texts(snap)
+        if snap.phase == pm.PHASE_INDEX:
+            self.run_label.setText(strings.SYNC_SUMMARY_SEP.join(
+                t for t in (texts.label, texts.totals) if t))
+            return
+        card = self.card(self.presenter.running or "")
+        if card is not None:
+            card.set_progress(texts)
+        line = fmt.status_text(snap)
+        if line:
+            self.run_label.setText(line)
 
     def _cancelling(self) -> bool:
         return self.sync_job is not None and self.sync_job.token.is_set()
 
     # -- job lifecycle -----------------------------------------------------
 
-    def _set_running(self, running: bool) -> None:
-        self.cancel_button.setEnabled(running)
-        self._show_strip(running)
-        self.refresh_lock()
-
     def _on_result(self, report: JobReport) -> None:
-        """``sync.run`` handles cancellation itself and reports exit code 3."""
-        self.outcome_label.setText({
-            0: strings.SYNC_DONE,
-            1: strings.SYNC_DONE_ERRORS,
-            2: strings.SYNC_DONE_UNREACHABLE,
-            3: strings.SYNC_CANCELLED,
-        }.get(report.exit_code, strings.SYNC_DONE))
+        self._outcome = fmt.run_outcome(report.exit_code, self.presenter.run_results(),
+                                        dry_run=self._dry_run, skipped=report.sync is None)
 
     def _on_error(self, _kind: str, error: str) -> None:
-        self.outcome_label.setText(strings.SYNC_ERROR.format(error=error))
+        self._outcome = fmt.RunOutcome(strings.SYNC_ERROR.format(error=error), "warn",
+                                       strings.SYNC_LOG_FAILED)
 
     def _on_finished(self) -> None:
+        self.presenter.end_run()
         for card in self._cards:
-            card.set_running(False)
-        self._set_running(False)
+            card.set_progress(None)
+        self.auto_card.set_running(False)
+        self.refresh_lock()
         self.refresh_cards()
         self.presenter.emit_summary()
-        self._show_status(self.outcome_label.text())
+        outcome = self._outcome
+        if outcome is None:
+            self.run_label.hide()
+            self.log_panel.set_header(fmt.format_when(datetime.now()), None)
+            return
+        self._set_run_label(outcome.text, outcome.tone)
+        self.log_panel.set_header(fmt.format_when(datetime.now()), outcome.log)
+        if outcome.expand_log:
+            self.log_panel.expand()
+        self._show_status(outcome.text)
+        toast = getattr(self._window, "show_toast", None)
+        if callable(toast):
+            toast(outcome.text, outcome.tone)
+
+    def _set_run_label(self, text: str, tone: str) -> None:
+        self.run_label.setText(text)
+        self.run_label.setProperty("syncTone", tone)
+        theme.repolish(self.run_label)
+        self.run_label.show()
+
+    # -- reachability: "non raggiungibile" as a resting state ---------------
+
+    @property
+    def reach_job(self) -> Job | None:
+        return self.probe.job
+
+    def _on_reachability(self, results: dict[str, bool]) -> None:
+        self.presenter.set_reachability(results)
+        self._refresh_badges()
+        self.presenter.emit_summary()
 
     # -- lock held by the scheduled run ------------------------------------
 
     def refresh_lock(self) -> None:
-        """Polled every :data:`LOCK_POLL_MS`; also called around every run.
+        """Polled every :data:`LOCK_POLL_MS` while visible; also around every run.
 
         The lock is ours while *we* are the ones syncing, so the warning only
         appears when somebody else — the scheduled task — holds it.
         """
         ours = self._runner.is_running("sync")
-        held = self._services.sync.lock_holder() is not None and not ours
+        held = not ours and self._services.sync.lock_holder() is not None
         self.lock_label.setVisible(held)
-        self.sync_button.setEnabled(not held and not ours)
+        self.auto_card.set_sync_enabled(not held and not ours)
 
-    # -- automatic synchronisation -----------------------------------------
+    # -- Qt ----------------------------------------------------------------
 
-    def refresh_scheduler(self) -> None:
-        """Re-read the task and repaint the checkbox, the line and the warning."""
-        task = self._services.scheduler.status()
-        self._set_scheduler_busy(False)
-        with QSignalBlocker(self.auto_check):  # a repaint is not a user decision
-            self.auto_check.setChecked(task.registered)
-        self.auto_status.setText(
-            fmt.format_task_status(task, self._services.config.load().schedule)
-        )
-        mismatch = task.registered and not task.exe_matches
-        self.exe_warning.setText(
-            strings.SYNC_AUTO_EXE_MISMATCH.format(path=task.command) if mismatch else "")
-        self.exe_warning.setVisible(mismatch)
-        self.exe_button.setVisible(mismatch)
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().showEvent(event)
+        self.refresh_lock()
+        self.lock_timer.start()
+        self.probe.check()
 
-    def _on_auto_toggled(self, checked: bool) -> None:
-        reason = self._services.scheduler.unstable_location_reason() if checked else None
-        if reason is not None and not self.confirm_unstable(reason):
-            with QSignalBlocker(self.auto_check):
-                self.auto_check.setChecked(False)
-            return
-        self._run_scheduler(checked)
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self.lock_timer.stop()  # nothing to watch on a page nobody sees
+        super().hideEvent(event)
 
-    def _run_scheduler(self, register: bool) -> None:
-        """``schtasks`` is a subprocess call: never on the GUI thread."""
-        scheduler = self._services.scheduler
-        job = self._runner.submit(SCHEDULER_JOB,
-                                  scheduler.register if register else scheduler.unregister)
-        if job is None:
-            # Refused (Impostazioni is re-registering) or the application is
-            # closing: nothing will run, so the checkbox must not keep showing
-            # the change the user just asked for.
-            self.refresh_scheduler()
-            return
-        self.scheduler_job = job
-        self._set_scheduler_busy(True)
-        job.signals.error.connect(
-            lambda _kind, error: self._show_status(strings.SYNC_AUTO_FAILED.format(error=error)))
-        job.signals.finished.connect(self.refresh_scheduler)
-
-    def _set_scheduler_busy(self, busy: bool) -> None:
-        """``schtasks`` takes no cancel token, so two calls in flight could land
-        in either order: the controls stay locked until the current one is back."""
-        self.auto_check.setEnabled(not busy)
-        self.exe_button.setEnabled(not busy)
-
-    def confirm_unstable(self, reason: str) -> bool:
-        """Show the "posizione poco stabile" question; True = register anyway."""
-        box = self.build_unstable_dialog(reason)
-        try:
-            return box.exec() == QMessageBox.StandardButton.Yes
-        finally:
-            box.deleteLater()
-
-    def build_unstable_dialog(self, reason: str) -> QMessageBox:
-        """The dialog without showing it, so its wording can be tested."""
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(strings.SYNC_AUTO_UNSTABLE_TITLE)
-        box.setText(strings.SYNC_AUTO_UNSTABLE_TEXT.format(reason=reason))
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        box.setDefaultButton(QMessageBox.StandardButton.No)
-        box.button(QMessageBox.StandardButton.Yes).setText(strings.SYNC_AUTO_UNSTABLE_OK)
-        box.button(QMessageBox.StandardButton.No).setText(strings.BTN_CANCEL)
-        return box
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        columns = 2 if self.width() >= self.TWO_COLUMNS_MIN_WIDTH else 1
+        if columns != self._columns:
+            self._columns = columns
+            self._place_cards()
 
     # -- talking to the window ---------------------------------------------
 
-    # ``summary_changed`` is *not* pushed into the window from here: the shell
-    # connects that signal to ``set_sync_summary`` itself (main_window
-    # §"Optional hooks"), and doing both would set the same text twice.
+    # ``state_changed`` is *not* pushed into the window from here: the shell
+    # connects that signal to ``set_sync_state`` itself.
 
     def _show_status(self, text: str) -> None:
         setter = getattr(self._window, "set_status", None)
         if text and callable(setter):
             setter(text)
 
-    # -- internals ---------------------------------------------------------
-
-    def _rebuild_menu(self) -> None:
-        self.sync_menu.clear()
-        self.sync_menu.addAction(strings.SYNC_MENU_ALL).triggered.connect(
-            lambda: self.start_sync())
-        self.sync_menu.addSeparator()
-        for name in self.presenter.environments():
-            action = self.sync_menu.addAction(strings.SYNC_MENU_ONLY.format(env=name))
-            action.triggered.connect(lambda _checked=False, env=name: self.start_sync([env]))
-        self.sync_menu.addSeparator()
-        self.sync_menu.addAction(strings.SYNC_MENU_DRY_RUN).triggered.connect(
-            lambda: self.start_sync(dry_run=True))
+    def _show_progress_status(self) -> None:
+        """"Sincronizzazione coll 3/48…" in the status bar, on every change."""
+        text = fmt.status_text(self.presenter.progress.snapshot())
+        if text is None or text == self._last_status:
+            return
+        self._last_status = text
+        setter = getattr(self._window, "set_status", None)
+        if callable(setter):
+            setter(text, 0)

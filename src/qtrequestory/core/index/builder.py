@@ -27,8 +27,8 @@ _INSERT_FILE = (
 )
 _INSERT_ENTRY = (
     "INSERT INTO entries (file_id, env, day, seq, name, fdi, template_key, call_id, well_formed, "
-    "header_offset, body_offset, body_len, request_date, ndocs, dossier_id, dossier_number, json_ok) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "header_offset, header_len, body_offset, body_len, request_date, ndocs, dossier_id, dossier_number, json_ok) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -45,13 +45,33 @@ class IndexStats:
     seconds: float
 
 
+def _text(value: str | None) -> str | None:
+    """A name part as storable text: stray non-UTF-8 bytes (surrogates after
+    the scanner's ``surrogateescape``) become U+FFFD — sqlite3 refuses them."""
+    if value is None:
+        return None
+    return value.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def _raw_name(raw: str) -> str | bytes:
+    """The full entry name, losslessly: ``read_body`` rebuilds the header from
+    it byte for byte. Valid UTF-8 (every real name) is stored as TEXT; anything
+    else as the raw bytes (a BLOB), which ``search`` decodes back with
+    ``surrogateescape``."""
+    try:
+        raw.encode("utf-8")
+    except UnicodeEncodeError:
+        return raw.encode("utf-8", "surrogateescape")
+    return raw
+
+
 def _entry_row(file_id: int, env: str, day: str, e: ScannedEntry) -> tuple:
     n = e.name
     return (
-        file_id, env, day, e.seq, n.raw,
-        n.fdi or None,  # a degenerate "_KEY_id" name parses to fdi == "": store NULL, not ""
-        n.template_key, n.call_id, int(n.well_formed),
-        e.header_offset, e.body_offset, e.body_len,
+        file_id, env, day, e.seq, _raw_name(n.raw),
+        _text(n.fdi) or None,  # a degenerate "_KEY_id" name parses to fdi == "": store NULL, not ""
+        _text(n.template_key), _text(n.call_id), int(n.well_formed),
+        e.header_offset, e.header_len, e.body_offset, e.body_len,
         e.request_date, e.ndocs, e.dossier_id, e.dossier_number, int(e.json_ok),
     )
 

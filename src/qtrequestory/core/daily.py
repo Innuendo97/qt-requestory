@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DAILY_NAME_RE = r"^(?P<day>\d{8})\.txt$"
@@ -106,6 +106,57 @@ def count_local_files(root: Path) -> int:
     )
 
 
+# ------------------------------------------------------------------ gaps ---
+
+def missing_weekdays(present: set[date], start: date, end: date) -> list[date]:
+    """The Mon-Fri dates in ``[start, end]`` (inclusive) that are not in
+    ``present``, ascending. Weekends are never reported: the server produces
+    no traffic on Saturday/Sunday, so an absent weekend file is normal, not a
+    gap in the mirror."""
+    out: list[date] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5 and d not in present:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+@dataclass(frozen=True)
+class CoverageDays:
+    """Weekday coverage of one environment's local mirror, as consumed by the
+    search coverage warning and the sync-page coverage calendar.
+
+    ``present`` is every locally mirrored day (unfiltered); ``missing`` is the
+    gaps within the requested window, restricted to ``first_local`` onward so
+    days from before the archive began are never flagged; ``first_local`` is
+    the oldest locally mirrored day, or ``None`` when nothing is mirrored yet.
+    """
+    present: frozenset[date]
+    missing: tuple[date, ...]
+    first_local: date | None
+
+
+def coverage_days(present: set[date], days: int, today: date) -> CoverageDays:
+    """Weekday gaps in ``present`` over the ``days`` days before ``today``.
+
+    The window is ``[today - days + 1, today - 1]``: today is excluded
+    because today's calls only arrive on the server tomorrow, so a missing
+    file for today is expected, not a gap. ``missing`` only counts days on or
+    after the oldest locally mirrored day (``first_local``), so an empty or
+    young mirror never reports the days before it started as missing.
+    """
+    end = today - timedelta(days=1)
+    start = today - timedelta(days=days - 1)
+    first_local = min(present) if present else None
+    missing: list[date] = []
+    if first_local is not None:
+        window_start = max(start, first_local)
+        if window_start <= end:
+            missing = missing_weekdays(present, window_start, end)
+    return CoverageDays(present=frozenset(present), missing=tuple(missing), first_local=first_local)
+
+
 # -------------------------------------------------------- entry name parse ---
 
 @dataclass(frozen=True)
@@ -126,7 +177,7 @@ def parse_entry_name(raw: str) -> EntryName:
        is the key;
     3. otherwise split on the FIRST underscore: left (lowercased) is the FDI,
        right is the key — template keys may contain underscores and even start
-       with digits (``2_DECLARATION_...``), the FDI token never contains one;
+       with digits (``2_SOME_KEY_...``), the FDI token never contains one;
     4. no underscore at all: no FDI, the whole remainder is the key.
 
     ``well_formed`` is True only for a canonical UUID FDI plus a call id.

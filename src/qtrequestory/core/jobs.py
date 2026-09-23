@@ -40,8 +40,15 @@ class JobReport:
 
 def _index_envs(config: Config, envs: Iterable[str] | None) -> list[str]:
     """Every configured environment, enabled or not: the index describes local
-    files, and a disabled env may still hold history worth searching."""
-    return [e.name for e in config.environments] if envs is None else list(envs)
+    files, and a disabled env may still hold history worth searching.
+
+    Explicit names are resolved with ``config.require_env``: an unknown one
+    raises ``UnknownEnvironment`` (the CLI's exit 2) instead of indexing
+    nothing and reporting success.
+    """
+    if envs is None:
+        return [e.name for e in config.environments]
+    return [config.require_env(name).name for name in envs]
 
 
 def _update_index(config: Config, envs: list[str], *, full_rebuild: bool, sink: EventSink, cancel: CancelToken) -> int:

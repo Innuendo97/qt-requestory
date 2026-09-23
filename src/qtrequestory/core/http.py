@@ -19,6 +19,7 @@ from typing import Protocol
 
 from qtrequestory import __version__
 from qtrequestory.core.events import CancelToken
+from qtrequestory.core.fsutil import remove_quietly
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ class UrllibHttpClient(HttpClient):
             raise HttpDownloadError(str(e)) from e
         finally:
             if not keep_file:
-                _remove_quietly(dest_part)
+                remove_quietly(dest_part)
 
 
 def _content_length(resp: http.client.HTTPResponse) -> int | None:
@@ -135,12 +136,3 @@ def _content_length(resp: http.client.HTTPResponse) -> int | None:
         return int(value) if value is not None else None
     except ValueError:
         return None
-
-
-def _remove_quietly(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as e:  # pragma: no cover - best effort, e.g. AV holding the file
-        log.warning("could not remove partial file %s: %s", path, e)

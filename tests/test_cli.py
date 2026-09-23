@@ -11,6 +11,7 @@ Two kinds of test live here:
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
@@ -23,14 +24,52 @@ import pytest
 
 from qtrequestory import __version__, cli
 from qtrequestory.core import opener, scheduler
-from qtrequestory.core.config import Config, Environment, default_config, load_config, save_config
+from qtrequestory.core.config import (
+    Config,
+    Environment,
+    ScheduleSettings,
+    default_config,
+    load_config,
+    save_config,
+)
 from qtrequestory.core.events import CancelToken, LoggingSink
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import TaskStatus
-from tests.conftest import FDI_A, FDI_B, KEY_CTE, KEY_EMAIL, KEY_SINT, Mirror
+from tests.conftest import (
+    FDI_A,
+    FDI_B,
+    KEY_CTE,
+    KEY_EMAIL,
+    KEY_SINT,
+    Mirror,
+    StubServer,
+    autoindex_html,
+    entry_name,
+    make_daily_file,
+    synthetic_body,
+)
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+
+
+# --------------------------------------------------------- no real console ---
+
+
+class _NoParentConsole:
+    """Answers exactly like a process with no parent console: this is what
+    protects every other test in this module from ``_attach_parent_console``
+    reaching the real Windows API and stealing ``capsys``'s captured stdout.
+    """
+
+    def AttachConsole(self, _pid: int) -> int:
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def _stub_windows_console(monkeypatch):
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _NoParentConsole()})())
+
 
 # ------------------------------------------------------------------ helpers ---
 
@@ -161,6 +200,139 @@ def test_task_status_never_imports_qt_either(home: Path, monkeypatch, capsys):
     assert {m for m in sys.modules if m.startswith("PySide6")} == before
 
 
+# ------------------------------------------------------------ console attach ---
+#
+# Important #14: a windowed build (``console=False``) has ``sys.stdout`` ==
+# ``None``, so every headless mode's print used to vanish even when launched
+# from an interactive terminal. These stub ``ctypes.windll`` themselves (never
+# a real console, per the module-level ``_stub_windows_console`` fixture that
+# protects every OTHER test here from the real Windows API).
+
+
+def test_attach_console_is_a_no_op_without_a_parent_console():
+    """The scheduled task's case, and every other test in this module (the
+    autouse stub answers 0): the streams must be left exactly alone."""
+    old_out, old_err = sys.stdout, sys.stderr
+    cli._attach_parent_console(["--sync"])
+    assert sys.stdout is old_out
+    assert sys.stderr is old_err
+
+
+def test_attach_console_reopens_stdout_and_stderr_on_conout(monkeypatch):
+    class _Attached:
+        def AttachConsole(self, pid: int) -> int:
+            assert pid == cli._ATTACH_PARENT_PROCESS
+            return 1  # non-zero: there IS a parent console
+
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _Attached()})())
+    fake_out, fake_err = io.StringIO(), io.StringIO()
+    opened = iter([fake_out, fake_err])
+    monkeypatch.setattr(cli, "_open_conout", lambda: next(opened))
+
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        cli._attach_parent_console(["--sync"])
+        assert sys.stdout is fake_out
+        assert sys.stderr is fake_err
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+
+
+def test_attach_console_leaves_both_streams_untouched_if_reopening_either_fails(monkeypatch):
+    """Fix round 1 (Minor): both ``CONOUT$`` handles are opened into locals
+    and assigned only once BOTH succeeded — a failure reopening the SECOND
+    one (stderr) must not leave stdout pointing at a console while stderr
+    stays wherever it was."""
+    class _Attached:
+        def AttachConsole(self, pid: int) -> int:
+            return 1
+
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _Attached()})())
+    fake_out = io.StringIO()
+    calls: list[int] = []
+
+    def flaky_open():
+        calls.append(len(calls))
+        if len(calls) == 1:
+            return fake_out
+        raise OSError("no second console handle")
+
+    monkeypatch.setattr(cli, "_open_conout", flaky_open)
+
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        cli._attach_parent_console(["--sync"])  # must not raise
+        assert sys.stdout is old_out, "must not keep the leaked first handle"
+        assert sys.stderr is old_err
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+
+
+@pytest.mark.parametrize("argv", [["--sync"], ["--index"], ["--find"], ["--task", "status"], ["--version"]])
+def test_attach_console_is_attempted_for_every_headless_mode(monkeypatch, argv: list[str]):
+    calls: list[int] = []
+
+    class _Recording:
+        def AttachConsole(self, pid: int) -> int:
+            calls.append(pid)
+            return 0
+
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _Recording()})())
+    cli._attach_parent_console(argv)
+    assert calls == [cli._ATTACH_PARENT_PROCESS]
+
+
+def test_attach_console_is_skipped_for_the_gui(monkeypatch):
+    calls: list[int] = []
+
+    class _Recording:
+        def AttachConsole(self, pid: int) -> int:
+            calls.append(pid)
+            return 1
+
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _Recording()})())
+    cli._attach_parent_console([])
+    assert calls == [], "no headless flag: the GUI must never touch the console API"
+
+
+def test_attach_console_tolerates_a_missing_windll(monkeypatch):
+    """Off Windows (or an exotic sandbox) ``ctypes`` may have no ``windll`` at
+    all; merely accessing the attribute must not raise and reach the caller."""
+    monkeypatch.delattr(cli.ctypes, "windll", raising=False)
+    old_out, old_err = sys.stdout, sys.stderr
+    cli._attach_parent_console(["--sync"])  # must not raise
+    assert sys.stdout is old_out and sys.stderr is old_err
+
+
+def test_attach_console_is_wired_into_main_before_guard_std_streams(home: Path, monkeypatch):
+    """The scheduled windowed ``--sync`` must keep working exactly as before:
+    with the autouse "no parent console" stub, ``main`` must still reach
+    ``_guard_std_streams`` and run the job normally."""
+    monkeypatch.setattr(cli, "run_sync_job",
+                        lambda config, **kw: JobReport(sync=None, indexed_files=0, exit_code=0))
+    assert cli.main(["--sync"]) == 0
+
+
+def test_attach_console_success_reaches_stdout_through_main(home: Path, monkeypatch):
+    class _Attached:
+        def AttachConsole(self, pid: int) -> int:
+            return 1
+
+    monkeypatch.setattr(cli.ctypes, "windll", type("Windll", (), {"kernel32": _Attached()})())
+    fake_out, fake_err = io.StringIO(), io.StringIO()
+    opened = iter([fake_out, fake_err])
+    monkeypatch.setattr(cli, "_open_conout", lambda: next(opened))
+    monkeypatch.setattr(cli, "run_sync_job",
+                        lambda config, **kw: JobReport(sync=None, indexed_files=0, exit_code=0))
+
+    old_out, old_err = sys.stdout, sys.stderr
+    try:
+        assert cli.main(["--sync"]) == 0
+        assert sys.stdout is fake_out
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+
+
 # --------------------------------------------------------------- --version ---
 
 
@@ -204,8 +376,182 @@ def test_sync_configures_logging_and_writes_the_sync_log(home: Path):
 
     sync_log = (home / "logs" / "sync.log").read_text(encoding="utf-8")
     assert "svil" in sync_log
-    assert "exit 2" in sync_log
+    assert "codice di uscita 2" in sync_log
     assert (home / "logs" / "app.log").exists()
+
+
+def test_sync_dry_run_lists_the_files_it_would_download(tmp_path: Path, monkeypatch, capsys,
+                                                          stub_server: StubServer):
+    """Minor P1: ``--sync --dry-run`` used to print nothing at all — the
+    engine skips the transfer, ``sync.log`` only gets the "anteprima" summary
+    lines, and ``LoggingSink`` drops ``FileSkipped``. The CLI is the only
+    place left that can show the old script's file-by-file listing."""
+    app_home = tmp_path / "home"
+    mirror = tmp_path / "mirror"
+    cfg = default_config()
+    cfg.mirror_root = mirror
+    cfg.environments = [Environment(name="coll", url=stub_server.url + "/coll/")]
+    cfg.output_dir = app_home / "out"
+    app_home.mkdir(parents=True)
+    save_config(cfg, app_home / "config.json")
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    size = 1_048_576  # exactly 1 MB, so the formatted output is unambiguous
+    stub_server.add("/coll/", autoindex_html([("20260921.txt", "21-Sep-2026 18:30", size)]))
+    stub_server.add("/coll/20260921.txt", b"x" * size)
+
+    assert cli.main(["--sync", "--dry-run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "[dry-run] scaricherei 20260921.txt (1 MB) -> " in out
+    assert str(mirror / "coll" / "2026" / "09" / "20260921.txt") in out
+    assert not (mirror / "coll").exists(), "dry-run must not touch the mirror"
+
+
+def test_sync_with_an_unconfigured_environment_says_so_and_exits_2(home: Path, capsys):
+    """Minor P2, the ``--sync -e`` half: the real engine, not a mock — a typo
+    must be told apart from a config problem or a network failure."""
+    cfg = load_config(home / "config.json")
+    cfg.environments = [Environment(name="svil", url="http://127.0.0.1:1/")]
+    save_config(cfg, home / "config.json")
+
+    assert cli.main(["--sync", "--env", "colll"]) == 2
+
+    out = capsys.readouterr().out
+    assert "ambiente sconosciuto: 'colll' (configurati: svil)" in out
+
+
+# ---------------------------------------------------- configuration gate ---
+
+
+def test_headless_modes_refuse_to_run_against_an_unset_mirror_root(tmp_path: Path, monkeypatch, capsys):
+    """Minor M3: an emptied ``mirror_root`` must stop the run, not silently
+    resolve to the default (once the live installed mirror)."""
+    app_home = tmp_path / "home"
+    app_home.mkdir(parents=True)
+    (app_home / "config.json").write_text('{"schema_version": 1, "mirror_root": ""}', encoding="utf-8")
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    monkeypatch.setattr(cli, "run_sync_job", _RecordingJob())
+
+    assert cli.main(["--sync"]) == 2
+
+    out = capsys.readouterr().out
+    assert "La cartella dei log non è impostata" in out
+
+
+def test_headless_modes_refuse_to_run_against_a_relative_mirror_root(tmp_path: Path, monkeypatch, capsys):
+    app_home = tmp_path / "home"
+    app_home.mkdir(parents=True)
+    (app_home / "config.json").write_text(
+        '{"schema_version": 1, "mirror_root": "relativo"}', encoding="utf-8"
+    )
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    monkeypatch.setattr(cli, "run_index_job", _RecordingJob())
+
+    assert cli.main(["--index"]) == 2
+
+    out = capsys.readouterr().out
+    assert "percorso completo" in out
+
+
+def test_a_first_run_sync_is_never_blocked_by_the_configuration_gate(tmp_path: Path, monkeypatch):
+    """The wizard's blank state (no config.json at all yet) must not be
+    mistaken for the M3 bug: ``load_config`` hands back the real default
+    ``mirror_root``, which ``validate`` accepts."""
+    app_home = tmp_path / "home"
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    monkeypatch.setattr(cli, "run_sync_job", _RecordingJob())
+
+    assert cli.main(["--sync"]) == 0
+    assert not (app_home / "config.json").exists()
+
+
+def test_the_task_action_is_not_gated_by_config_validation(tmp_path: Path, monkeypatch):
+    """``--task`` never touches ``mirror_root``; a broken one must not stop a
+    user from at least removing/inspecting the scheduled task."""
+    app_home = tmp_path / "home"
+    app_home.mkdir(parents=True)
+    (app_home / "config.json").write_text('{"schema_version": 1, "mirror_root": ""}', encoding="utf-8")
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    fake = _FakeScheduler()
+    monkeypatch.setattr(cli, "scheduler_service", lambda _config: fake)
+
+    assert cli.main(["--task", "status"]) == 1  # not registered, not a config error
+    assert fake.calls == ["status"]
+
+
+def test_an_invalid_log_level_does_not_block_sync(tmp_path: Path, monkeypatch, capsys):
+    """Fix round 1 (Important): the pre-run gate is scoped to ``mirror_root``
+    only. Before this fix round it called the full ``validate()``, so a typo
+    in ``log_level`` — which ``configure_logging`` already falls back from to
+    INFO on its own — turned into a hard exit-2 refusal it never was before
+    this task."""
+    app_home = tmp_path / "home"
+    _write_config(app_home, tmp_path / "mirror", log_level="VERBOSE")
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    job = _RecordingJob()
+    monkeypatch.setattr(cli, "run_sync_job", job)
+
+    assert cli.main(["--sync"]) == 0
+
+    assert len(job.calls) == 1
+    assert "Errore di configurazione" not in capsys.readouterr().out
+
+
+def test_a_malformed_schedule_does_not_block_sync_or_index(tmp_path: Path, monkeypatch, capsys):
+    """Same fix: a bad ``schedule`` block only matters to Impostazioni/the
+    scheduled task registration, never to ``--sync``/``--index`` themselves."""
+    bad_schedule = ScheduleSettings(start_time="not-a-time", repeat_every_h=99, repeat_for_h=99)
+    app_home = tmp_path / "home"
+    _write_config(app_home, tmp_path / "mirror", schedule=bad_schedule)
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    sync_job = _RecordingJob()
+    monkeypatch.setattr(cli, "run_sync_job", sync_job)
+
+    assert cli.main(["--sync"]) == 0
+    assert len(sync_job.calls) == 1
+
+    index_job = _RecordingJob()
+    monkeypatch.setattr(cli, "run_index_job", index_job)
+
+    assert cli.main(["--index"]) == 0
+    assert len(index_job.calls) == 1
+    assert "Errore di configurazione" not in capsys.readouterr().out
+
+
+def test_find_is_not_blocked_by_a_bad_log_level_or_schedule(tmp_path: Path, monkeypatch, capsys):
+    """``--find`` DOES depend on ``mirror_root`` (``Config.index_path`` is
+    derived from it) but not on ``log_level``/``schedule``; the environment
+    is genuinely just not indexed yet, so this must behave exactly like
+    ``test_find_says_when_the_environment_was_never_indexed``, not like the
+    mirror_root gate."""
+    app_home = tmp_path / "home"
+    _write_config(app_home, tmp_path / "mirror", envs=["coll"],
+                  log_level="VERBOSE", schedule=ScheduleSettings(start_time="nope"))
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+
+    assert cli.main(["--find", "-e", "coll", "-f", FDI_A[:8], "--no-open"]) == 1
+
+    out = capsys.readouterr().out
+    assert cli.NOTHING_FOUND in out
+    assert "Errore di configurazione" not in out
+
+
+def test_headless_modes_still_refuse_an_unset_mirror_root_after_the_gate_was_scoped_down(
+    tmp_path: Path, monkeypatch, capsys,
+):
+    """The point of scoping the gate down to ``mirror_root_errors``: it must
+    keep catching exactly the case it exists for, even alongside other,
+    now-ignored problems."""
+    app_home = tmp_path / "home"
+    app_home.mkdir(parents=True)
+    (app_home / "config.json").write_text(
+        json.dumps({"schema_version": 1, "mirror_root": "", "log_level": "VERBOSE"}), encoding="utf-8",
+    )
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    monkeypatch.setattr(cli, "run_sync_job", _RecordingJob())
+
+    assert cli.main(["--sync"]) == 2
+    assert "La cartella dei log non è impostata" in capsys.readouterr().out
 
 
 def test_ctrl_c_cancels_the_running_job_and_exits_3(home: Path, monkeypatch):
@@ -241,6 +587,22 @@ def test_a_keyboard_interrupt_that_escapes_still_exits_3(home: Path, monkeypatch
 
     monkeypatch.setattr(cli, "run_sync_job", interrupted)
     assert cli.main(["--sync"]) == 3
+
+
+def test_cli_sync_logs_unexpected_exceptions_and_exits_1(home: Path, monkeypatch):
+    """A windowed exe (``console=False``) has nowhere to show an unhandled
+    traceback: it must be logged to ``sync.log`` and the process must exit
+    cleanly with code 1, never propagate and pop a PyInstaller crash window."""
+    def boom(config, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "run_sync_job", boom)
+
+    assert cli.main(["--sync"]) == 1
+
+    sync_log = (home / "logs" / "sync.log").read_text(encoding="utf-8")
+    assert "boom" in sync_log
+    assert "Traceback" in sync_log
 
 
 # ----------------------------------------------------------------- --index ---
@@ -287,18 +649,42 @@ def test_find_names_the_file_after_day_fdi_and_key(indexed: Path, capsys):
     assert f"20260918_{FDI_A}_{KEY_CTE}.json" in out
 
 
-def test_find_by_fdi_takes_the_entry_with_the_whole_pratica(indexed: Path, capsys):
-    """The legacy rule: most ``documents`` wins, not the last entry in the file.
+def test_find_by_fdi_takes_the_entry_with_the_whole_pratica(tmp_path: Path, monkeypatch, capsys):
+    """The legacy rule: most ``documents`` wins, not the newest entry.
 
-    On 2026-09-18 the FDI has three entries; the ``search`` order puts the
-    5-document one second, so "the first hit" would hand out a partial body.
+    Important #13: this used to pass for the wrong reason. ``search`` orders
+    ties by ``request_date DESC, seq DESC``, and the ``mirror`` fixture's
+    default ``request_date`` (a fixed timestamp, not ``None`` — see
+    ``docs/DESIGN-core.md``) made every FDI_A entry on 2026-09-18 tie on date,
+    so the *query* order already happened to put the 5-document entry first —
+    ``pick_best``'s ``prefer_most_documents`` was never actually exercised, and
+    mutating ``cli.py``'s ``prefer_most_documents=bool(fdi and not key)`` to
+    ``False`` did not turn this test red.
+
+    Here the 5-document entry is given an OLDER ``requestDate`` than the
+    1-document one on the same day, so newest-first alone would hand out the
+    1-document body instead. See task-7-report.md for the by-hand mutation
+    check this pins.
     """
+    app_home = tmp_path / "home"
+    mirror_root = tmp_path / "mirror"
+    make_daily_file(mirror_root, "coll", date(2026, 9, 18), [
+        (entry_name(FDI_A, KEY_EMAIL, "1a2b3c0200000031"),
+         synthetic_body(FDI_A, KEY_EMAIL, ndocs=5, request_date="2026-09-18T08:00:00.000Z")),
+        (entry_name(FDI_A, KEY_CTE, "1a2b3c0200000032"),
+         synthetic_body(FDI_A, KEY_CTE, ndocs=1, request_date="2026-09-18T12:00:00.000Z")),
+    ])
+    _write_config(app_home, mirror_root, envs=["coll"])
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+    assert cli.main(["--index"]) == 0
+
     cli.main(["--find", "-e", "coll", "-f", FDI_A[:8],
               "--from", "2026-08-01", "--to", "2026-09-30", "--no-open"])
     out = capsys.readouterr().out
     # Two spaces before the parenthesis: the legacy script's exact shape.
     assert f"trovato in 20260918.txt: {FDI_A}_{KEY_EMAIL}_1a2b3c0200000031.json  (" in out
     assert "5 documenti" in out
+    assert "altre 1 entry" in out
 
 
 def test_find_with_a_key_keeps_the_query_order(indexed: Path, capsys):
@@ -323,12 +709,33 @@ def test_find_exits_1_when_nothing_matches(indexed: Path, capsys):
     assert "nessuna chiamata trovata" in capsys.readouterr().out
 
 
-def test_find_says_when_the_environment_was_never_indexed(home: Path, capsys):
-    """"Nothing found" would be a lie on an index that holds nothing at all."""
+def test_find_says_when_the_environment_was_never_indexed(tmp_path: Path, monkeypatch, capsys):
+    """"Nothing found" would be a lie on an index that holds nothing at all.
+
+    ``coll`` IS configured here (unlike the ``home`` fixture's empty list) but
+    never synced — the "esegui --sync" advice is only correct for a real,
+    simply-not-yet-indexed environment; a name nobody configured gets the
+    different message asserted below.
+    """
+    app_home = tmp_path / "home"
+    _write_config(app_home, tmp_path / "mirror", envs=["coll"])
+    monkeypatch.setenv("QTREQUESTORY_HOME", str(app_home))
+
     assert cli.main(["--find", "-e", "coll", "-f", FDI_A[:8], "--no-open"]) == 1
     out = capsys.readouterr().out
     assert cli.NOTHING_FOUND in out
     assert "esegui --sync" in out
+
+
+def test_find_with_an_unconfigured_environment_says_so(home: Path, capsys):
+    """Minor P2: ``--find -e colll`` used to say "esegui --sync", which is
+    actively wrong advice for a name that is not even a configured
+    environment — syncing "colll" is not a thing that exists to do."""
+    assert cli.main(["--find", "-e", "colll", "-f", FDI_A[:8], "--no-open"]) == 2
+    out = capsys.readouterr().out
+    assert "ambiente sconosciuto: 'colll'" in out
+    assert cli.NOTHING_FOUND not in out
+    assert "esegui --sync" not in out
 
 
 def test_find_does_not_blame_the_index_when_it_has_data(indexed: Path, capsys):
@@ -502,3 +909,14 @@ def test_the_gui_honours_the_config_override(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli, "_start_gui", lambda paths: (seen.append(paths), 0)[1])
     assert cli.main(["--config", str(elsewhere)]) == 0
     assert seen[0].config_file == elsewhere
+
+
+def test_index_with_an_unconfigured_environment_says_so_and_exits_2(home: Path, capsys):
+    """Final review #4: ``--index -e <typo>`` exits 2 like --sync/--find."""
+    cfg = load_config(home / "config.json")
+    cfg.environments = [Environment(name="svil", url="http://127.0.0.1:1/")]
+    save_config(cfg, home / "config.json")
+
+    assert cli.main(["--index", "--env", "colll"]) == 2
+
+    assert "ambiente sconosciuto: 'colll' (configurati: svil)" in capsys.readouterr().out

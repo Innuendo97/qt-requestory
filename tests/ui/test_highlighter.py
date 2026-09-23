@@ -4,7 +4,8 @@ What is worth testing here is not "which hue" — that is taste — but the thre
 things a reader depends on: the four token classes are told apart, a key and
 the string *value* next to it do not look the same (the whole point of a
 highlighter in a file full of quoted text), and a light/dark switch re-derives
-the colours instead of leaving grey on grey.
+the colours (from the theme's ``code_*`` tokens) instead of leaving grey on
+grey.
 
 Formats are read back through the public text layout: ``QSyntaxHighlighter``
 pushes its ``setFormat`` calls into ``QTextBlock.layout().formats()``, which
@@ -16,11 +17,12 @@ from __future__ import annotations
 import time
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette, QTextDocument
+from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtWidgets import QPlainTextEdit
 
+from qtrequestory.ui import theme
 from qtrequestory.ui.json_highlighter import JsonHighlighter
+from qtrequestory.ui.theme import Mode
 
 SAMPLE = (
     '{\n'
@@ -51,14 +53,6 @@ def highlighter(editor) -> JsonHighlighter:
     return instance
 
 
-@pytest.fixture
-def app_palette(qapp):
-    """Restore the application palette afterwards: it is process-wide state."""
-    original = qapp.palette()
-    yield
-    qapp.setPalette(original)
-
-
 def span_of(document: QTextDocument, fragment: str) -> tuple[int, int, QColor]:
     """``(start, length, foreground)`` of the format covering ``fragment``."""
     for number in range(document.blockCount()):
@@ -75,15 +69,6 @@ def span_of(document: QTextDocument, fragment: str) -> tuple[int, int, QColor]:
 
 def color_of(document: QTextDocument, fragment: str) -> QColor:
     return span_of(document, fragment)[2]
-
-
-def dark_palette() -> QPalette:
-    palette = QPalette()
-    for role in (QPalette.ColorRole.Base, QPalette.ColorRole.Window):
-        palette.setColor(role, QColor("#1f1f1f"))
-    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.WindowText):
-        palette.setColor(role, QColor("#e6e6e6"))
-    return palette
 
 
 # ------------------------------------------------------------------ tokens ---
@@ -111,15 +96,15 @@ def test_null_is_a_literal_and_not_a_string(highlighter):
     assert color_of(document, "null") != color_of(document, '"a-1"')
 
 
-def test_punctuation_is_the_body_text_faded(highlighter, qapp):
+def test_punctuation_is_the_body_text_faded(highlighter):
     """Braces carry no information: they must not compete with the values."""
     punctuation = color_of(highlighter.document(), "{")
-    text = qapp.palette().color(QPalette.ColorRole.Text)
+    text = QColor(theme.tokens().text)
 
     assert punctuation.alpha() < 255, "punctuation must be muted"
     assert (punctuation.red(), punctuation.green(), punctuation.blue()) == (
         text.red(), text.green(), text.blue()
-    ), "muted punctuation is the palette's own text colour, not a third hue"
+    ), "muted punctuation is the theme's own text colour, not a third hue"
 
 
 def test_a_digit_inside_a_string_stays_a_string(editor):
@@ -138,33 +123,32 @@ def test_a_key_whose_value_is_on_the_same_line_does_not_swallow_the_colon(highli
     assert length == len('"ndocs"')
 
 
-# ------------------------------------------------------------ palette change ---
+# -------------------------------------------------------------- theme change ---
 
-def test_refresh_colors_re_derives_the_palette_and_rehighlights(highlighter, qapp, app_palette):
+def test_the_colors_are_the_theme_code_tokens(highlighter, themed):
+    theme.apply(themed, Mode.LIGHT)
+    document = highlighter.document()
+    assert color_of(document, '"documents"').name().upper() == theme.LIGHT.code_key
+    assert color_of(document, '"a-1"').name().upper() == theme.LIGHT.code_string
+    assert color_of(document, "12").name().upper() == theme.LIGHT.code_number
+    assert color_of(document, "true").name().upper() == theme.LIGHT.code_literal
+
+
+def test_a_theme_switch_refreshes_the_colors_by_itself(highlighter, themed):
+    """The pane never calls ``refresh_colors``: the highlighter listens itself."""
+    theme.apply(themed, Mode.LIGHT)
     document = highlighter.document()
     before = color_of(document, '"documents"')
 
-    qapp.setPalette(dark_palette())
-    highlighter.refresh_colors()
+    theme.apply(themed, Mode.DARK)
 
     after = color_of(document, '"documents"')
     assert after != before, "a dark window must not keep the light-theme hues"
-    assert after.lightness() > 110, "keys must stay readable on a dark background"
-
-
-def test_a_light_dark_switch_refreshes_the_colors_by_itself(highlighter, qapp, app_palette):
-    """The pane never calls ``refresh_colors``: the highlighter listens itself."""
-    document = highlighter.document()
-    before = color_of(document, '"documents"')
-
-    qapp.setPalette(dark_palette())
-    qapp.styleHints().colorSchemeChanged.emit(Qt.ColorScheme.Dark)
-
-    assert color_of(document, '"documents"') != before
+    assert after.name().upper() == theme.DARK.code_key
 
 
 def test_refresh_colors_without_a_document_does_not_crash(qapp):
-    """The pane refreshes on every ``colorSchemeChanged``, even with no body yet."""
+    """A theme switch reaches every highlighter, even one with no body yet."""
     JsonHighlighter(None).refresh_colors()
 
 

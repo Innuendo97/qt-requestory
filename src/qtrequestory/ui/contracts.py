@@ -26,11 +26,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from qtrequestory import __version__
 from qtrequestory.core.config import (
+    REPEAT_EVERY_RANGE,
+    REPEAT_FOR_RANGE,
     Config,
     ConfigError,
     Environment,
@@ -40,7 +43,7 @@ from qtrequestory.core.config import (
     parse_hhmm,
     sanitised_schedule,
 )
-from qtrequestory.core.daily import EntryName, LocalDailyFile, parse_entry_name
+from qtrequestory.core.daily import CoverageDays, EntryName, LocalDailyFile, parse_entry_name
 from qtrequestory.core.events import (
     CancelToken,
     Cancelled,
@@ -65,7 +68,7 @@ from qtrequestory.core.events import (
 )
 from qtrequestory.core.facade import EnvStatus
 from qtrequestory.core.index.builder import IndexPlan, IndexStats
-from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery
+from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery, pick_best
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
@@ -75,13 +78,16 @@ __all__ = [
     # protocols + bundle
     "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "CoreServices",
     # re-exported core types
-    "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "EntryName",
+    "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "CoverageDays", "EntryName",
     "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "IndexPlan", "IndexSettings",
     "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "ScheduleSettings",
     "SchedulerError", "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec",
     "TaskStatus",
     # the core helpers the UI is allowed to call directly (pure functions, no I/O)
     "parse_entry_name", "parse_hhmm", "sanitised_schedule",
+    # the limits config.validate enforces on a schedule (the Impostazioni spin boxes)
+    "REPEAT_EVERY_RANGE", "REPEAT_FOR_RANGE",
+    "pick_best",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",
@@ -114,6 +120,15 @@ class ConfigApi(Protocol):
 
     def validate(self, cfg: Config) -> list[str]:
         """Italian error messages for Impostazioni; empty list means valid."""
+        ...
+
+    def mirror_root_errors(self, cfg: Config) -> list[str]:
+        """Only the ``mirror_root`` problems (empty or relative folder).
+
+        The same gate the CLI applies before ``--sync``/``--index``/``--find``
+        (exit 2): while this is not empty the window starts no sync and no
+        index job, which would otherwise write into the process's CWD.
+        """
         ...
 
     def detect_editor(self) -> Path | None:
@@ -176,7 +191,11 @@ class SyncApi(Protocol):
         ...
 
     def lock_holder(self) -> str | None:
-        """Description of the process currently syncing, or None when free."""
+        """Description of the process currently syncing, or None when free.
+
+        Read-only and cheap (one small file read plus a PID check): it never
+        takes the lock, so the page may poll it on a timer while visible.
+        """
         ...
 
     def sync_log_path(self) -> Path:
@@ -253,6 +272,14 @@ class IndexApi(Protocol):
 
     def coverage(self, env: str) -> Coverage | None:
         """First/last indexed day and the counts, or None when nothing is indexed."""
+        ...
+
+    def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> CoverageDays:
+        """Weekday gaps in the local mirror over the ``days`` days before
+        ``today`` (default: today's date). Today itself is excluded — its
+        file only arrives on the server tomorrow. Read from the local mirror
+        listing, not the index, so it is right even before indexing runs.
+        """
         ...
 
     def count_local_files(self, root: Path | None = None) -> int:

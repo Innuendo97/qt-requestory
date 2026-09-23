@@ -1,66 +1,72 @@
-"""The Impostazioni page: the whole configuration as one form.
+"""The Impostazioni page: a section list on the left, one section on the right.
 
-The widgets, the dialogs and the background jobs live here; the rules live in
-``settings_presenter.py`` (:class:`SettingsPresenter` — what the form means as
-a ``Config``, whether it is dirty, whether it validates, and the one call that
-writes it). This page decides nothing on its own.
+The seven sections are built by ``settings_sections.py`` (layout only); the
+rules live in ``settings_presenter.py`` (:class:`SettingsPresenter` — what the
+form means as a ``Config``, whether it is dirty, whether it validates, and the
+one call that writes it). This page holds the behaviour: dirty tracking, the
+dialogs and the background jobs.
 
-Nothing is written until [Salva]: this page is the only writer of
-``config.json`` in the application, so an accidental keystroke must not reach
-the disk, and a save that would produce an invalid configuration lists its
-errors inline instead. ``config_changed`` is re-emitted by the page because
-that is where ``MainWindow`` looks for it, and the window broadcasts it to
-every *other* page, so this one never hears its own save.
+Nothing is written until [Salva], which only exists — in the dark "Modifiche
+non salvate" bar — while there is something to save: this page is the only
+writer of ``config.json`` in the application, so an accidental keystroke must
+not reach the disk, and a save that would produce an invalid configuration
+lists its errors instead. Leaving the page with unsaved edits asks first
+(:meth:`SettingsPage.can_leave`, consulted by ``MainWindow.show_page``).
+
+Two things are deliberately *outside* that flow: the theme (Aspetto), applied
+and remembered the moment it is picked, and the jobs ([Ricostruisci indice],
+[Verifica]).
+
+``config_changed`` is re-emitted by the page because that is where
+``MainWindow`` looks for it, and the window broadcasts it to every *other*
+page, so this one never hears its own save.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from pathlib import Path
-
-from PySide6.QtCore import Qt, QTime, Signal
+from PySide6.QtCore import QTime, Signal
 from PySide6.QtWidgets import (
-    QButtonGroup,
-    QCheckBox,
-    QFileDialog,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
+    QListWidget,
     QScrollArea,
-    QSpinBox,
-    QTimeEdit,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import CoreServices, ScheduleSettings, parse_hhmm
-from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.schedule_text import schedule_sentence
+from qtrequestory.ui.pages.settings_actions import CHECK_JOB, INDEX_JOB, SettingsActions, ask_leave
 from qtrequestory.ui.pages.settings_presenter import (
     FormValues,
+    PrefValues,
     SettingsPresenter,
-    check_reachable,
     form_of,
+    load_prefs,
     normalised,
+    save_prefs,
 )
+from qtrequestory.ui.pages.settings_sections import BUILDERS, TIME_FORMAT, WINDOW_CHOICES
+from qtrequestory.ui.pages.settings_widgets import button
+from qtrequestory.ui.theme import Mode
 from qtrequestory.ui.workers import SCHEDULER_JOB, Job, JobRunner
 
-#: The three "Periodo predefinito" buttons (DESIGN-ui §Impostazioni page).
-WINDOW_CHOICES = (7, 30, 90)
-#: Exclusive job name: an index run refuses a second one while it works.
-INDEX_JOB = "index"
-CHECK_JOB = "check-envs"
-#: What ``QTimeEdit`` shows and what ``ScheduleSettings.start_time`` stores.
-TIME_FORMAT = "HH:mm"
+__all__ = ["CHECK_JOB", "INDEX_JOB", "SECTION_KEYS", "SettingsPage", "ask_leave"]
+
+#: The keys ``show_section`` accepts, in list order (wave-D contract).
+SECTION_KEYS = tuple(key for key, _label, _builder in BUILDERS)
 #: Shown when the stored start time cannot be parsed at all (hand-edited file).
 DEFAULT_START = parse_hhmm(ScheduleSettings().start_time)
+#: Width of the section list (the mockup's 180 px, plus the list's padding).
+NAV_WIDTH = 200
 
 
-class SettingsPage(QWidget):
-    """The form, its dialogs and the two jobs it can start."""
+class SettingsPage(SettingsActions, QWidget):
+    """Section list + stacked sections + the unsaved-changes bar."""
 
     config_changed = Signal(object)
 
@@ -78,6 +84,8 @@ class SettingsPage(QWidget):
         self._presenter = SettingsPresenter(services, self)
         self._presenter.config_changed.connect(self.config_changed.emit)
         self._window_days = WINDOW_CHOICES[1]
+        self._key_mode = "exact"
+        self._prefs = PrefValues()
         #: The re-registration a save may start; kept so a test — and one day a
         #: busy indicator — can tell whether schtasks was actually driven.
         self.scheduler_job: Job | None = None
@@ -87,159 +95,117 @@ class SettingsPage(QWidget):
     # -- construction ------------------------------------------------------
 
     def _build(self) -> None:
-        # The whole configuration is one tall form and it does not fit a
-        # 1366x768 laptop, where this page gets about 420 px of height. So the
-        # form scrolls and the [Annulla]/[Salva] row does NOT: the one button
-        # that commits the page must never be below the fold.
-        outer = QVBoxLayout(self)  # keeps the page's own margins
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)  # as Sincronizzazione
+        outer.setSpacing(theme.SPACE[2])
+        self.title_label = QLabel(strings.SETTINGS_TITLE)
+        theme.set_role(self.title_label, "pageTitle")
+        outer.addWidget(self.title_label)
+
+        self.nav = QListWidget()
+        self.nav.setObjectName("settingsNav")
+        self.nav.setFixedWidth(NAV_WIDTH)
+        self.sections = QStackedWidget()
+        self.section_widgets: dict[str, QWidget] = {}
+        for key, label, build in BUILDERS:
+            self.nav.addItem(label)
+            section = build(self)
+            self.section_widgets[key] = section
+            self.sections.addWidget(section)
+        self.nav.currentRowChanged.connect(self._on_section_row)
+
+        # A tall section (Ambienti) does not fit a 1366x768 laptop, where the
+        # page gets about 420 px: the sections scroll, the save bar does not.
         self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)  # the form keeps the full width
+        self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        form = QWidget()
-        self.scroll.setWidget(form)
-        outer.addWidget(self.scroll, 1)
+        self.scroll.setWidget(self.sections)
+        body = QHBoxLayout()
+        body.setSpacing(theme.SPACE[3])
+        body.addWidget(self.nav)
+        body.addWidget(self.scroll, 1)
+        outer.addLayout(body, 1)
 
-        layout = QVBoxLayout(form)
-        layout.setContentsMargins(0, 0, 0, 0)  # `outer` already inset the page
-        self.browse_mirror_button = _button(
-            strings.BTN_BROWSE, lambda: self._browse_folder(
-                self.mirror_edit, strings.SETTINGS_MIRROR_CAPTION)
-        )
-        self.open_mirror_button = _button(strings.BTN_OPEN, self._open_mirror)
-        self.mirror_edit = self._path_field(
-            layout, strings.SETTINGS_MIRROR_LABEL,
-            self.browse_mirror_button, self.open_mirror_button,
-        )
-
-        layout.addWidget(QLabel(strings.SETTINGS_ENVS_LABEL))
-        self.env_table = EnvTable()
-        self.env_table.changed.connect(self._on_edited)
-        layout.addWidget(self.env_table, 1)
-        self.add_button = _button(strings.BTN_ADD, self.env_table.add_row)
-        self.remove_button = _button(strings.BTN_REMOVE, self.env_table.remove_selected)
-        self.check_button = _button(strings.SETTINGS_BTN_CHECK, self._check_environments)
-        self.import_button = _button(strings.BTN_IMPORT_FILE, self._import_environments)
-        layout.addLayout(
-            _row(self.add_button, self.remove_button, self.check_button, self.import_button,
-                 stretch_at_end=True)
-        )
-        self.check_label = QLabel(strings.SETTINGS_CHECK_HINT)
-        self.check_label.setWordWrap(True)
-        layout.addWidget(self.check_label)
-
-        self.browse_editor_button = _button(strings.BTN_BROWSE, self._browse_editor)
-        self.detect_button = _button(strings.SETTINGS_BTN_DETECT, self._detect_editor)
-        self.editor_edit = self._path_field(
-            layout, strings.SETTINGS_EDITOR_LABEL,
-            self.browse_editor_button, self.detect_button,
-        )
-
-        layout.addWidget(QLabel(strings.SETTINGS_WINDOW_LABEL))
-        layout.addLayout(self._window_row())
-
-        self.browse_output_button = _button(
-            strings.BTN_BROWSE, lambda: self._browse_folder(
-                self.output_edit, strings.SETTINGS_OUTPUT_CAPTION)
-        )
-        self.output_edit = self._path_field(
-            layout, strings.SETTINGS_OUTPUT_LABEL, self.browse_output_button
-        )
-        self.output_edit.setPlaceholderText(strings.SETTINGS_OUTPUT_HINT)
-
-        layout.addWidget(_separator())
-        layout.addWidget(QLabel(strings.SETTINGS_SCHEDULE_LABEL))
-        layout.addLayout(self._schedule_row())
-        layout.addWidget(self.schedule_logon)
-        self.schedule_hint = QLabel(strings.SETTINGS_SCHEDULE_LOGON_HINT)
-        self.schedule_hint.setWordWrap(True)
-        layout.addWidget(self.schedule_hint)
-        self.schedule_summary = QLabel()
-        self.schedule_summary.setWordWrap(True)
-        layout.addWidget(self.schedule_summary)
-
-        layout.addWidget(_separator())
-        layout.addWidget(QLabel(strings.SETTINGS_ADVANCED_LABEL))
-        self.rebuild_button = _button(strings.SETTINGS_BTN_REBUILD, self._rebuild_index)
-        self.wizard_button = _button(strings.SETTINGS_BTN_RERUN_WIZARD, self._rerun_wizard)
-        layout.addLayout(_row(self.rebuild_button, self.wizard_button, stretch_at_end=True))
-        self.config_path_label = QLabel()
-        self.config_path_label.setWordWrap(True)
-        self.open_config_button = _button(strings.BTN_OPEN_FOLDER, self._open_config_folder)
-        layout.addLayout(_row(self.config_path_label, self.open_config_button))
-
-        # Pinned footer, outside the scroll area: the validation errors are
-        # about the save the user is attempting, so they belong next to it.
+        # Pinned under the sections: the errors are about the save the user is
+        # attempting, so they sit next to its button.
         self.errors_label = QLabel()
         self.errors_label.setWordWrap(True)
         self.errors_label.hide()
         outer.addWidget(self.errors_label)
+        outer.addWidget(self._save_bar())
+        self.nav.setCurrentRow(0)
 
-        self.cancel_button = _button(strings.BTN_CANCEL, self.reload)
-        self.save_button = _button(strings.BTN_SAVE, self.save)
-        self.save_button.setEnabled(False)
-        outer.addLayout(_row(self.cancel_button, self.save_button, stretch_at_start=True))
+    def _save_bar(self) -> QFrame:
+        self.save_bar = QFrame()
+        self.save_bar.setObjectName("settingsSaveBar")
+        self.save_bar_label = QLabel(strings.SETTINGS_UNSAVED)
+        self.cancel_button = button(strings.BTN_CANCEL, self.reload)
+        self.save_button = button(strings.BTN_SAVE, self.save)
+        theme.set_role(self.save_button, "primary")
+        layout = QHBoxLayout(self.save_bar)
+        layout.setContentsMargins(theme.SPACE[2], theme.SPACE[1], theme.SPACE[1], theme.SPACE[1])
+        layout.addWidget(self.save_bar_label)
+        layout.addStretch(1)
+        layout.addWidget(self.cancel_button)
+        layout.addWidget(self.save_button)
+        self.save_bar.hide()
+        return self.save_bar
 
-    def _path_field(self, layout: QVBoxLayout, label: str, *buttons: QPushButton) -> QLineEdit:
-        """A labelled path field with its buttons, already wired to dirty tracking."""
-        edit = QLineEdit()
-        edit.textChanged.connect(self._on_edited)
-        layout.addWidget(QLabel(label))
-        layout.addLayout(_row(edit, *buttons))
-        return edit
+    # -- sections ----------------------------------------------------------
 
-    def _schedule_row(self) -> QHBoxLayout:
-        """Ora di avvio · Riprova ogni N ore · per N ore, plus the logon box.
+    def show_section(self, key: str) -> None:
+        """Select a section by key ("appearance" … "advanced"); unknown keys are ignored."""
+        if key in SECTION_KEYS:
+            self.nav.setCurrentRow(SECTION_KEYS.index(key))
 
-        The widgets, not the validation, are what stops an impossible schedule:
-        the ranges here are the ones ``config.validate`` enforces, so the form
-        can never even offer a value the core would refuse.
-        """
-        self.schedule_start = QTimeEdit()
-        self.schedule_start.setDisplayFormat(TIME_FORMAT)
-        self.schedule_start.timeChanged.connect(self._on_edited)
+    def current_section(self) -> str:
+        return SECTION_KEYS[self.sections.currentIndex()]
 
-        self.schedule_every = _hours_spin(1, 12)
-        self.schedule_for = _hours_spin(0, 23, special=strings.SETTINGS_SCHEDULE_NO_REPEAT)
-        for spin in (self.schedule_every, self.schedule_for):
-            spin.valueChanged.connect(self._on_edited)
+    def _on_section_row(self, index: int) -> None:
+        if index < 0:
+            return
+        self.sections.setCurrentIndex(index)
+        # A QStackedWidget is as tall as its tallest page; with the others
+        # ignored, the scroll area follows the section on screen.
+        for position in range(self.sections.count()):
+            policy = (QSizePolicy.Policy.Preferred if position == index
+                      else QSizePolicy.Policy.Ignored)
+            self.sections.widget(position).setSizePolicy(policy, policy)
+        self.sections.adjustSize()
+        self.scroll.verticalScrollBar().setValue(0)
 
-        self.schedule_logon = QCheckBox(strings.SETTINGS_SCHEDULE_LOGON)
-        self.schedule_logon.toggled.connect(self._on_edited)
+    # -- Aspetto: the theme, outside the Save flow -------------------------
 
-        return _row(
-            QLabel(strings.SETTINGS_SCHEDULE_START), self.schedule_start,
-            QLabel(strings.SETTINGS_SCHEDULE_EVERY), self.schedule_every,
-            QLabel(strings.SETTINGS_SCHEDULE_FOR), self.schedule_for,
-            stretch_at_end=True,
-        )
+    def set_theme(self, mode: Mode) -> None:
+        """Remember ``mode`` and repaint the whole application with it, now."""
+        mode = Mode(mode)
+        self._show_theme(mode)
+        theme.save_mode(mode)
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply(app, mode)
 
-    def _window_row(self) -> QHBoxLayout:
-        self.window_buttons: dict[int, QPushButton] = {}
-        group = QButtonGroup(self)
-        group.setExclusive(True)
-        for days in WINDOW_CHOICES:
-            button = QPushButton(strings.SETTINGS_WINDOW_DAYS.format(days=days))
-            button.setCheckable(True)
-            button.clicked.connect(lambda _checked=False, d=days: self.set_window_days(d))
-            group.addButton(button)
-            self.window_buttons[days] = button
-        return _row(*self.window_buttons.values(), stretch_at_end=True)
+    def _show_theme(self, mode: Mode) -> None:
+        for value, segment in self.theme_buttons.items():
+            segment.setChecked(value is mode)
 
     # -- form state --------------------------------------------------------
 
     def form_values(self) -> FormValues:
-        """The three path fields go through ``normalised`` so that re-picking
-        the folder that is already configured is not an edit (Qt's dialogs hand
+        """The path fields go through ``normalised`` so that re-picking the
+        folder that is already configured is not an edit (Qt's dialogs hand
         back forward slashes, ``str(Path(...))`` hands back Windows ones)."""
         return FormValues(
-            mirror_root=normalised(self.mirror_edit.text()),
+            mirror_root=normalised(self.mirror_path.text()),
             environments=self.env_table.environments(),
-            editor_path=normalised(self.editor_edit.text()),
+            editor_path=normalised(self.editor_path.text()),
             window_days=self._window_days,
-            output_dir=normalised(self.output_edit.text()),
+            output_dir=normalised(self.output_path.text()),
             schedule=self.schedule_values(),
         )
+
+    def pref_values(self) -> PrefValues:
+        return PrefValues(group_by_fdi=self.group_by_fdi.isChecked(), key_mode=self._key_mode)
 
     def schedule_values(self) -> ScheduleSettings:
         """The four automatic-synchronisation widgets as the core's own block."""
@@ -251,7 +217,7 @@ class SettingsPage(QWidget):
         )
 
     def is_dirty(self) -> bool:
-        return self._presenter.is_dirty(self.form_values())
+        return self._presenter.is_dirty(self.form_values()) or self.pref_values() != self._prefs
 
     def window_days(self) -> int:
         return self._window_days
@@ -259,25 +225,36 @@ class SettingsPage(QWidget):
     def set_window_days(self, days: int) -> None:
         """Also used by the buttons; an unlisted value simply checks nothing."""
         self._window_days = days
-        for value, button in self.window_buttons.items():
-            button.setChecked(value == days)
-        self._on_edited()
+        for value, segment in self.window_buttons.items():
+            segment.setChecked(value == days)
+        self.on_edited()
+
+    def key_mode(self) -> str:
+        return self._key_mode
+
+    def set_key_mode(self, mode: str) -> None:
+        self._key_mode = mode
+        for value, segment in self.key_mode_buttons.items():
+            segment.setChecked(value == mode)
+        self.on_edited()
 
     def reload(self) -> None:
         """[Annulla], and what follows every successful save."""
-        cfg = self._presenter.load()
-        form = form_of(cfg)
-        self.mirror_edit.setText(form.mirror_root)
+        form = form_of(self._presenter.load())
+        self._prefs = load_prefs()
+        self.mirror_path.setText(form.mirror_root)
         self.env_table.set_environments(form.environments)
-        self.editor_edit.setText(form.editor_path)
-        self.output_edit.setText(form.output_dir)
+        self.editor_path.setText(form.editor_path)
+        self.output_path.setText(form.output_dir)
         self.set_schedule(form.schedule)
         self.set_window_days(form.window_days)
-        self.config_path_label.setText(
-            strings.SETTINGS_CONFIG_PATH.format(path=self._services.config.config_path())
-        )
+        self.group_by_fdi.setChecked(self._prefs.group_by_fdi)
+        self.set_key_mode(self._prefs.key_mode)
+        self._show_theme(theme.saved_mode())
+        self.config_path_label.set_full_text(str(self._services.config.config_path()))
         self._show_errors([])
-        self._on_edited()
+        self._refresh_index_state()
+        self.on_edited()
 
     def set_schedule(self, schedule: ScheduleSettings) -> None:
         """Load the four fields; an unparsable stored time shows the default.
@@ -295,30 +272,74 @@ class SettingsPage(QWidget):
         self.schedule_for.setValue(schedule.repeat_for_h)
         self.schedule_logon.setChecked(schedule.run_at_logon)
 
-    def _on_edited(self) -> None:
+    def on_edited(self, *_args: object) -> None:
+        """Any widget changed: refresh the summary and the save bar."""
         self.schedule_summary.setText(
             strings.SETTINGS_SCHEDULE_SUMMARY.format(
                 schedule=schedule_sentence(self.schedule_values())
             )
         )
-        self.save_button.setEnabled(self.is_dirty())
+        self.output_default_button.setVisible(bool(self.output_path.text()))
+        dirty = self.is_dirty()
+        self.save_bar.setVisible(dirty)
+        self.save_button.setEnabled(dirty)
+
+    def on_data_changed(self) -> None:
+        """A sync or an index job finished (``MainWindow`` hook)."""
+        self._refresh_index_state()
+
+    def _refresh_index_state(self) -> None:
+        coverages = [self._services.index.coverage(env.name)
+                     for env in self._presenter.loaded.enabled_environments()]
+        coverages = [c for c in coverages if c is not None]
+        if not coverages:
+            self.index_label.setText(strings.SETTINGS_INDEX_EMPTY)
+            return
+        self.index_label.setText(strings.SETTINGS_INDEX_STATE.format(
+            files=_count(sum(c.n_files for c in coverages)),
+            entries=_count(sum(c.n_entries for c in coverages)),
+            last=max(c.last_day for c in coverages).strftime("%d/%m/%Y"),
+        ))
+
+    # -- leaving -----------------------------------------------------------
+
+    def can_leave(self) -> bool:
+        """``MainWindow`` asks before switching away: Salva / Scarta / Annulla."""
+        if not self.is_dirty():
+            return True
+        answer = ask_leave(self)
+        if answer == "save":
+            return self.save()
+        if answer == "discard":
+            self.reload()
+            return True
+        return False
 
     # -- saving ------------------------------------------------------------
 
-    def save(self) -> None:
+    def save(self) -> bool:
+        """Write what changed; False (and the errors shown) when nothing could be."""
+        if not self.is_dirty():
+            return True
         form = self.form_values()
-        moved = self._presenter.mirror_moved(form)
-        errors = self._presenter.save(form)
-        self._show_errors(errors)
-        if errors:
-            return
+        config_dirty = self._presenter.is_dirty(form)
+        moved = config_dirty and self._presenter.mirror_moved(form)
+        if config_dirty:
+            errors = self._presenter.save(form)
+            self._show_errors(errors)
+            if errors:
+                return False
+        if self.pref_values() != self._prefs:
+            save_prefs(self.pref_values())
         self.reload()  # the saved configuration, normalised, is the new baseline
-        self._status(strings.SETTINGS_SAVED)
-        self._update_scheduled_task()
+        self._notify(strings.SETTINGS_SAVED)
+        if config_dirty:
+            self.update_scheduled_task()
         if moved:
             self._offer_reindex()
+        return True
 
-    def _update_scheduled_task(self) -> None:
+    def update_scheduled_task(self) -> None:
         """Re-register an existing task so it runs on the schedule just saved.
 
         Saving a schedule that never reaches Task Scheduler is the one failure
@@ -327,207 +348,40 @@ class SettingsPage(QWidget):
         the Sincronizzazione page is what creates it, and it will read the
         saved values when it does.
 
-        ``schtasks`` is a subprocess call, so it goes through the runner, and a
-        failure is a status line: a modal over a save that *did* succeed would
-        say the wrong thing.
+        ``schtasks`` is a subprocess call, so it goes through the runner. A
+        failure — or a refusal because the Sincronizzazione page is driving
+        schtasks right now — is a persistent banner with [Riprova] in the
+        Sincronizzazione automatica section: a modal over a save that *did*
+        succeed would say the wrong thing, and a status line goes away.
         """
+        self.schedule_banner.hide()
         if not self._services.scheduler.status().registered:
             return
         job = self._runner.submit(SCHEDULER_JOB, self._services.scheduler.register)
-        if job is None:  # closing, or the Sincronizzazione page is driving schtasks
-            return
+        if job is None:
+            if self._runner.is_running(SCHEDULER_JOB):
+                self._on_schedule_failed("", strings.SETTINGS_SCHEDULE_BUSY)
+            return  # otherwise the application is closing
         self.scheduler_job = job
-        job.signals.error.connect(
-            lambda _kind, message: self._status(
-                strings.SETTINGS_SCHEDULE_UPDATE_FAILED.format(message=message)
-            )
-        )
+        job.signals.error.connect(self._on_schedule_failed)
 
-    def _show_errors(self, errors: Sequence[str]) -> None:
+    def _on_schedule_failed(self, _kind: str, message: str) -> None:
+        self.schedule_banner_label.setText(
+            strings.SETTINGS_SCHEDULE_UPDATE_FAILED.format(message=message))
+        self.schedule_banner.show()
+
+    def _show_errors(self, errors: list[str]) -> None:
         if not errors:
             self.errors_label.clear()
             self.errors_label.hide()
             return
         self.errors_label.setText(
-            "\n".join(
-                [strings.SETTINGS_ERRORS_TITLE,
-                 *(strings.SETTINGS_ERROR_BULLET + e for e in errors)]
-            )
+            "\n".join([strings.SETTINGS_ERRORS_TITLE,
+                       *(strings.SETTINGS_ERROR_BULLET + e for e in errors)])
         )
         self.errors_label.show()
 
-    def _offer_reindex(self) -> None:
-        answer = QMessageBox.question(
-            self, strings.SETTINGS_REINDEX_TITLE, strings.SETTINGS_REINDEX_QUESTION
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._start_index(full_rebuild=False)
 
-    # -- jobs --------------------------------------------------------------
-
-    def _rebuild_index(self) -> None:
-        answer = QMessageBox.question(
-            self, strings.SETTINGS_REBUILD_TITLE, strings.SETTINGS_REBUILD_QUESTION
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._start_index(full_rebuild=True)
-
-    def _start_index(self, *, full_rebuild: bool) -> None:
-        envs = [e.name for e in self._presenter.loaded.enabled_environments()]
-        job = self._runner.submit(
-            INDEX_JOB, self._services.index.update, envs, full_rebuild=full_rebuild
-        )
-        if job is None:  # already running, or the application is closing
-            return
-        job.signals.result.connect(self._on_index_done)
-        job.signals.error.connect(
-            lambda _kind, message: self._status(
-                strings.SETTINGS_INDEX_FAILED.format(message=message)
-            )
-        )
-        self._status(strings.SETTINGS_INDEX_STARTED)
-
-    def _on_index_done(self, report: object) -> None:
-        self._status(
-            strings.SETTINGS_INDEX_DONE.format(n=getattr(report, "indexed_files", 0))
-        )
-
-    def _check_environments(self) -> None:
-        # The rows as they are on screen, URLs included: a URL corrected but not
-        # yet saved is exactly the one worth probing.
-        envs = [e for e in self.env_table.environments() if e.name]
-        if not envs:
-            self.check_label.setText(strings.SETTINGS_CHECK_NONE)
-            return
-        job = self._runner.submit(CHECK_JOB, check_reachable, self._services.sync, tuple(envs))
-        if job is None:  # the application is closing: no job, so no "in corso…"
-            return
-        self.check_label.setText(strings.SETTINGS_CHECK_RUNNING)
-        job.signals.result.connect(self._on_checked)
-        # Without this the label would sit on "Verifica in corso…" for ever if
-        # a probe raised something `check_reachable` does not swallow.
-        job.signals.error.connect(
-            lambda _kind, message: self.check_label.setText(
-                strings.SETTINGS_CHECK_FAILED.format(message=message)
-            )
-        )
-
-    def _on_checked(self, results: object) -> None:
-        parts = [
-            (strings.SETTINGS_CHECK_REACHABLE if ok else strings.SETTINGS_CHECK_UNREACHABLE)
-            .format(name=name)
-            for name, ok in results or ()
-        ]
-        self.check_label.setText(
-            strings.SETTINGS_CHECK_SEPARATOR.join(parts) or strings.SETTINGS_CHECK_NONE
-        )
-
-    # -- dialogs and folders -----------------------------------------------
-
-    def _browse_folder(self, edit: QLineEdit, caption: str) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, caption, edit.text())
-        if chosen:  # empty means the user cancelled: leave the field alone
-            edit.setText(chosen)
-
-    def _browse_editor(self) -> None:
-        chosen, _filter = QFileDialog.getOpenFileName(
-            self, strings.SETTINGS_EDITOR_CAPTION, self.editor_edit.text(),
-            strings.SETTINGS_EDITOR_FILTER,
-        )
-        if chosen:
-            self.editor_edit.setText(chosen)
-
-    def _detect_editor(self) -> None:
-        found = self._services.config.detect_editor()
-        if found is None:
-            self._status(strings.SETTINGS_EDITOR_NOT_FOUND)
-            return
-        self.editor_edit.setText(str(found))
-        self._status(strings.SETTINGS_EDITOR_FOUND.format(path=found))
-
-    def _import_environments(self) -> None:
-        chosen, _filter = QFileDialog.getOpenFileName(
-            self, strings.ENV_IMPORT_CAPTION, "", strings.ENV_IMPORT_FILTER
-        )
-        if not chosen:
-            return
-        try:
-            self.env_table.import_from_file(
-                Path(chosen), self._services.config.import_environments_file
-            )
-        except ValueError as exc:
-            QMessageBox.warning(
-                self, strings.ENV_IMPORT_ERROR_TITLE,
-                strings.ENV_IMPORT_ERROR.format(error=exc),
-            )
-
-    def _open_mirror(self) -> None:
-        text = self.mirror_edit.text().strip()
-        if text:
-            self._services.extract.open_folder(Path(text))
-
-    def _open_config_folder(self) -> None:
-        self._services.extract.open_folder(self._services.config.config_path().parent)
-
-    def _rerun_wizard(self) -> None:
-        hook = getattr(self._window, "rerun_wizard", None)
-        if not callable(hook):
-            return
-        hook()
-        # The wizard writes the configuration itself; reload only when it did,
-        # so a cancelled wizard does not throw away what is in the form.
-        if self._services.config.load() != self._presenter.loaded:
-            self.reload()
-
-    def _status(self, text: str) -> None:
-        setter = getattr(self._window, "set_status", None)
-        if callable(setter):
-            setter(text)
-
-
-# -- small layout helpers ----------------------------------------------------
-
-def _button(text: str, slot: Callable[[], object]) -> QPushButton:
-    """``clicked`` carries a ``checked`` flag no slot here wants."""
-    button = QPushButton(text)
-    button.clicked.connect(lambda _checked=False: slot())
-    return button
-
-
-def _hours_spin(minimum: int, maximum: int, *, special: str | None = None) -> QSpinBox:
-    """A whole-hours box whose suffix follows the number ("1 ora", "2 ore").
-
-    ``special`` is shown instead of the minimum value, which is how the retry
-    window says "nessuna ripetizione" rather than a bare 0.
-    """
-    spin = QSpinBox()
-    spin.setRange(minimum, maximum)
-    if special is not None:
-        spin.setSpecialValueText(special)
-
-    def follow(value: int) -> None:
-        spin.setSuffix(strings.SETTINGS_SCHEDULE_HOUR_ONE if value == 1
-                       else strings.SETTINGS_SCHEDULE_HOURS)
-
-    spin.valueChanged.connect(follow)
-    follow(spin.value())
-    return spin
-
-
-def _row(*widgets: QWidget, stretch_at_end: bool = False,
-         stretch_at_start: bool = False) -> QHBoxLayout:
-    row = QHBoxLayout()
-    if stretch_at_start:
-        row.addStretch(1)
-    for widget in widgets:
-        row.addWidget(widget)
-    if stretch_at_end:
-        row.addStretch(1)
-    return row
-
-
-def _separator() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setFrameShadow(QFrame.Shadow.Sunken)
-    return line
+def _count(n: int) -> str:
+    """Thousands with the Italian dot: 3.412."""
+    return f"{n:,}".replace(",", ".")

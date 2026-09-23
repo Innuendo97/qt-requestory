@@ -53,6 +53,23 @@ class ConfigError(Exception):
     """Unrecoverable configuration problem (e.g. no migration path)."""
 
 
+class UnknownEnvironment(ValueError):
+    """A name ``Config.environments`` does not contain.
+
+    Raised by :meth:`Config.require_env` — used by ``SyncEngine.run`` and the
+    CLI's ``--find`` — instead of the bare ``KeyError`` that :meth:`Config.env`
+    still raises for callers that already have their own "unknown key"
+    handling. The message names the typo AND what IS configured, so a
+    misspelled ``-e colll`` is not confused with an environment that is
+    correctly named but simply has not been synced yet.
+    """
+
+    def __init__(self, name: str, known: Iterable[str]) -> None:
+        self.name = name
+        self.known = sorted(known)
+        super().__init__(f"ambiente sconosciuto: '{name}' (configurati: {', '.join(self.known)})")
+
+
 # ------------------------------------------------------------------ model ---
 
 
@@ -138,6 +155,14 @@ class Config:
                 return e
         raise KeyError(name)
 
+    def require_env(self, name: str) -> Environment:
+        """``env(name)``, but as :class:`UnknownEnvironment` instead of a bare
+        ``KeyError`` — see its docstring for why the two need to differ."""
+        try:
+            return self.env(name)
+        except KeyError:
+            raise UnknownEnvironment(name, [e.name for e in self.environments]) from None
+
     def enabled_environments(self) -> list[Environment]:
         return [e for e in self.environments if e.enabled]
 
@@ -195,6 +220,29 @@ def _optional_path(value: Any, key: str) -> Path | None:
     return Path(value)
 
 
+def _mirror_root_from_raw(raw: dict, default: Path) -> Path:
+    """Unlike :func:`_optional_path`, a *present but empty* string is kept, not
+    replaced by the default.
+
+    Silently falling back here is exactly Minor M3: a ``config.json`` hand-
+    edited (or half-written by a crashed save) down to ``"mirror_root": ""``
+    used to resolve straight to ``%USERPROFILE%\\qtRequestory\\logs`` without a
+    word — which, once, was the live installed mirror. Keeping the empty value
+    lets ``validate`` report it and the CLI's headless modes refuse to run
+    against it instead. Only a missing key (the field was never written, e.g.
+    a config from before this field existed) or the wrong JSON type still
+    default: those are not "the user emptied it", they are "there was nothing
+    here to begin with".
+    """
+    value = raw.get("mirror_root")
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        log.warning("config: valore non valido per mirror_root (%r), atteso un percorso", value)
+        return default
+    return Path(value)
+
+
 def parse_hhmm(value: str) -> time | None:
     """``"09:00"`` -> ``time(9, 0)``; ``None`` when it is not a wall clock time.
 
@@ -235,7 +283,11 @@ def _coerce(value: Any, fallback: T, key: str) -> T:
     if kind is int:
         try:
             return kind(value)  # type: ignore[call-arg]
-        except (TypeError, ValueError):
+        # A hand-edited ``1e999`` (or the literal ``Infinity``) parses as
+        # ``float("inf")`` — valid JSON as far as ``json.loads`` is concerned —
+        # and ``int(inf)`` raises OverflowError, not ValueError: without this
+        # the app never got past loading the file.
+        except (TypeError, ValueError, OverflowError):
             pass
     log.warning("config: valore non valido per %s (%r), uso il predefinito %r", key, value, fallback)
     return fallback
@@ -284,7 +336,7 @@ def _from_raw(raw: dict[str, Any]) -> Config:
     _warn_unknown(raw, [f.name for f in dataclasses.fields(Config)], "config.json")
     return Config(
         schema_version=_coerce(raw.get("schema_version"), d.schema_version, "schema_version"),
-        mirror_root=_optional_path(raw.get("mirror_root"), "mirror_root") or d.mirror_root,
+        mirror_root=_mirror_root_from_raw(raw, d.mirror_root),
         environments=_environments_from_raw(raw.get("environments")),
         default_window_days=_coerce(raw.get("default_window_days"), d.default_window_days, "default_window_days"),
         editor_path=_optional_path(raw.get("editor_path"), "editor_path"),
@@ -411,8 +463,22 @@ def load_config(path: Path) -> Config:
 # ------------------------------------------------------------- validation ---
 
 
+def mirror_root_errors(cfg: Config) -> list[str]:
+    """Just the ``mirror_root`` problems, not the full :func:`validate`.
+
+    For callers that only depend on this one field and must not refuse to run
+    over something the current operation never touches — the CLI's pre-run
+    gate for ``--sync``/``--index``/``--find``: those need a real mirror
+    folder, but not a valid ``log_level`` or a well-formed schedule, which
+    used to fall back silently and never stopped a sync before this task, and
+    must still not (Important finding, fix round 1).
+    """
+    return _mirror_root_errors(cfg.mirror_root)
+
+
 def validate(cfg: Config) -> list[str]:
     errors: list[str] = []
+    errors.extend(mirror_root_errors(cfg))
     seen: set[str] = set()
     for e in cfg.environments:
         if not ENV_NAME_RE.match(e.name):
@@ -438,6 +504,24 @@ def validate(cfg: Config) -> list[str]:
         errors.append(bad_level)
     errors.extend(_schedule_errors(cfg.schedule))
     return errors
+
+
+def _mirror_root_errors(mirror_root: Path) -> list[str]:
+    """Not this function's job to decide WHAT the folder should be — only that
+    it is a real, absolute one. ``Path("")`` (an emptied field, see
+    ``_mirror_root_from_raw``) normalises to ``Path(".")``, which is why both
+    are treated as "not set" rather than "a relative path" — pathlib has
+    already erased the difference by the time this runs.
+    """
+    if mirror_root.is_absolute():
+        return []
+    text = str(mirror_root)
+    if text in ("", "."):
+        return ["La cartella dei log non è impostata"]
+    return [
+        "La cartella dei log deve essere un percorso completo, per esempio "
+        f"C:\\Users\\<utente>\\qtRequestory\\logs (trovato '{text}')"
+    ]
 
 
 def _schedule_errors(schedule: ScheduleSettings) -> list[str]:

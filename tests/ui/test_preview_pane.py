@@ -18,12 +18,13 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication, QShortcut, QTextCursor
+from PySide6.QtGui import QFont, QGuiApplication, QShortcut, QTextCursor
 from PySide6.QtWidgets import QFileDialog
 
 from qtrequestory.ui import actions, strings
 from qtrequestory.ui.contracts import SearchHit
-from qtrequestory.ui.pages.preview_pane import MAX_LINES, PreviewPane
+from qtrequestory.ui.pages import sync_format
+from qtrequestory.ui.pages.preview_pane import MAX_LINES, TAB_DETAILS, TAB_JSON, PreviewPane
 
 BODY_PREFIX = '{\n    "documents": [\n'
 
@@ -85,7 +86,7 @@ def test_set_hit_shows_the_pure_pretty_json_body(qtbot, pane, hit, fake_core):
 
 def test_the_header_names_the_file_the_actions_will_produce(qtbot, pane, hit, fake_core):
     show(qtbot, pane, hit)
-    assert pane.name_label.text() == fake_core.extract.output_name(hit)
+    assert pane.name_label.full_text() == fake_core.extract.output_name(hit)
 
 
 def test_the_actions_are_disabled_until_a_body_has_arrived(pane, hit):
@@ -109,7 +110,7 @@ def test_set_hit_none_shows_the_empty_state(qtbot, pane, hit):
     assert pane.body_text() == ""
     assert pane.editor.toPlainText() == ""
     assert pane.editor.placeholderText() == strings.PREVIEW_EMPTY
-    assert pane.name_label.text() == ""
+    assert pane.name_label.full_text() == ""
     assert not pane.copy_button.isEnabled()
     assert not pane.footer.isVisibleTo(pane)
 
@@ -175,7 +176,7 @@ def test_copy_reports_the_size_in_the_status_bar(qtbot, pane, hit, status_messag
     pane.copy_body()
 
     assert status_messages, "the user must be told the copy happened"
-    assert status_messages[-1].startswith(strings.PREVIEW_STATUS_COPIED.split("{")[0])
+    assert status_messages[-1].startswith(strings.PREVIEW_TOAST_COPIED.split("{")[0])
 
 
 def test_open_in_editor_writes_the_temp_file_and_hands_it_to_the_opener(
@@ -267,7 +268,7 @@ def test_a_superseded_preview_never_overwrites_the_newer_one(
     qtbot.waitUntil(lambda: pane.body_text() != "", timeout=5000)
     expected = fake_core.extract.pretty_json(fake_core.index.read_body(other_hit))
     assert pane.body_text() == expected
-    assert pane.name_label.text() == fake_core.extract.output_name(other_hit)
+    assert pane.name_label.full_text() == fake_core.extract.output_name(other_hit)
 
     qtbot.wait(150)  # give a late first result every chance to arrive
     assert pane.body_text() == expected
@@ -302,12 +303,16 @@ def test_a_body_that_cannot_be_read_reports_instead_of_showing_half_a_json(
 
 # --------------------------------------------------------------- keyboard ----
 
-def test_the_pane_binds_the_documented_shortcuts(pane):
+def test_the_pane_binds_only_its_own_shortcuts(pane):
+    """Ctrl+S / Ctrl+O / Ctrl+Shift+O belong to the Ricerca page, which must
+    serve them from the results table too; a second binding here would be
+    ambiguous and Qt would fire neither (tests/ui/test_integration_shell.py)."""
     bound = {shortcut.key().toString() for shortcut in pane.findChildren(QShortcut)}
-    assert {"Ctrl+S", "Ctrl+O", "Ctrl+Shift+O", "Ctrl+F"} <= bound
+    assert "Ctrl+F" in bound
+    assert not {"Ctrl+S", "Ctrl+O", "Ctrl+Shift+O"} & bound
     assert "Ctrl+C" not in bound, (
         "Ctrl+C is the body editor's own key handling, so it cannot swallow "
-        "the find field's copy — see _BodyEdit"
+        "the find field's copy — see preview_body.BodyEdit"
     )
 
 
@@ -477,3 +482,198 @@ def test_open_output_folder_does_not_overwrite_a_file_of_its_own_name(fake_core,
 def test_open_hit_in_editor_returns_what_the_opener_reports(fake_core, hit):
     text = fake_core.extract.pretty_json(fake_core.index.read_body(hit))
     assert actions.open_hit_in_editor(fake_core, hit, text) == "default"
+
+
+# ------------------------------------------------- header, tabs, Dettagli ---
+
+class Host:
+    """What the pane uses of the Ricerca page."""
+
+    def __init__(self):
+        self.toasts, self.statuses, self.copied, self.searches = [], [], [], []
+
+    def show_toast(self, text, tone="neutral"):
+        self.toasts.append((text, tone))
+
+    def set_status(self, text):
+        self.statuses.append(text)
+
+    def copy_value(self, text, message):
+        self.copied.append((text, message))
+
+    def search_only(self, fdi, key):
+        self.searches.append((fdi, key))
+
+
+@pytest.fixture
+def host() -> Host:
+    return Host()
+
+
+@pytest.fixture
+def hosted(qtbot, fake_core, runner, host) -> PreviewPane:
+    widget = PreviewPane(fake_core, runner, host)
+    qtbot.addWidget(widget)
+    widget.resize(700, 600)
+    widget.show()
+    return widget
+
+
+def test_the_file_name_is_mono_semibold_elided_in_the_middle(qtbot, hosted, hit, fake_core):
+    show(qtbot, hosted, hit)
+    name = fake_core.extract.output_name(hit)
+    label = hosted.name_label
+    assert label.full_text() == name
+    assert label.toolTip() == strings.PREVIEW_NAME_TOOLTIP.format(name=name)
+    assert label.font().families()[:2] == ["Cascadia Mono", "Consolas"]
+    assert label.font().weight() == QFont.Weight.DemiBold
+    hosted.resize(260, 600)
+    qtbot.waitUntil(lambda: label.text() != name, timeout=2000)
+    assert "…" in label.text()
+    assert label.text()[:4] == name[:4] and label.text()[-5:] == name[-5:]
+
+
+def test_the_file_name_can_be_copied_from_its_context_menu(qtbot, hosted, hit, host, fake_core):
+    show(qtbot, hosted, hit)
+    assert hosted.name_label.actions() == [hosted.copy_name_action]
+    assert hosted.copy_name_action.text() == strings.PREVIEW_MENU_COPY_NAME
+    hosted.copy_name_action.trigger()
+    assert QGuiApplication.clipboard().text() == fake_core.extract.output_name(hit)
+
+
+@pytest.mark.parametrize("editor, label", [
+    (None, strings.PREVIEW_BTN_OPEN_DEFAULT),
+    (Path("C:/Programmi/Notepad++/notepad++.exe"), strings.PREVIEW_BTN_OPEN_EDITOR),
+    (Path("C:/Editor/code.exe"), strings.PREVIEW_BTN_OPEN_DEFAULT),
+])
+def test_the_primary_button_names_the_editor_that_will_open(qtbot, fake_core, runner, editor,
+                                                            label):
+    fake_core.config.editor = editor
+    widget = PreviewPane(fake_core, runner)
+    qtbot.addWidget(widget)
+    assert widget.open_button.text() == label
+    assert widget.open_button.property("role") == "primary"
+
+
+def test_the_secondary_actions_are_icon_buttons_with_their_shortcut(hosted):
+    for button, name, shortcut in ((hosted.copy_button, "copy", "Ctrl+C"),
+                                   (hosted.save_button, "save", "Ctrl+S"),
+                                   (hosted.folder_button, "folder-open", "Ctrl+Shift+O")):
+        assert button.text() == ""
+        assert not button.icon().isNull()
+        assert button.property("iconName") == name
+        assert button.property("role") == "icon"
+        assert shortcut in button.toolTip()
+    assert strings.SEARCH_MENU_COPY_JSON in hosted.copy_button.toolTip()
+
+
+def test_the_tabs_switch_between_the_body_and_the_details(qtbot, hosted, hit):
+    show(qtbot, hosted, hit)
+    assert hosted.current_tab() == TAB_JSON
+    hosted.tabs.button(TAB_DETAILS).click()
+    assert hosted.current_tab() == TAB_DETAILS
+    assert hosted.details.isVisible() and not hosted.editor.isVisible()
+    hosted.show_find()
+    assert hosted.current_tab() == TAB_JSON, "Ctrl+F finds in the body"
+
+
+def test_the_details_tab_lists_the_call(qtbot, hosted, hit):
+    show(qtbot, hosted, hit)
+    details = hosted.details
+    assert details.value("env") == hit.env
+    assert details.value("day") == f"{hit.day:%d/%m/%Y}"
+    assert details.value("log") == str(hit.file_path)
+    assert details.value("fdi") == hit.fdi
+    assert details.value("key") == hit.template_key
+    assert details.value("name") == hit.name
+    assert details.value("ndocs") == str(hit.ndocs)
+    assert details.values["fdi"].font().families()[:2] == ["Cascadia Mono", "Consolas"]
+
+
+def test_the_details_actions_reach_the_page(qtbot, hosted, hit, host, fake_core):
+    show(qtbot, hosted, hit)
+    details = hosted.details
+    details.copy_fdi_button.click()
+    details.only_key_button.click()
+    details.only_fdi_button.click()
+    details.open_log_button.click()
+    assert host.copied == [(hit.fdi, strings.SEARCH_STATUS_COPIED_FDI)]
+    assert host.searches == [(None, hit.template_key), (hit.fdi, None)]
+    assert fake_core.extract.folders == [hit.file_path.parent]
+
+
+def test_copy_and_save_confirm_with_toasts(qtbot, hosted, hit, host, monkeypatch, tmp_path):
+    full = show(qtbot, hosted, hit)
+    hosted.copy_body()
+    size = sync_format.format_size(len(full.encode("utf-8")))
+    assert host.toasts[-1] == (strings.PREVIEW_TOAST_COPIED.format(size=size), "ok")
+    target = tmp_path / "scelto.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(target), "")))
+    hosted.save_as()
+    assert host.toasts[-1] == (strings.PREVIEW_TOAST_SAVED.format(name="scelto.json"), "ok")
+    hosted.open_folder()
+    assert host.statuses[-1].startswith(strings.PREVIEW_STATUS_FOLDER.split("{")[0])
+
+
+def test_find_reports_a_match_beyond_the_cap(qtbot, pane, hit, fake_core, status_messages):
+    documents = [{"n": i} for i in range(1500)] + [{"segreto": "ago-nel-pagliaio"}]
+    fake_core.index.bodies[hit.entry_id] = json.dumps({"documents": documents}).encode("utf-8")
+    show(qtbot, pane, hit)
+    pane.show_find()
+    pane.find_edit.setText("ago-nel-pagliaio")
+    before = pane.editor.textCursor().position()
+    assert pane.find_next() is True
+    assert status_messages[-1] == strings.PREVIEW_FIND_BEYOND.format(shown="4.000")
+    assert pane.editor.textCursor().position() == before
+
+
+def test_find_is_case_insensitive_and_walks_backwards(qtbot, pane, hit):
+    show(qtbot, pane, hit)
+    pane.show_find()
+    pane.find_edit.setText("TEMPLATEKEY")
+    assert pane.find_next()
+    first = pane.editor.textCursor().selectionStart()
+    assert pane.editor.textCursor().selectedText() == "templateKey"
+    assert pane.find_next()
+    assert pane.editor.textCursor().selectionStart() > first
+    assert pane.find_previous()
+    assert pane.editor.textCursor().selectionStart() == first
+
+
+def test_open_folder_twice_reuses_the_identical_file(qtbot, pane, hit, fake_core):
+    show(qtbot, pane, hit)
+    pane.open_folder()
+    pane.open_folder()
+    files = list(fake_core.extract.output_dir().glob("*.json"))
+    assert [f.name for f in files] == [fake_core.extract.output_name(hit)]
+
+
+def test_long_values_never_widen_the_pane(qtbot, hosted, hit):
+    """A mirror path or an entry name has no space to wrap at: shown in the
+    Dettagli tab it used to push the splitter and clip the results."""
+    hosted.show_tab(TAB_DETAILS)
+    short = dataclasses.replace(hit, name="x", file_path=Path("x.txt"))
+    long = dataclasses.replace(hit, name="n" * 300, file_path=Path("C:/" + "cartella/" * 40))
+    hosted.details.set_hit(short)
+    narrow = hosted.minimumSizeHint().width()
+    hosted.details.set_hit(long)
+    assert hosted.minimumSizeHint().width() == narrow
+    assert hosted.details.values["log"].toolTip() == str(long.file_path)
+
+
+@pytest.mark.parametrize("editor, message", [
+    (Path("C:/Programmi/Notepad++/notepad++.exe"), strings.PREVIEW_STATUS_OPENED_EDITOR),
+    (Path("C:/Editor/code.exe"), strings.PREVIEW_STATUS_OPENED_OTHER),
+])
+def test_the_open_confirmation_names_the_editor_that_opened(qtbot, pane, hit, fake_core,
+                                                            status_messages, editor, message):
+    """"Aperto in Notepad++" only when Notepad++ is what opened the file."""
+    fake_core.config.editor = editor
+    fake_core.extract.editor = editor
+    pane.refresh_editor_label()
+    show(qtbot, pane, hit)
+
+    pane.open_in_editor()
+
+    assert status_messages[-1] == message

@@ -9,14 +9,18 @@ assembled here by hand.
 
 Format decisions (they matter, a wrong container shows a blank icon):
 
-* 16/24/32/48 are stored as 32-bit BMP (BITMAPINFOHEADER + bottom-up BGRA rows
-  + an all-zero AND mask). This is what every Windows shell since XP reads
+* every size up to 64 is stored as 32-bit BMP (BITMAPINFOHEADER + bottom-up
+  BGRA rows + an all-zero AND mask). This is what every Windows shell since XP reads
   without hesitation.
 * 256 is stored as a PNG stream. A 256x256 BMP entry would add ~256 KB and
   Vista+ expects PNG at that size anyway.
 
-Run it only when ``app.svg`` changes; the produced ``app.ico`` is committed so
-that a plain ``pyinstaller qtRequestory.spec`` needs no Qt-based pre-step.
+The 16 px entry comes from the hand-tuned ``app-16.svg`` (the full design turns
+into a blur at that size); every other size is rendered from ``app.svg``.
+
+Run it only when ``app.svg`` or ``app-16.svg`` changes; the produced ``app.ico``
+is committed so that a plain ``pyinstaller qtRequestory.spec`` needs no
+Qt-based pre-step.
 
     .venv\\Scripts\\python.exe scripts\\make_icon.py
 """
@@ -30,16 +34,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ICON_DIR = ROOT / "src" / "qtrequestory" / "ui" / "icons"
 SVG = ICON_DIR / "app.svg"
+#: Hand-tuned small variant, used for every size up to SMALL_UP_TO.
+SMALL_SVG = ICON_DIR / "app-16.svg"
+SMALL_UP_TO = 16
 ICO = ICON_DIR / "app.ico"
 
-#: DESIGN-ui §Visual style: "exported .ico 16/24/32/48/256".
-SIZES = (16, 24, 32, 48, 256)
+#: 16/24/32/48/256 for the shell (DESIGN-ui §Visual style) plus 20/40/64, the
+#: small/large icon sizes Windows asks for at 125/150/200 % scaling. Same list as
+#: ``qtrequestory.ui.icons.APP_ICON_SIZES``.
+SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
 #: Below this the BMP container is used, at/above it the PNG one (see module docstring).
 PNG_FROM = 256
 
 
 def _render(size: int) -> "QImage":  # noqa: F821 - Qt is imported lazily in main()
-    """The SVG rasterised into a transparent ARGB32 image of ``size`` x ``size``."""
+    """The right SVG rasterised into a transparent ARGB32 ``size`` x ``size`` image."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
     from PySide6.QtSvg import QSvgRenderer
@@ -49,7 +58,7 @@ def _render(size: int) -> "QImage":  # noqa: F821 - Qt is imported lazily in mai
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    QSvgRenderer(str(SVG)).render(painter)
+    QSvgRenderer(str(SMALL_SVG if size <= SMALL_UP_TO else SVG)).render(painter)
     painter.end()
     return image
 

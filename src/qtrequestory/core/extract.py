@@ -54,8 +54,14 @@ def housekeeping(out_dir: Path, retention_hours: float) -> int:
     if not out_dir.is_dir():
         return 0
     cutoff = time.time() - retention_hours * 3600
+    try:
+        entries = list(out_dir.iterdir())
+    except OSError:
+        # Listed between the is_dir() above and now: permissions, a dropped
+        # network share. Housekeeping is best effort; the extraction goes on.
+        return 0
     removed = 0
-    for entry in out_dir.iterdir():
+    for entry in entries:
         try:
             if entry.is_file() and entry.stat().st_mtime < cutoff:
                 entry.unlink()

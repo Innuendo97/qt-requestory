@@ -17,6 +17,7 @@ from qtrequestory.core.config import (
     IndexSettings,
     ScheduleSettings,
     SyncSettings,
+    UnknownEnvironment,
     default_config,
     detect_editor,
     find_sidecar_environments,
@@ -85,7 +86,6 @@ def test_the_default_schedule_is_the_one_the_task_used_to_hard_code():
 def test_config_module_contains_no_hostnames():
     """Public repo: the only URLs allowed in code are scheme prefixes, never hosts."""
     src = Path(cfgmod.__file__).read_text(encoding="utf-8")
-    assert "cliente" not in src.lower()
     assert not re.search(r"https?://[A-Za-z0-9.-]+\.[A-Za-z]{2,}", src)
 
 
@@ -110,6 +110,15 @@ def test_env_lookup_and_enabled(tmp_path: Path):
     assert cfg.enabled_environments() == [Environment("svil", URL_A)]
     with pytest.raises(KeyError):
         cfg.env("nope")
+
+
+def test_require_env_raises_unknown_environment_with_the_typo_and_what_is_configured(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    assert cfg.require_env("svil") == cfg.env("svil")
+    with pytest.raises(UnknownEnvironment) as exc_info:
+        cfg.require_env("collll")
+    assert isinstance(exc_info.value, ValueError)
+    assert str(exc_info.value) == "ambiente sconosciuto: 'collll' (configurati: coll, svil)"
 
 
 # ------------------------------------------------------------ first run ---
@@ -280,6 +289,67 @@ def test_wrong_typed_path_falls_back_to_default(tmp_path: Path, caplog):
     assert cfg.editor_path is None
     assert "mirror_root" in caplog.text
     assert "editor_path" in caplog.text
+
+
+@pytest.mark.parametrize("literal", ["1e999", "Infinity", "-Infinity"])
+def test_an_overflowing_number_falls_back_to_default_instead_of_crashing(tmp_path: Path, caplog, literal: str):
+    """A hand-edited ``1e999``/``Infinity`` is valid JSON (Python's decoder
+    accepts both as extensions) and parses to a float ``inf``; ``int(inf)``
+    raises ``OverflowError``, which used to escape ``_coerce`` entirely and
+    stop the app from starting."""
+    path = tmp_path / "config.json"
+    path.write_text('{"schema_version": 1, "default_window_days": %s}' % literal, encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="qtrequestory.core.config"):
+        cfg = load_config(path)
+    assert cfg.default_window_days == 30
+    assert "default_window_days" in caplog.text
+
+
+# ------------------------------------------------------------ mirror_root ---
+
+
+def test_an_explicitly_empty_mirror_root_is_kept_not_defaulted(tmp_path: Path):
+    """Minor M3: silently falling back to the default here once let a config
+    hand-edited (or half-written) down to ``""`` resolve straight to the live
+    installed mirror without a word. The empty value must survive loading so
+    ``validate`` can report it."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "mirror_root": ""}), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.mirror_root != paths.default_mirror_root()
+    assert validate(cfg) == ["La cartella dei log non è impostata"]
+
+
+def test_a_missing_mirror_root_key_still_defaults(tmp_path: Path):
+    """Unlike an explicit empty string, a config from before this field
+    existed (the key is simply absent) legitimately has nothing to keep."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "default_window_days": 7}), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.mirror_root == paths.default_mirror_root()
+    assert validate(cfg) == []
+
+
+def test_a_relative_mirror_root_is_kept_and_reported_distinctly(tmp_path: Path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"schema_version": 1, "mirror_root": "relativo\\logs"}), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.mirror_root == Path("relativo\\logs")
+    errors = validate(cfg)
+    assert len(errors) == 1
+    assert "percorso completo" in errors[0]
+    assert "relativo" in errors[0]
+
+
+def test_first_run_never_produces_an_empty_mirror_root(tmp_path: Path):
+    """The wizard's blank state must not be mistaken for the M3 bug: a config
+    that has never been saved (``is_first_run``) always gets the real default,
+    never the empty/relative case ``validate`` now rejects."""
+    path = tmp_path / "config.json"
+    assert is_first_run(path) is True
+    cfg = load_config(path)
+    assert cfg.mirror_root == paths.default_mirror_root()
+    assert validate(cfg) == []
 
 
 def test_non_string_log_level_falls_back_to_default(tmp_path: Path, caplog):

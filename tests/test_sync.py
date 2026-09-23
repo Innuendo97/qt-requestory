@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 from qtrequestory.core import sync as syncmod
-from qtrequestory.core.config import Config, Environment, SyncSettings, default_config
+from qtrequestory.core.config import Config, Environment, SyncSettings, UnknownEnvironment, default_config
 from qtrequestory.core.events import (
     CancelToken,
     CollectingSink,
@@ -146,8 +146,100 @@ def test_run_defaults_to_enabled_envs_and_rejects_unknown_names(cfg, state, even
 
     assert [r.env for r in report.results] == ["svil"]
     assert events.of(SyncStarted)[0].envs == ("svil",)
-    with pytest.raises(KeyError):
+    with pytest.raises(UnknownEnvironment) as exc_info:
         _engine(cfg, state, events, fake_clock).run(["prod"])
+    assert str(exc_info.value) == "ambiente sconosciuto: 'prod' (configurati: coll, svil)"
+
+
+# ------------------------------------------------------------- 1b. shrunk ---
+
+def test_a_smaller_remote_never_overwrites_the_local_day(cfg, state, events, fake_clock, stub_server):
+    """local 5000 bytes, server 1200 -> the local file must survive untouched,
+    the smaller remote copy is stashed in a sidecar, and the day still counts
+    as mirrored (the LARGER, local copy is what's kept)."""
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(1_200)})
+    local = _local(cfg, "svil", "20260921.txt")
+    local.parent.mkdir(parents=True)
+    local.write_bytes(_payload(5_000))
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert local.read_bytes() == _payload(5_000)
+    sidecar = local.with_name("20260921.txt.remote-1200")
+    assert sidecar.exists()
+    assert sidecar.read_bytes() == _payload(1_200)
+    assert _no_part_files(cfg.mirror_root)
+
+    assert {(e.name, e.reason) for e in events.of(FileSkipped)} == {("20260921.txt", "shrunk")}
+    warnings = [e for e in events.of(LogMessage) if e.level == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].text == (
+        "svil: 20260921.txt sul server è più piccolo della copia locale "
+        "(5000 contro 1200): tenuta la copia locale, quella remota salvata come "
+        "20260921.txt.remote-1200"
+    )
+    assert not events.of(FileStarted) and not events.of(FileDone) and not events.of(FileFailed)
+
+    result = _result(events, "svil")
+    assert result.status == "ok"
+    assert report.exit_code == 0
+    st = SyncState(cfg.state_path).load().get("svil")
+    assert st.newest_day == date(2026, 9, 21)
+
+
+def test_a_smaller_remote_is_not_redownloaded_once_the_sidecar_matches(cfg, state, events, fake_clock, stub_server):
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(1_200)})
+    local = _local(cfg, "svil", "20260921.txt")
+    local.parent.mkdir(parents=True)
+    local.write_bytes(_payload(5_000))
+    sidecar = local.with_name("20260921.txt.remote-1200")
+    sidecar.write_bytes(_payload(1_200))
+
+    _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert ("GET", "/svil/20260921.txt") not in stub_server.requests
+    assert sidecar.read_bytes() == _payload(1_200)
+    assert {(e.name, e.reason) for e in events.of(FileSkipped)} == {("20260921.txt", "shrunk")}
+
+
+def test_a_smaller_remote_whose_sidecar_fails_to_save_says_so_not_that_it_saved(
+    cfg, state, events, fake_clock, stub_server,
+):
+    """The sidecar fetch is best-effort: when it fails, the local day must
+    still stay untouched and be reported "shrunk", but the warning must NOT
+    claim "quella remota salvata come ..." for a sidecar that never landed on
+    disk — that would contradict a second, honest failure warning (the bug
+    this test guards against)."""
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(1_200)})
+    stub_server.routes["/svil/20260921.txt"].status = 500
+    local = _local(cfg, "svil", "20260921.txt")
+    local.parent.mkdir(parents=True)
+    local.write_bytes(_payload(5_000))
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert local.read_bytes() == _payload(5_000)
+    sidecar = local.with_name("20260921.txt.remote-1200")
+    assert not sidecar.exists()
+    assert _no_part_files(cfg.mirror_root)
+    assert len(_requests_to(stub_server, "/svil/20260921.txt")) == 1
+
+    assert {(e.name, e.reason) for e in events.of(FileSkipped)} == {("20260921.txt", "shrunk")}
+    warnings = [e for e in events.of(LogMessage) if e.level == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].text
+    assert "salvata come" not in text
+    assert "impossibile salvare la copia remota" in text
+    assert text.startswith(
+        "svil: 20260921.txt sul server è più piccolo della copia locale "
+        "(5000 contro 1200): tenuta la copia locale, "
+    )
+
+    result = _result(events, "svil")
+    assert result.status == "ok"
+    assert report.exit_code == 0
+    st = SyncState(cfg.state_path).load().get("svil")
+    assert st.newest_day == date(2026, 9, 21)
 
 
 # --------------------------------------------------------------- 2. state ---
@@ -162,15 +254,74 @@ def test_state_marked_with_clock_after_success(cfg, state, events, fake_clock, s
     assert st.last_success == fake_clock.now
     assert st.last_remote_daily == 2
     assert st.last_downloaded == 1
+    assert st.newest_day == date(2026, 9, 21)
     assert SyncState(cfg.state_path).load().get("svil").last_success is None
+
+
+def test_last_success_is_the_listing_time_not_a_later_one_and_confirms_the_newest_day(
+    cfg, state, events, stub_server,
+):
+    """C1: the listing is read at 18:29 (only 20260921 on the server), and the
+    run only finishes at 18:31 (downloads take "wall clock" time). The stored
+    ``last_success`` must be the listing time, not the later one, and
+    ``newest_day`` must be the newest day the listing actually showed. The
+    next morning, before the 22nd was ever seen in a listing, the env must
+    NOT be considered fresh even though ``last_success`` is after that day's
+    compaction moment — this is exactly the bug: a day the server never
+    listed for us was still treated as if it had been checked.
+    """
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(1_000)})
+    clock = FakeClock(datetime(2026, 9, 22, 18, 29))
+
+    def advancing_sink(ev) -> None:
+        events(ev)
+        if isinstance(ev, RemoteIndexRead):
+            clock.advance(minutes=2)  # downloads happen after the listing was read
+
+    report = _engine(cfg, state, advancing_sink, clock).run(["coll"])
+
+    assert report.exit_code == 0
+    st = SyncState(cfg.state_path).load().get("coll")
+    assert st.last_success == datetime(2026, 9, 22, 18, 29)  # listing time, not 18:31
+    assert st.newest_day == date(2026, 9, 21)
+
+    reloaded = SyncState(cfg.state_path).load()
+    assert not reloaded.is_fresh("coll", datetime(2026, 9, 23, 9, 0), cfg.compaction_time)
+
+
+# ---------------------------------------------------- 2b. state save fails ---
+
+def test_a_state_save_failure_does_not_stop_the_next_env(cfg, state, events, fake_clock, stub_server, monkeypatch):
+    """WinError 5 on ``sync-state.json`` (AV, read-only attribute, a reader with
+    it open) must not raise out of ``engine.run``: the files are already safe
+    on disk, only the bookkeeping failed, and the *next* env must still run."""
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(500)})
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(700)})
+
+    def _boom(self) -> None:
+        raise PermissionError("sync-state.json is locked")
+
+    monkeypatch.setattr(SyncState, "_save", _boom)
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil", "coll"])
+
+    finished = events.of(EnvFinished)
+    assert [e.env for e in finished] == ["svil", "coll"]
+    assert all(e.result.status == "ok" for e in finished)
+    warnings = [e for e in events.of(LogMessage) if e.level == logging.WARNING]
+    assert any("sync-state.json" in w.text for w in warnings)
+    assert report.exit_code == 0
+    assert _local(cfg, "svil", "20260921.txt").exists()
+    assert _local(cfg, "coll", "20260921.txt").exists()
 
 
 # --------------------------------------------------------------- 3. fresh ---
 
 def test_fresh_env_makes_no_requests_unless_forced(cfg, state, events, fake_clock, stub_server):
     _serve_env(stub_server, "svil", {"20260921.txt": _payload(1_000)})
-    # synced yesterday after the 18:30 compaction; the clock says 09:30 today
-    state.mark_success("svil", datetime(2026, 9, 21, 19, 0))
+    # synced yesterday after the 18:30 compaction, and that compacted day was mirrored;
+    # the clock says 09:30 today
+    state.mark_success("svil", datetime(2026, 9, 21, 19, 0), newest_day=date(2026, 9, 21))
 
     report = _engine(cfg, state, events, fake_clock).run(["svil"])
 
@@ -265,6 +416,36 @@ def test_oversized_download_is_reported_as_unexpected_size(cfg, state, events, f
     assert _no_part_files(cfg.mirror_root)
 
 
+# --------------------------------------------------------- 5b. rename fails ---
+
+def test_an_os_replace_failure_keeps_the_old_file_and_reports(cfg, state, events, fake_clock, stub_server, monkeypatch):
+    """The GUI indexer / a preview pane holding the destination open makes
+    ``replace_with_retry`` fail for good: the transfer must not clobber
+    anything, the old (stale) local file stays exactly as it was, no ``.part``
+    is left behind, and the file counts as a failure — the missing BACKLOG test."""
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(1_000)})
+    old = _local(cfg, "coll", "20260921.txt")
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old-and-stale")  # wrong size -> planned as "download"
+
+    def _always_locked(src, dst):
+        raise PermissionError("locked by AV")
+
+    monkeypatch.setattr(syncmod, "replace_with_retry", _always_locked)
+
+    report = _engine(cfg, state, events, fake_clock).run(["coll"])
+
+    assert old.read_bytes() == b"old-and-stale"
+    failed = events.of(FileFailed)
+    assert len(failed) == 1
+    assert failed[0].name == "20260921.txt"
+    assert _no_part_files(cfg.mirror_root)
+    result = _result(events, "coll")
+    assert result.status == "errors"
+    assert report.exit_code == 1
+    assert not cfg.state_path.exists()
+
+
 # ----------------------------------------------------- 4b. not an index ---
 
 def test_page_without_daily_files_is_unreachable_not_fresh(cfg, state, events, fake_clock, stub_server):
@@ -280,6 +461,39 @@ def test_page_without_daily_files_is_unreachable_not_fresh(cfg, state, events, f
     )
     assert not cfg.state_path.exists()
     assert not events.of(RemoteIndexRead)
+
+
+# --------------------------------------------------- 4c. abbreviated sizes ---
+
+def test_abbreviated_autoindex_sizes_fail_the_env_without_downloading(cfg, state, events, fake_clock, stub_server):
+    """``autoindex_exact_size off`` on the server: sizes show as "98K" instead
+    of exact bytes. Every plan/download decision compares against that size,
+    so this must stop the env with status "errors" and download nothing,
+    rather than silently misreading "98K" as 98 bytes."""
+    stub_server.add("/svil/", autoindex_html([("20260921.txt", "21-Sep-2026 18:30", "98K")]))
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    result = _result(events, "svil")
+    assert result.status == "errors"
+    assert (result.downloaded, result.present, result.empty, result.failed) == (0, 0, 0, 0)
+    assert report.exit_code == 1
+    errors = [e for e in events.of(LogMessage) if e.level == logging.ERROR]
+    assert errors and errors[0].text == f"svil: {syncmod.ABBREVIATED_SIZES_TEXT}"
+    assert not cfg.state_path.exists()
+    assert not events.of(RemoteIndexRead)
+    assert not (cfg.mirror_root / "svil").exists()
+
+
+def test_abbreviated_sizes_in_one_env_do_not_stop_the_other(cfg, state, events, fake_clock, stub_server):
+    stub_server.add("/svil/", autoindex_html([("20260921.txt", "21-Sep-2026 18:30", "98K")]))
+    _serve_env(stub_server, "coll", {"20260921.txt": _payload(1_500)})
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil", "coll"])
+
+    assert [r.status for r in report.results] == ["errors", "ok"]
+    assert report.exit_code == 1
+    assert _local(cfg, "coll", "20260921.txt").exists()
 
 
 # -------------------------------------------------------------- 6. retry ---
@@ -327,6 +541,14 @@ def test_dry_run_downloads_nothing_and_counts_candidates(cfg, state, events, fak
     assert events.of(SyncStarted)[0].dry_run is True
     assert events.of(RemoteIndexRead)[0].bytes_to_download == 2_000
     assert not events.of(FileStarted) and not events.of(FileDone)
+    # Minor P1: a dry run must still say what it would have downloaded, since
+    # LoggingSink drops FileSkipped (sync.log only gets the "anteprima"
+    # summary lines) — this is the CLI's only source for the file listing.
+    assert {(e.name, e.reason, e.size) for e in events.of(FileSkipped)} == {
+        ("20260921.txt", "dry-run", 2_000),
+        ("20260920.txt", "empty", 0),
+        ("20260919.txt", "present", 0),
+    }
     result = _result(events, "coll")
     assert result == EnvResult("coll", "ok", downloaded=1, present=1, empty=1, failed=0, bytes=2_000, error=None)
     assert report.exit_code == 0
@@ -453,5 +675,98 @@ def test_summary_line_mentions_every_env_and_exit_code():
     assert "\n" not in line
     assert "svil" in line and "coll" in line
     assert "2 scaricati" in line
-    assert "exit 0" in line
+    assert "codice di uscita 0" in line
+    assert "exit" not in line, "the registro is Italian"
+    assert "svil completato" in line
     assert "12" in line  # seconds
+
+
+# ------------------------------------------- 9. empty days and freshness ---
+
+def test_a_0_byte_newest_day_is_not_fresh_and_the_next_run_lists_again(cfg, state, events, fake_clock, stub_server):
+    """Final review #2: a 0-byte file is what the server publishes before it
+    compacts too, so it must never confirm the compacted day. Only non-empty
+    days (present / downloaded / shrunk) set ``newest_day``."""
+    _serve_env(stub_server, "svil", {"20260921.txt": b"", "20260920.txt": _payload(1_000)})
+
+    report = _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert report.results[0].status == "ok"
+    st = SyncState(cfg.state_path).load()
+    assert st.get("svil").newest_day == date(2026, 9, 20)
+    assert not st.is_fresh("svil", fake_clock.now, cfg.compaction_time)
+
+    before = len(_requests_to(stub_server, "/svil/"))
+    report = _engine(cfg, st, events, fake_clock).run(["svil"])
+    assert report.results[0].status == "ok"
+    assert len(_requests_to(stub_server, "/svil/")) == before + 1
+
+
+def test_a_listing_of_only_empty_days_confirms_nothing(cfg, state, events, fake_clock, stub_server):
+    _serve_env(stub_server, "svil", {"20260921.txt": b"", "20260920.txt": b""})
+
+    _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert SyncState(cfg.state_path).load().get("svil").newest_day is None
+
+
+def test_the_weekend_still_converges_once_a_non_empty_day_appears(cfg, state, events, stub_server):
+    """Saturday and Sunday are 0-byte: the env stays "not fresh" (one cheap
+    listing per hour) until Monday's non-empty day is mirrored."""
+    _serve_env(stub_server, "svil", {"20260920.txt": b"", "20260919.txt": _payload(800)})
+    clock = FakeClock(datetime(2026, 9, 21, 9, 0))  # compacted day: 2026-09-20 (empty)
+    _engine(cfg, state, events, clock).run(["svil"])
+    assert not SyncState(cfg.state_path).load().is_fresh("svil", clock.now, cfg.compaction_time)
+
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(900), "20260920.txt": b"",
+                                     "20260919.txt": _payload(800)})
+    clock.now = datetime(2026, 9, 21, 19, 0)  # after Monday's compaction
+    report = _engine(cfg, SyncState(cfg.state_path).load(), events, clock).run(["svil"])
+
+    assert report.results[0].downloaded == 1
+    reloaded = SyncState(cfg.state_path).load()
+    assert reloaded.get("svil").newest_day == date(2026, 9, 21)
+    assert reloaded.is_fresh("svil", clock.now, cfg.compaction_time)
+
+
+# ------------------------------------------------ 10. shrunk, file gone ---
+
+def test_a_shrunk_day_removed_during_the_run_is_a_file_failure_not_a_crash(cfg, state, events, fake_clock, stub_server):
+    """Final review #6: the local file vanishes between plan and handling
+    (a user, an AV quarantine): one FileFailed, status "errors", and the
+    rest of the listing is still processed."""
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(1_200), "20260920.txt": _payload(700)})
+    local = _local(cfg, "svil", "20260921.txt")
+    local.parent.mkdir(parents=True)
+    local.write_bytes(_payload(5_000))
+
+    def deleting_sink(ev) -> None:
+        events(ev)
+        if isinstance(ev, RemoteIndexRead):
+            local.unlink()
+
+    report = _engine(cfg, state, deleting_sink, fake_clock).run(["svil"])
+
+    failed = events.of(FileFailed)
+    assert [e.name for e in failed] == ["20260921.txt"]
+    assert [e.name for e in events.of(FileDone)] == ["20260920.txt"]
+    result = _result(events, "svil")
+    assert result.status == "errors"
+    assert (result.failed, result.downloaded) == (1, 1)
+    assert report.exit_code == 1
+    assert not cfg.state_path.exists()
+
+
+# --------------------------------------------------- 11. dry-run wording ---
+
+def test_a_dry_run_summary_says_anteprima():
+    t = datetime(2026, 9, 22, 9, 30)
+    real = SyncReport((EnvResult("svil", "ok", 1, 0, 0, 0, 10, None),), t, t)
+    preview = SyncReport((EnvResult("svil", "ok", 1, 0, 0, 0, 10, None),), t, t, dry_run=True)
+    assert "anteprima" not in real.summary_line()
+    assert preview.summary_line().startswith("anteprima della sincronizzazione terminata")
+
+
+def test_the_engine_report_carries_dry_run(cfg, state, events, fake_clock, stub_server):
+    _serve_env(stub_server, "svil", {"20260921.txt": _payload(100)})
+    assert _engine(cfg, state, events, fake_clock).run(["svil"], dry_run=True).dry_run is True

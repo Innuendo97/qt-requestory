@@ -16,9 +16,10 @@ What the adapters actually do beyond binding arguments:
 * ``SchedulerService.status`` normalises the placeholder strings ``schtasks``
   prints in its CSV (``""``, ``N/A``, ``N/D``, ``N/V``) to ``None``, so the UI
   can simply test for ``None`` instead of guessing the locale.
-* ``SyncService.lock_holder`` probes the lock before reading the holder info:
-  the info file alone is not a liveness signal (a crashed holder may leave text
-  behind), so "no one holds it" must be answered by the OS lock, not by the file.
+* ``SyncService.lock_holder`` is a read-only probe (``lock.peek_holder``): the
+  info file alone is not a liveness signal (a crashed holder may leave text
+  behind), so the PID written in it is checked, and the lock itself is never
+  taken — a probe that took it could make a scheduled run skip an hour.
 * Every service reads the configuration through a callable, so saving new
   settings in Impostazioni is picked up without rebuilding anything.
 
@@ -58,7 +59,7 @@ from qtrequestory.core.index.search import (
     search as core_search,
 )
 from qtrequestory.core.jobs import JobReport, run_index_job, run_sync_job
-from qtrequestory.core.lock import ProcessLock
+from qtrequestory.core.lock import peek_holder
 from qtrequestory.core.paths import AppPaths, app_paths, executable_dir
 from qtrequestory.core.scheduler import CommandRunner, SchedulerError, TaskStatus
 from qtrequestory.core.state import SyncState
@@ -136,6 +137,9 @@ class ConfigService:
 
     def validate(self, cfg: Config) -> list[str]:
         return config_mod.validate(cfg)
+
+    def mirror_root_errors(self, cfg: Config) -> list[str]:
+        return config_mod.mirror_root_errors(cfg)
 
     def detect_editor(self) -> Path | None:
         return config_mod.detect_editor(self._editor_candidates)
@@ -241,22 +245,20 @@ class SyncService:
     def lock_holder(self) -> str | None:
         """Who is syncing right now, or None when nobody is.
 
-        The holder line in the lock file is informational only (a crashed
-        holder can leave it behind), so liveness is decided by trying to take
-        the OS lock; the text is only read once that failed.
+        Read-only (:func:`~qtrequestory.core.lock.peek_holder`): the holder
+        line is read without opening the file for writing, and liveness comes
+        from the PID in it, because a crashed holder can leave the text behind.
+        It never takes the lock: the Sincronizzazione page polls this every
+        couple of seconds, and a probe holding the lock even briefly could
+        make a scheduled run log "già in corso" and skip until the next hour.
 
-        The Sincronizzazione page polls this every couple of seconds, so an
-        unusable mirror path (not configured yet, removable drive gone) must
-        answer "nobody" rather than raise inside a timer callback.
+        An unusable mirror path (not configured yet, removable drive gone)
+        answers "nobody" rather than raising inside a timer callback.
         """
-        lock = ProcessLock(self._config_source().lock_path)
         try:
-            if lock.acquire():
-                lock.release()
-                return None
-        except OSError:
+            return peek_holder(self._config_source().lock_path)
+        except (OSError, ValueError):
             return None
-        return lock.holder_info() or "un altro processo"
 
     def sync_log_path(self) -> Path:
         return self._paths.sync_log
@@ -390,6 +392,14 @@ class IndexService:
         with self._connect() as conn:
             return core_coverage(conn, env)
 
+    def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> daily.CoverageDays:
+        """Weekday gaps in the local mirror, computed from the on-disk daily
+        files (no index/DB involved), so it is right even before an index
+        update has run."""
+        cfg = self._config_source()
+        present = {f.day for f in daily.list_local_daily_files(cfg.mirror_root, env)}
+        return daily.coverage_days(present, days, today if today is not None else date.today())
+
     def count_local_files(self, root: Path | None = None) -> int:
         """``root`` defaults to the configured mirror; the wizard passes the
         folder the user just picked, which is not in the config yet."""
@@ -426,16 +436,23 @@ class IndexService:
     # -- internals ---------------------------------------------------------
 
     def _rescan_and_find(self, env: str, day: date, hit: SearchHit) -> SearchHit | None:
-        """Re-index ``(env, day)`` and return the same entry with fresh offsets."""
+        """Re-index ``(env, day)`` and return the same entry with fresh offsets.
+
+        The same name can occur twice in one day (a replayed call): the entry
+        is matched on ``(name, seq)``, and on the name alone only when that
+        leaves no doubt — handing back the other copy's body would be a
+        silently wrong answer.
+        """
         cfg = self._config_source()
         with self._connect() as conn:
             if IndexBuilder(conn, cfg.mirror_root, _drop).rescan_file(env, day) == 0:
                 return None
             query = SearchQuery(env, template_key=hit.template_key, day_from=day, day_to=day)
-            for candidate in core_search(conn, cfg.mirror_root, query):
-                if candidate.name == hit.name:
-                    return candidate
-        return None
+            same_name = [c for c in core_search(conn, cfg.mirror_root, query) if c.name == hit.name]
+        for candidate in same_name:
+            if candidate.seq == hit.seq:
+                return candidate
+        return same_name[0] if len(same_name) == 1 else None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

@@ -85,7 +85,10 @@ class RemoteIndexRead(Event):
 class FileSkipped(Event):
     env: str
     name: str
-    reason: Literal["present", "empty"]
+    reason: Literal["present", "empty", "shrunk", "dry-run"]
+    #: Only set for ``"dry-run"`` (what the transfer would have been); the
+    #: other reasons leave it at 0, nothing downstream reads it for them.
+    size: int = 0
 
 
 @dataclass(frozen=True)
@@ -179,16 +182,67 @@ class CollectingSink:
         return [e for e in self.events if isinstance(e, kind)]
 
 
+_KB = 1024
+_MB = 1024 * _KB
+_GB = 1024 * _MB
+
+
+def _decimal(value: float) -> str:
+    """One decimal, Italian comma, and no pointless ",0" ("41", "1,5")."""
+    text = f"{value:.1f}".replace(".", ",")
+    return text[:-2] if text.endswith(",0") else text
+
+
+def format_size(n_bytes: float) -> str:
+    """"512 B" / "2,5 KB" / "80,4 MB" / "1,5 GB": THE size wording of the app.
+
+    It lives here, in the core, because ``sync.log`` is written by
+    :class:`LoggingSink` and the Sincronizzazione page shows those very lines
+    next to its own numbers: the UI's ``sync_format.format_size`` delegates to
+    this function, so "4.0 MB" in the registro and "4 MB" on a card cannot
+    happen again.
+    """
+    n = max(0.0, float(n_bytes))
+    if n < _KB:
+        return f"{int(n)} B"
+    if n < _MB:
+        return f"{_decimal(n / _KB)} KB"
+    if n < _GB:
+        return f"{_decimal(n / _MB)} MB"
+    return f"{_decimal(n / _GB)} GB"
+
+
+#: ``EnvResult.status`` in the words of ``sync.log`` (shared with
+#: ``SyncReport.summary_line``): the registro is read by people, in Italian.
+STATUS_LABELS: dict[str, str] = {
+    "ok": "completato",
+    "fresh": "già sincronizzato",
+    "unreachable": "non raggiungibile",
+    "errors": "con errori",
+    "cancelled": "annullato",
+}
+
+
+def format_seconds(seconds: float) -> str:
+    """"0,1 s" / "12 s": one decimal, Italian comma, no pointless ",0"."""
+    return f"{_decimal(max(0.0, seconds))} s"
+
+
 class LoggingSink:
     """Sink for headless runs: formats events as log lines (same wording as the
     original PowerShell script, so ``sync.log`` stays familiar)."""
 
     def __init__(self, logger: logging.Logger) -> None:
         self._log = logger
+        # Set by each SyncStarted: a preview's per-env line must not read
+        # like a real sync in sync.log (the window's "Anteprima" writes here).
+        self._dry_run = False
 
     def __call__(self, ev: Event) -> None:
         log = self._log
-        if isinstance(ev, LogMessage):
+        if isinstance(ev, SyncStarted):
+            self._dry_run = ev.dry_run
+        elif isinstance(ev, LogMessage):
             log.log(ev.level, ev.text)
         elif isinstance(ev, EnvSkipped):
             log.info("%s: già sincronizzato dopo l'ultima compattazione, niente da fare", ev.env)
@@ -196,23 +250,25 @@ class LoggingSink:
             log.info("%s: endpoint non raggiungibile, riprovo al prossimo giro (%s)", ev.env, ev.error)
         elif isinstance(ev, RemoteIndexRead):
             log.info(
-                "%s: index letto: %d file giornalieri, %d vuoti, %d sciolti, %.1f MB da scaricare",
-                ev.env, ev.n_daily, ev.n_empty, ev.n_loose, ev.bytes_to_download / 1_048_576,
+                "%s: elenco del server letto: %d file giornalieri, %d vuoti, %d sciolti, %s da scaricare",
+                ev.env, ev.n_daily, ev.n_empty, ev.n_loose, format_size(ev.bytes_to_download),
             )
         elif isinstance(ev, FileDone):
-            log.info("%s: scaricato %s (%.1f MB)", ev.env, ev.name, ev.size / 1_048_576)
+            log.info("%s: scaricato %s (%s)", ev.env, ev.name, format_size(ev.size))
         elif isinstance(ev, FileFailed):
             log.error("%s: ERRORE su %s: %s", ev.env, ev.name, ev.error)
         elif isinstance(ev, EnvFinished):
             r = ev.result
-            log.info(
-                "%s: %d scaricati, %d già presenti, %d vuoti saltati, %d errori (%s)",
-                r.env, r.downloaded, r.present, r.empty, r.failed, r.status,
-            )
+            fmt = ("%s: anteprima, %d da scaricare, %d già presenti, %d vuoti saltati, %d errori (%s)"
+                   if self._dry_run else
+                   "%s: %d scaricati, %d già presenti, %d vuoti saltati, %d errori (%s)")
+            log.info(fmt, r.env, r.downloaded, r.present, r.empty, r.failed,
+                     STATUS_LABELS.get(r.status, r.status))
         elif isinstance(ev, IndexStarted):
             if ev.n_files_to_scan:
                 log.info("indice: %d file da indicizzare", ev.n_files_to_scan)
         elif isinstance(ev, IndexFinished):
             if ev.scanned or ev.removed:
-                log.info("indice: %d file indicizzati, %d rimossi in %.1f s", ev.scanned, ev.removed, ev.seconds)
-        # FileStarted/FileProgress/FileSkipped/SyncStarted/SyncFinished: too chatty for a log file
+                log.info("indice: %d file indicizzati, %d rimossi in %s",
+                         ev.scanned, ev.removed, format_seconds(ev.seconds))
+        # FileStarted/FileProgress/FileSkipped/SyncFinished: too chatty for a log file

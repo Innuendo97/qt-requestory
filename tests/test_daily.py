@@ -11,12 +11,15 @@ from qtrequestory.core.daily import (
     CALL_ID_RE,
     DAILY_NAME_RE,
     UUID_RE,
+    CoverageDays,
     EntryName,
     LocalDailyFile,
+    coverage_days,
     day_from_name,
     file_name,
     list_local_daily_files,
     local_path,
+    missing_weekdays,
     parse_entry_name,
     relative_path,
 )
@@ -81,6 +84,20 @@ def test_list_local_daily_files_ignores_junk_names(mirror):
     assert [f.day for f in files] == [date(2026, 9, 18), date(2026, 9, 15), date(2026, 8, 3)]
 
 
+def test_the_shrunk_sidecar_is_not_indexed(mirror):
+    """A ``<day>.txt.remote-<size>`` sidecar (the smaller remote copy stashed
+    next to a mirrored day, see sync.py's "shrunk" handling) must never be
+    picked up as if it were a daily file: neither by the bare regex nor by
+    the directory listing the indexer walks."""
+    sidecar = mirror.root / "coll" / "2026" / "09" / "20260918.txt.remote-1200"
+    sidecar.write_bytes(b"remote copy")
+
+    assert day_from_name(sidecar.name) is None
+    files = list_local_daily_files(mirror.root, "coll")
+    assert [f.day for f in files] == [date(2026, 9, 18), date(2026, 9, 15), date(2026, 8, 3)]
+    assert sidecar.name not in [f.path.name for f in files]
+
+
 def test_list_local_daily_files_unknown_env_or_root(mirror, tmp_path: Path):
     assert list_local_daily_files(mirror.root, "nope") == []
     assert list_local_daily_files(tmp_path / "missing-root", "coll") == []
@@ -90,6 +107,69 @@ def test_local_daily_file_is_frozen(mirror):
     f = list_local_daily_files(mirror.root, "svil")[0]
     with pytest.raises(AttributeError):
         f.size = 0  # type: ignore[misc]
+
+
+# ------------------------------------------------------------------ gaps ---
+
+def test_missing_weekdays_ignores_weekends():
+    # Mon 2026-09-14 .. Sun 2026-09-20; only Tue and Thu are present.
+    present = {date(2026, 9, 15), date(2026, 9, 17)}
+    result = missing_weekdays(present, date(2026, 9, 14), date(2026, 9, 20))
+    assert result == [date(2026, 9, 14), date(2026, 9, 16), date(2026, 9, 18)]
+
+
+def test_missing_weekdays_empty_when_everything_present():
+    present = {date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)}
+    assert missing_weekdays(present, date(2026, 9, 14), date(2026, 9, 18)) == []
+
+
+def test_missing_weekdays_start_after_end_is_empty():
+    assert missing_weekdays(set(), date(2026, 9, 18), date(2026, 9, 14)) == []
+
+
+def test_coverage_days_window_excludes_today():
+    """The window is [today - days + 1, today - 1]: today is never in it,
+    because today's calls only land on the server tomorrow."""
+    today = date(2026, 9, 22)  # Tuesday, itself a weekday, but never in the window
+    present = {date(2026, 9, 10)}  # first_local far before the window
+    result = coverage_days(present, days=3, today=today)
+    assert result.missing == (date(2026, 9, 21),)  # the Monday just before today
+    assert today not in result.missing
+
+
+def test_coverage_days_nothing_local_flags_nothing():
+    """An empty mirror has no basis to say when the archive "should have"
+    started, so no day is ever reported missing."""
+    result = coverage_days(set(), days=30, today=date(2026, 9, 22))
+    assert result.first_local is None
+    assert result.missing == ()
+    assert result.present == frozenset()
+
+
+def test_coverage_days_does_not_flag_days_before_the_archive_began():
+    """The mirror started on 2026-09-16 (a Wednesday). A weekday well before
+    that, inside the requested 30-day window, must not be reported as a gap —
+    there was no archive yet to have mirrored it."""
+    present = {date(2026, 9, 16), date(2026, 9, 17), date(2026, 9, 18)}
+    today = date(2026, 9, 22)  # Tuesday; window is [2026-08-24, 2026-09-21]
+    result = coverage_days(present, days=30, today=today)
+    assert result.first_local == date(2026, 9, 16)
+    assert result.present == frozenset(present)
+    # 2026-09-21 (Monday) is the one weekday in [first_local, today-1] with no
+    # local file.
+    assert result.missing == (date(2026, 9, 21),)
+    # A weekday before the archive began (well within the 30-day window) is
+    # NOT reported, even though it has no local file either.
+    before_archive = date(2026, 8, 25)  # Tuesday
+    assert before_archive.weekday() < 5
+    assert before_archive not in result.missing
+
+
+def test_coverage_days_is_frozen():
+    result = coverage_days(set(), days=1, today=date(2026, 9, 22))
+    with pytest.raises(AttributeError):
+        result.first_local = date(2026, 9, 1)  # type: ignore[misc]
+    assert isinstance(result, CoverageDays)
 
 
 # -------------------------------------------------------- entry name parse ---

@@ -154,3 +154,129 @@ def test_lock_is_released_when_holder_dies(lock_path):
     finally:
         child.stdout.close()
         child.stdin.close()
+
+
+# ------------------------------------------------------------- peek_holder ---
+#
+# The Sincronizzazione page polls "is somebody syncing?" every couple of
+# seconds. Answering that by *taking* the lock (the old way) could make a
+# scheduled run find it busy and skip an hour, so the probe is read-only: every
+# test below uses a temp lock file, never the real mirror's.
+
+WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+
+def test_peek_holder_reads_the_holder_line_of_a_live_holder(lock_path):
+    from qtrequestory.core.lock import peek_holder
+
+    child, child_pid = _spawn_holder(lock_path)
+    try:
+        info = peek_holder(lock_path)
+        assert info is not None and info.split()[0] == child_pid
+        assert ProcessLock(lock_path).acquire() is False, "peeking never takes the lock"
+    finally:
+        _kill_holder(child, child_pid)
+        child.stdout.close()
+        child.stdin.close()
+
+
+def test_peek_holder_is_none_when_nobody_holds_the_lock(lock_path):
+    from qtrequestory.core.lock import peek_holder
+
+    assert peek_holder(lock_path) is None, "no file at all"
+    lock = ProcessLock(lock_path)
+    lock.acquire()
+    lock.release()  # release empties the holder line
+    assert peek_holder(lock_path) is None
+
+
+def test_a_stale_holder_line_left_by_a_dead_process_is_nobody(lock_path):
+    """A crash leaves the text behind; the PID in it decides, not the text."""
+    import subprocess
+    import sys
+
+    from qtrequestory.core.lock import peek_holder
+
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait(timeout=10)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(f"{dead.pid} 2026-09-23T09:00:00\n", encoding="utf-8")
+    assert peek_holder(lock_path) is None
+
+
+def test_a_reused_pid_does_not_pass_for_the_holder(lock_path):
+    """Our own PID is alive, but this process started long after the holder
+    line was written: Windows recycled the number, the holder is gone."""
+    from qtrequestory.core.lock import peek_holder
+
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(f"{os.getpid()} 2001-01-01T09:00:00\n", encoding="utf-8")
+    assert peek_holder(lock_path) is None
+    lock_path.write_text(f"{os.getpid()} 2999-01-01T09:00:00\n", encoding="utf-8")
+    assert peek_holder(lock_path) is not None, "a holder that started before the line is alive"
+
+
+@pytest.mark.parametrize("content", ["", "not-a-pid 2026-09-23T09:00:00\n", "\n\n", "-5 x\n"])
+def test_a_garbled_holder_file_is_nobody(lock_path, content):
+    from qtrequestory.core.lock import peek_holder
+
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(content, encoding="utf-8")
+    assert peek_holder(lock_path) is None
+
+
+def test_peek_holder_never_opens_the_file_for_writing(lock_path, monkeypatch):
+    from qtrequestory.core import lock as lock_mod
+
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(f"{os.getpid()} 2999-01-01T09:00:00\n", encoding="utf-8")
+    real_open = os.open
+    seen: list[int] = []
+
+    def spy(path, flags, *args, **kwargs):
+        seen.append(flags)
+        assert flags & WRITE_FLAGS == 0, f"opened for writing: {flags:#x}"
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(lock_mod.os, "open", spy)
+    monkeypatch.setattr(lock_mod, "_try_lock", lambda fd: pytest.fail("peek took the lock"))
+    assert lock_mod.peek_holder(lock_path) is not None
+    assert seen, "the file is opened through os.open"
+
+
+# The holder is always one of *our* processes. A PID that belongs to a process
+# we may not inspect (a SYSTEM service) and a line written before this boot is
+# a leftover of a shutdown mid-sync whose number a boot-time service reused.
+
+def test_an_inaccessible_process_with_a_pre_boot_line_is_nobody(lock_path, monkeypatch):
+    from datetime import datetime
+
+    from qtrequestory.core import lock as lock_mod
+
+    boot = datetime(2026, 9, 23, 8, 0, 0)
+    monkeypatch.setattr(lock_mod, "_boot_time", lambda: boot)
+    monkeypatch.setattr(lock_mod, "_process_state", lambda pid: (lock_mod.DENIED, None))
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("4 2026-09-22T18:00:00\n", encoding="utf-8")
+    assert lock_mod.peek_holder(lock_path) is None, "written before this boot: stale"
+    lock_path.write_text("4 2026-09-23T09:00:00\n", encoding="utf-8")
+    assert lock_mod.peek_holder(lock_path) is not None, "after boot we cannot tell: be safe"
+
+
+def test_any_pre_boot_holder_line_is_nobody_even_for_a_live_pid(lock_path, monkeypatch):
+    from datetime import datetime
+
+    from qtrequestory.core import lock as lock_mod
+
+    monkeypatch.setattr(lock_mod, "_boot_time", lambda: datetime(2026, 9, 23, 8, 0, 0))
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(f"{os.getpid()} 2026-09-22T18:00:00\n", encoding="utf-8")
+    assert lock_mod.peek_holder(lock_path) is None
+
+
+def test_the_boot_time_is_in_the_past():
+    from datetime import datetime
+
+    from qtrequestory.core import lock as lock_mod
+
+    assert lock_mod._boot_time() < datetime.now()

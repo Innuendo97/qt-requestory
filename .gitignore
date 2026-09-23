@@ -10,11 +10,20 @@ __pycache__/
 .pytest_cache/
 .superpowers/
 
-# never commit real environment definitions, logs or mirrors
+# never commit real environment definitions, configuration, logs or mirrors
 environments.json
+config.json
+sync-state.json
+.last-sync.json
 *.log
 logs/
 mirror/
+# a mirror created in the repo root: <env>/YYYY/...
+/*/20[0-9][0-9]/
+*.part
+*.remote-*
+*.broken-*
+index.sqlite*
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

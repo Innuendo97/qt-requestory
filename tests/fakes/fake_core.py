@@ -23,15 +23,23 @@ Knobs the tests use (all plain attributes/setters, no magic):
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
 from qtrequestory.core import extract as extract_mod
-from qtrequestory.core.config import Config, Environment, default_config, validate as core_validate
+from qtrequestory.core.config import (
+    Config,
+    Environment,
+    UnknownEnvironment,
+    default_config,
+    mirror_root_errors as core_mirror_root_errors,
+    validate as core_validate,
+)
 from qtrequestory.core.events import (
     CancelToken,
     EnvFinished,
@@ -51,7 +59,8 @@ from qtrequestory.core.events import (
     SyncFinished,
     SyncStarted,
 )
-from qtrequestory.core.daily import LocalDailyFile
+from qtrequestory.core.daily import CoverageDays, LocalDailyFile
+from qtrequestory.core.daily import coverage_days as core_coverage_days
 from qtrequestory.core.facade import EnvStatus
 from qtrequestory.core.index.builder import IndexPlan
 from qtrequestory.core.index.search import (
@@ -64,7 +73,7 @@ from qtrequestory.core.index.search import (
 )
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
-from qtrequestory.core.scheduler import NOT_REGISTERED, TaskStatus
+from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
 from qtrequestory.ui.contracts import CoreServices
 
@@ -132,6 +141,7 @@ def _hit(entry_id: int, spec, root: Path) -> SearchHit:
         ndocs=ndocs,
         dossier_number="DA00000001",
         header_offset=entry_id * 1024,
+        header_len=64,
         body_offset=entry_id * 1024 + 64,
         body_len=len(body),
         json_ok=True,
@@ -170,7 +180,14 @@ class FakeConfigApi:
         return self.first_run
 
     def load(self) -> Config:
-        return self.config
+        """A fresh copy, never the stored instance.
+
+        The real ``load()`` re-parses ``config.json`` on every call, so two
+        calls never return the same object and a caller that mutates what it
+        got back cannot corrupt what the next ``load()`` returns. Handing out
+        ``self.config`` itself used to let exactly that happen.
+        """
+        return copy.deepcopy(self.config)
 
     def save(self, cfg: Config) -> None:
         self.config = cfg
@@ -178,6 +195,9 @@ class FakeConfigApi:
 
     def validate(self, cfg: Config) -> list[str]:
         return core_validate(cfg)
+
+    def mirror_root_errors(self, cfg: Config) -> list[str]:
+        return core_mirror_root_errors(cfg)
 
     def detect_editor(self) -> Path | None:
         return self.editor
@@ -199,9 +219,13 @@ class FakeConfigApi:
 class FakeSyncApi:
     """Scripted sync: a fixed event sequence per env, honouring the cancel token."""
 
-    def __init__(self, root: Path, paths: AppPaths) -> None:
+    def __init__(self, root: Path, paths: AppPaths, config_source: Callable[[], Config]) -> None:
         self._root = root
         self._paths = paths
+        #: Same contract as ``core.facade.SyncService``: ``run(envs=None)``
+        #: targets ``config.enabled_environments()`` and an explicit name not
+        #: in ``config.environments`` is ``UnknownEnvironment`` (see ``run``).
+        self._config_source = config_source
         self.step_delay = DEFAULT_STEP_DELAY_S
         #: env -> "ok" | "unreachable" | "errors" | "fresh" (default "ok")
         self._outcomes: dict[str, str] = {}
@@ -305,6 +329,13 @@ class FakeSyncApi:
         every environment unreachable got through the whole suite. An unknown
         name is therefore unreachable here too, until a knob says otherwise
         (``set_ok`` / ``set_reachable`` work for any name).
+
+        Intentional, harmless remaining divergence: the outcome is keyed on
+        ``env.name`` and ``env.url`` is never even read, so editing a row's URL
+        in Impostazioni/the wizard without also calling a knob does not change
+        what this answers. Actually probing a URL would mean giving this
+        "no network, ever" fake an HTTP client, for a check whose only job is
+        letting a UI test script "this row is reachable/not" — not worth it.
         """
         outcome = self._outcomes.get(env.name, "ok" if env.name in ENVS else "unreachable")
         return outcome != "unreachable"
@@ -326,8 +357,23 @@ class FakeSyncApi:
         the UI shows in the same progress strip. Like the real one it never
         raises on cancel: the affected env finishes with status ``cancelled``
         and the report carries exit code 3.
+
+        ``envs=None`` targets ``config.enabled_environments()``, exactly like
+        ``SyncEngine.run`` — a disabled env is never synced by an unqualified
+        run. An explicit name not in ``config.environments`` is
+        ``UnknownEnvironment``, raised before anything starts (no event, no
+        entry in ``self.runs``), same as ``Config.require_env`` used to build
+        ``SyncEngine.run``'s targets.
         """
-        names = tuple(envs) if envs is not None else tuple(ENVS)
+        cfg = self._config_source()
+        if envs is None:
+            names = tuple(e.name for e in cfg.environments if e.enabled)
+        else:
+            names = tuple(envs)
+            known = {e.name for e in cfg.environments}
+            for name in names:
+                if name not in known:
+                    raise UnknownEnvironment(name, known)
         self.runs.append({"envs": names, "force": force, "dry_run": dry_run})
         if self.holder is not None:
             sink(LogMessage(logging.INFO, f"sincronizzazione già in corso ({self.holder})"))
@@ -337,13 +383,38 @@ class FakeSyncApi:
         results = tuple(
             self._run_env(name, force=force, dry_run=dry_run, sink=sink, cancel=cancel) for name in names
         )
-        report = SyncReport(results, started, datetime.now())
+        report = SyncReport(results, started, datetime.now(), dry_run=dry_run)
         sink(SyncFinished(report))
         sink(LogMessage(logging.INFO, report.summary_line()))
+        if not dry_run:
+            # The real ``env_status`` is derived from the state file and the
+            # mirror listing a successful run just wrote to disk, so a card
+            # refreshed after "Sincronizza ora" (``sync_page.refresh_cards``)
+            # sees the new numbers. A dry run touches neither, so it must not
+            # touch this snapshot either — even though its scripted result
+            # also carries status "ok".
+            for result in results:
+                self._apply_result(result)
         indexed = 0
         if not dry_run and not cancel.is_set():
             indexed = self._index_phase(sink)
         return JobReport(sync=report, indexed_files=indexed, exit_code=report.exit_code)
+
+    def _apply_result(self, result: EnvResult) -> None:
+        if result.status != "ok":
+            return
+        current = self._status(result.env)
+        self._statuses[result.env] = dataclasses.replace(
+            current,
+            last_success=datetime.now(),
+            fresh=False,
+            n_local_files=current.n_local_files + result.downloaded,
+            local_bytes=current.local_bytes + result.bytes,
+            latest_day=DAYS[0],
+            index_pending=0,
+            last_remote_daily=SCRIPT_N_DAILY,
+            last_downloaded=result.downloaded,
+        )
 
     def _index_phase(self, sink: EventSink) -> int:
         """The index events the real job emits right after a successful sync."""
@@ -356,6 +427,7 @@ class FakeSyncApi:
         return n
 
     def lock_holder(self) -> str | None:
+        """Read-only, like the real probe: asking never changes the answer."""
         return self.holder
 
     def sync_log_path(self) -> Path:
@@ -471,6 +543,14 @@ class FakeSchedulerApi:
         return self.task
 
     def register(self) -> None:
+        """``SchedulerError`` with no exe — ``facade.SchedulerService.register``
+        refuses before calling ``schtasks`` at all: "running from source" has
+        no executable to point the task at."""
+        if self.exe is None:
+            raise SchedulerError(
+                "la sincronizzazione automatica richiede l'eseguibile installato: "
+                "avviato dai sorgenti non c'è nulla da pianificare"
+            )
         self.register_calls += 1
         self.task = TaskStatus(
             registered=True,
@@ -516,8 +596,20 @@ class FakeIndexApi:
         self.updates: list[dict] = []
         self.pending: list[LocalDailyFile] = []
         self.local_file_counts: dict[Path, int] = {}
+        #: env -> local mirror days, for coverage_days. Defaults to the hit
+        #: days of that env (the synthetic hits stand in for what is on disk
+        #: unless a test overrides it with ``set_local_days``).
+        self._local_days: dict[str, set[date]] | None = None
 
     # -- knobs -------------------------------------------------------------
+
+    def set_local_days(self, env: str, days: set[date]) -> None:
+        """Override what ``coverage_days(env, ...)`` sees as the local mirror
+        listing for ``env`` — used to line the fake up with a real mirror on
+        disk (e.g. the ``mirror`` fixture) for a fake-vs-real comparison."""
+        if self._local_days is None:
+            self._local_days = {}
+        self._local_days[env] = set(days)
 
     def set_missing(self, hit: SearchHit) -> None:
         """``read_body`` of ``hit`` raises ``IndexStale``.
@@ -538,7 +630,10 @@ class FakeIndexApi:
     # -- contract ----------------------------------------------------------
 
     def plan(self, envs: Sequence[str]) -> IndexPlan:
-        return IndexPlan(to_scan=list(self.pending), to_remove=[])
+        """Only the pending files of ``envs`` — the real ``IndexBuilder.plan``
+        scopes its query to the requested environments the same way."""
+        names = set(envs)
+        return IndexPlan(to_scan=[f for f in self.pending if f.env in names], to_remove=[])
 
     def update(
         self,
@@ -567,6 +662,13 @@ class FakeIndexApi:
             return None
         return Coverage(days[0], days[-1], len(days), sum(1 for h in self.hits if h.env == env))
 
+    def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> CoverageDays:
+        if self._local_days is not None and env in self._local_days:
+            present = self._local_days[env]
+        else:
+            present = {h.day for h in self.hits if h.env == env}
+        return core_coverage_days(present, days, today if today is not None else date.today())
+
     def set_local_file_count(self, root: Path, n: int) -> None:
         """What ``count_local_files(root)`` answers for that folder (wizard)."""
         self.local_file_counts[Path(root)] = n
@@ -580,12 +682,21 @@ class FakeIndexApi:
         return self.local_file_counts.get(Path(root), 0)
 
     def list_template_keys(self, env: str, prefix: str = "") -> list[str]:
-        keys = [h.template_key for h in sorted(self.hits, key=lambda h: h.day, reverse=True) if h.env == env]
-        out: list[str] = []
-        for key in keys:
-            if key not in out and key.lower().startswith(prefix.strip().lower()):
-                out.append(key)
-        return out
+        """Same three-way order as the real SQL: ``ORDER BY MAX(day) DESC,
+        COUNT(*) DESC, template_key`` — most recently seen, then most
+        frequent, then alphabetical. Sorting on day alone (the previous
+        version) left same-day ties in whatever order ``self.hits`` happened
+        to hold them, which is not what a real index would ever produce."""
+        prefix = prefix.strip().lower()
+        max_day: dict[str, date] = {}
+        count: dict[str, int] = {}
+        for h in self.hits:
+            if h.env != env or not h.template_key.lower().startswith(prefix):
+                continue
+            if h.template_key not in max_day or h.day > max_day[h.template_key]:
+                max_day[h.template_key] = h.day
+            count[h.template_key] = count.get(h.template_key, 0) + 1
+        return sorted(max_day, key=lambda k: (-max_day[k].toordinal(), -count[k], k))
 
     def search(self, query: SearchQuery) -> list[SearchHit]:
         """Same contract as the real query: FDI prefix or key required (blank
@@ -634,8 +745,12 @@ class FakeExtractApi:
     """Real formatting (the output contract matters), real files under a tmp dir,
     but launching an editor or Explorer is only recorded."""
 
-    def __init__(self, out_dir: Path) -> None:
+    def __init__(self, out_dir: Path, config_source: Callable[[], Config] | None = None) -> None:
         self._out_dir = out_dir
+        #: Real ``ExtractService.write_temp_file`` reads ``output_retention_hours``
+        #: from the current configuration; without a source, the same default
+        #: (24h) ``core.extract.write_temp_file`` itself uses applies.
+        self._config_source = config_source
         self.opened: list[list[Path]] = []
         self.folders: list[Path] = []
         self.editor: Path | None = None
@@ -647,8 +762,11 @@ class FakeExtractApi:
         return output_name_for(hit)
 
     def write_temp_file(self, hit: SearchHit, text: str) -> Path:
+        kw = {}
+        if self._config_source is not None:
+            kw["retention_hours"] = self._config_source().output_retention_hours
         return extract_mod.write_temp_file(
-            self._out_dir, output_name_for(hit), text, alt_name=output_name_with_id(hit)
+            self._out_dir, output_name_for(hit), text, alt_name=output_name_with_id(hit), **kw
         )
 
     def save_as(self, path: Path, text: str) -> None:
@@ -671,11 +789,16 @@ def build_fake_core(root: Path) -> CoreServices:
     """A complete in-memory ``CoreServices`` rooted at ``root`` (a tmp dir)."""
     root = Path(root)
     paths = AppPaths(root / "apphome").ensure()
+    config = FakeConfigApi(root)
     return CoreServices(
-        config=FakeConfigApi(root),
-        sync=FakeSyncApi(root, paths),
-        scheduler=FakeSchedulerApi(),
+        config=config,
+        sync=FakeSyncApi(root, paths, lambda: config.config),
+        # A non-None exe: the common case for every UI test is "running from
+        # an installed exe", where ``register()`` succeeds — the "no exe at
+        # all" case (``SchedulerError``, see ``register``) is exercised with
+        # an explicit ``FakeSchedulerApi(exe=None)`` where it matters.
+        scheduler=FakeSchedulerApi(exe=root / "qtRequestory.exe"),
         index=FakeIndexApi(root),
-        extract=FakeExtractApi(root / "out"),
+        extract=FakeExtractApi(root / "out", lambda: config.config),
         paths=paths,
     )

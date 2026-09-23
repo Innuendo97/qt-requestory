@@ -9,7 +9,7 @@ all appended to one ``strings.py`` every one of them would conflict with the
 others. One module per page means each task owns a file:
 
 ===================  ==================================================
-``common.py``        the shell: window, rail, status bar, generic buttons
+``common.py``        the shell: window, app bar, status bar, generic buttons
 ``search.py``        Ricerca page + preview pane
 ``sync.py``          Sincronizzazione page
 ``settings.py``      Impostazioni page

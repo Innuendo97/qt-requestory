@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+
+from qtrequestory.core.fsutil import replace_with_retry
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ class EnvSyncState:
     last_success: datetime | None = None
     last_remote_daily: int = 0
     last_downloaded: int = 0
+    #: The newest NON-EMPTY daily day, from the last listing read, that is
+    #: now mirrored locally (present, shrunk, or a successful download); a
+    #: 0-byte day never counts. ``None`` when never synced, when the listing
+    #: held only 0-byte days, or when read from a state file written before
+    #: this field existed. See ``is_fresh`` for how it drives freshness.
+    newest_day: date | None = None
 
 
 class SyncState:
@@ -63,7 +70,15 @@ class SyncState:
             self._envs = _read_legacy(legacy)
             if self._envs:
                 log.info("stato di sincronizzazione importato da %s", legacy)
-                self._save()
+                try:
+                    self._save()
+                except OSError as e:
+                    # The import already happened in memory (self._envs is set):
+                    # this run uses the imported values regardless. Only the
+                    # write-back failed, so the same legacy import is retried
+                    # on the next load() that manages to save successfully.
+                    log.warning("stato di sincronizzazione non salvato dopo l'importazione legacy (%s): %s",
+                               self.path.name, e)
         return self
 
     def _read_current(self) -> dict[str, EnvSyncState]:
@@ -89,25 +104,60 @@ class SyncState:
         return self._envs.get(env, EnvSyncState())
 
     def is_fresh(self, env: str, now: datetime, compaction_time: time) -> bool:
-        """True iff the env was synced after the most recent compaction moment.
+        """True iff the compacted day is confirmed mirrored, not just "synced recently".
 
-        The server compacts loose files into the daily file once a day at
-        ``compaction_time``; a sync completed after that moment already holds
-        everything the server will ever publish for that day.
+        Fresh requires all of:
+
+        1. ``last_success`` is not ``None`` and is not in the future. A
+           timestamp in the future can never be trusted (clock skew, a bad
+           write) so it is treated as not fresh, and logged.
+        2. ``last_success >= last_compaction``, where the server compacts
+           loose files into the daily file once a day at ``compaction_time``
+           (``last_compaction`` is today at ``compaction_time`` if ``now`` is
+           past it, otherwise yesterday's).
+        3. ``newest_day is not None and newest_day >= last_compaction.date()``:
+           the newest NON-EMPTY daily file *seen in the remote listing*
+           that is now mirrored locally (present, shrunk, or a successful
+           download) must be at least the compacted day. A sync that read the
+           listing before the server had compacted is NOT fresh even though
+           it ran after ``compaction_time`` — this is what makes a late/slow
+           compaction on the server retried on the next hourly run instead of
+           silently skipped (a skipped day is lost: the server keeps only ~1
+           day). A 0-byte file never confirms a day: the server lists one
+           before it compacts too. A quiet day (a weekend) therefore costs
+           one cheap listing per hour until the next non-empty day is
+           mirrored.
+        4. A state loaded from a file written before ``newest_day`` existed
+           (no such key) has ``newest_day is None`` and so is also not fresh —
+           one extra sync after the upgrade is the safe direction.
         """
-        last_success = self.get(env).last_success
+        state = self.get(env)
+        last_success = state.last_success
         if last_success is None:
+            return False
+        if last_success > now:
+            log.warning("stato di sincronizzazione di %s nel futuro (%s): ignorato", env, last_success.isoformat())
             return False
         last_compaction = datetime.combine(now.date(), compaction_time)
         if now.time() < compaction_time:
             last_compaction -= timedelta(days=1)
-        return last_success >= last_compaction
+        if last_success < last_compaction:
+            return False
+        return state.newest_day is not None and state.newest_day >= last_compaction.date()
 
     # --------------------------------------------------------------- update ---
 
-    def mark_success(self, env: str, when: datetime, *, last_remote_daily: int = 0, last_downloaded: int = 0) -> None:
+    def mark_success(
+        self,
+        env: str,
+        when: datetime,
+        *,
+        last_remote_daily: int = 0,
+        last_downloaded: int = 0,
+        newest_day: date | None = None,
+    ) -> None:
         self._ensure_loaded()
-        self._envs[env] = EnvSyncState(when, last_remote_daily, last_downloaded)
+        self._envs[env] = EnvSyncState(when, last_remote_daily, last_downloaded, newest_day)
         self._save()
 
     def _save(self) -> None:
@@ -117,6 +167,7 @@ class SyncState:
                     "last_success": s.last_success.isoformat() if s.last_success else None,
                     "last_remote_daily": s.last_remote_daily,
                     "last_downloaded": s.last_downloaded,
+                    "newest_day": s.newest_day.isoformat() if s.newest_day else None,
                 }
                 for env, s in sorted(self._envs.items())
             }
@@ -124,7 +175,7 @@ class SyncState:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
+        replace_with_retry(tmp, self.path)
 
 
 def _parse_env(raw: object) -> EnvSyncState:
@@ -135,7 +186,20 @@ def _parse_env(raw: object) -> EnvSyncState:
         last_success=datetime.fromisoformat(ts) if ts is not None else None,
         last_remote_daily=int(raw.get("last_remote_daily", 0)),
         last_downloaded=int(raw.get("last_downloaded", 0)),
+        newest_day=_parse_newest_day(raw.get("newest_day")),
     )
+
+
+def _parse_newest_day(raw: object) -> date | None:
+    # Missing key (a file written before this field existed) or any invalid
+    # value falls back to None, which is_fresh treats as "not fresh" — the
+    # safe direction, never a crash on a state file written by an older build.
+    if raw is None:
+        return None
+    try:
+        return date.fromisoformat(str(raw))
+    except ValueError:
+        return None
 
 
 def _read_legacy(legacy: Path) -> dict[str, EnvSyncState]:

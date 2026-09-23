@@ -282,3 +282,186 @@ def test_analyze_runs_only_after_more_than_ten_files(conn, mirror, events):
     assert b.update(["prod"]).scanned == 11
     assert _has_stats(conn)
     assert conn.in_transaction is False
+
+
+# ------------------------------------------------------ corrupt index repair ---
+
+def _index_service(mirror, tmp_path: Path):
+    import dataclasses
+
+    from qtrequestory.core import facade
+    from qtrequestory.core.config import Environment, default_config
+
+    cfg = dataclasses.replace(
+        default_config(),
+        mirror_root=mirror.root,
+        environments=[Environment("svil", "https://example.invalid/svil/"),
+                      Environment("coll", "https://example.invalid/coll/")],
+        output_dir=tmp_path / "out",
+    )
+    return facade.IndexService(lambda: cfg), cfg
+
+
+def _broken(index_path: Path) -> list[Path]:
+    return sorted(index_path.parent.glob(index_path.name + ".broken-*"))
+
+
+def test_a_corrupt_index_is_set_aside_and_rebuilt(mirror, tmp_path: Path, caplog):
+    """7 KB of garbage as index.sqlite: "file is not a database" used to be
+    permanent, --index --rebuild included (same open_index)."""
+    from qtrequestory.core.events import CancelToken
+
+    svc, cfg = _index_service(mirror, tmp_path)
+    cfg.index_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.index_path.write_bytes(os.urandom(7 * 1024))
+    cfg.index_path.with_name("index.sqlite-wal").write_bytes(b"junk")
+    cfg.index_path.with_name("index.sqlite-shm").write_bytes(b"junk")
+
+    report = svc.update(["coll", "svil"], sink=CollectingSink(), cancel=CancelToken())
+    assert (report.indexed_files, report.exit_code) == (4, 0)
+    broken = _broken(cfg.index_path)
+    assert len(broken) == 1
+    assert broken[0].stat().st_size == 7 * 1024
+    assert "index.sqlite.broken-" in caplog.text
+    assert svc.plan(["coll", "svil"]).to_scan == []
+
+
+@pytest.mark.parametrize("damage", ["schema", "table"])
+def test_damage_found_by_any_statement_of_open_index_is_repaired(tmp_path: Path, damage: str):
+    """Valid file header, garbage further in. ``schema``: sqlite_master (page 1)
+    is hit by the first PRAGMA. ``table``: only the root page of ``entries`` is
+    hit — connect(), every PRAGMA and the version check succeed, and the damage
+    would first surface at a search unless open_index looks for it."""
+    path = tmp_path / "index.sqlite"
+    conn = open_index(path)
+    conn.execute("PRAGMA journal_mode=DELETE")  # everything in the main file
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    root = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='entries'").fetchone()[0]
+    conn.close()
+    raw = bytearray(path.read_bytes())
+    start, end = (100, page_size) if damage == "schema" else ((root - 1) * page_size, root * page_size)
+    raw[start:end] = b"\xa5" * (end - start)
+    path.write_bytes(bytes(raw))
+
+    conn = open_index(path)
+    try:
+        assert _count(conn, "entries") == 0
+    finally:
+        conn.close()
+    assert len(_broken(path)) == 1
+
+
+def test_at_most_three_broken_copies_are_kept(tmp_path: Path):
+    path = tmp_path / "index.sqlite"
+    for stamp in ("20260101-000000", "20260102-000000", "20260103-000000"):
+        path.with_name(f"index.sqlite.broken-{stamp}").write_bytes(b"old")
+    path.write_bytes(os.urandom(7 * 1024))
+    open_index(path).close()
+    broken = _broken(path)
+    assert len(broken) == 3
+    assert path.with_name("index.sqlite.broken-20260101-000000") not in broken
+    assert any(p.stat().st_size == 7 * 1024 for p in broken)
+
+
+def test_a_locked_index_is_not_mistaken_for_a_corrupt_one(tmp_path: Path, monkeypatch):
+    from qtrequestory.core.index import db
+
+    path = tmp_path / "index.sqlite"
+    open_index(path).close()
+
+    def locked(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "migrate", locked)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        open_index(path)
+    assert _broken(path) == []
+    assert path.exists()
+
+
+def test_a_file_repaired_meanwhile_by_another_process_is_used_not_set_aside(tmp_path: Path, monkeypatch):
+    """GUI and hourly --sync find the same corrupt file: by the time the second
+    one retries, the first has put a fresh index at ``path``. That index must be
+    used, not renamed away (on Windows the rename even raised PermissionError)."""
+    from qtrequestory.core.index import db
+
+    path = tmp_path / "index.sqlite"
+    open_index(path).close()  # the other process's fresh index
+    real = db._connect
+    calls: list[Path] = []
+
+    def corrupt_first(target):
+        calls.append(target)
+        if len(calls) == 1:  # what we saw before the other process repaired it
+            raise sqlite3.DatabaseError("file is not a database")
+        return real(target)
+
+    monkeypatch.setattr(db, "_connect", corrupt_first)
+    conn = open_index(path)
+    try:
+        assert _count(conn, "files") == 0
+    finally:
+        conn.close()
+    assert len(calls) == 2
+    assert _broken(path) == []
+
+
+def test_a_failed_set_aside_reraises_the_corruption_not_the_os_error(tmp_path: Path, monkeypatch):
+    path = tmp_path / "index.sqlite"
+    path.write_bytes(os.urandom(7 * 1024))
+
+    def held_open(self, target):
+        raise PermissionError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(Path, "replace", held_open)
+    with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+        open_index(path)
+    assert _broken(path) == []
+    assert path.stat().st_size == 7 * 1024
+
+
+class _LockedWal:
+    """Proxy connection whose first ``n`` journal-mode switches find the file locked."""
+
+    def __init__(self, conn: sqlite3.Connection, n: int) -> None:
+        self._conn, self.left, self.attempts = conn, n, 0
+
+    def execute(self, sql: str, *args):
+        if "journal_mode" in sql:
+            self.attempts += 1
+            if self.left:
+                self.left -= 1
+                raise sqlite3.OperationalError("database is locked")
+        return self._conn.execute(sql, *args)
+
+
+def test_wal_switch_retries_once_when_locked(tmp_path: Path, monkeypatch):
+    from qtrequestory.core.index import db
+
+    monkeypatch.setattr(db, "WAL_RETRY_DELAY_S", 0)
+    raw = sqlite3.connect(tmp_path / "index.sqlite")
+    once = _LockedWal(raw, 1)
+    db._enable_wal(once)
+    assert once.attempts == 2
+    assert raw.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    twice = _LockedWal(raw, 2)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        db._enable_wal(twice)
+    assert twice.attempts == 2
+    raw.close()
+
+
+def test_a_locked_wal_switch_is_never_treated_as_corruption(tmp_path: Path, monkeypatch):
+    from qtrequestory.core.index import db
+
+    path = tmp_path / "index.sqlite"
+    open_index(path).close()
+
+    def locked(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "_enable_wal", locked)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        open_index(path)
+    assert _broken(path) == []
+    assert path.exists()

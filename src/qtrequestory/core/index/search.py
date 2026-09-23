@@ -19,6 +19,9 @@ from qtrequestory.core.extract import output_name
 KeyMode = Literal["exact", "prefix", "contains"]
 
 _LIKE_ESCAPE = "\\"
+#: Stripped from both sides of the header comparison; the scanner accepts
+#: trailing blanks after ``.json``.
+_BLANKS = b" \t\r\n"
 
 
 @dataclass(frozen=True)
@@ -39,7 +42,7 @@ class SearchHit:
     day: date
     rel_path: str
     seq: int
-    name: str
+    name: str  # may hold surrogates (``surrogateescape``) for a non-UTF-8 header
     fdi: str | None
     template_key: str
     call_id: str | None
@@ -48,6 +51,7 @@ class SearchHit:
     ndocs: int | None
     dossier_number: str | None
     header_offset: int
+    header_len: int
     body_offset: int
     body_len: int
     json_ok: bool
@@ -109,6 +113,11 @@ def _key_clause(key: str, mode: KeyMode, column: str = "template_key") -> tuple[
     return f"{column} LIKE ? ESCAPE '{_LIKE_ESCAPE}'", [pattern]
 
 
+def _name(value: str | bytes) -> str:
+    """The builder stores a non-UTF-8 name as its raw bytes (a BLOB)."""
+    return value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else value
+
+
 def _hit(row: sqlite3.Row, root: Path) -> SearchHit:
     return SearchHit(
         entry_id=row["id"],
@@ -116,7 +125,7 @@ def _hit(row: sqlite3.Row, root: Path) -> SearchHit:
         day=date.fromisoformat(row["day"]),
         rel_path=row["rel_path"],
         seq=row["seq"],
-        name=row["name"],
+        name=_name(row["name"]),
         fdi=row["fdi"],
         template_key=row["template_key"],
         call_id=row["call_id"],
@@ -125,6 +134,7 @@ def _hit(row: sqlite3.Row, root: Path) -> SearchHit:
         ndocs=row["ndocs"],
         dossier_number=row["dossier_number"],
         header_offset=row["header_offset"],
+        header_len=row["header_len"],
         body_offset=row["body_offset"],
         body_len=row["body_len"],
         json_ok=bool(row["json_ok"]),
@@ -162,7 +172,7 @@ def search(conn: sqlite3.Connection, root: Path, q: SearchQuery) -> list[SearchH
 
     sql = (
         "SELECT e.id, e.env, e.day, f.rel_path, e.seq, e.name, e.fdi, e.template_key, e.call_id, "
-        "e.well_formed, e.request_date, e.ndocs, e.dossier_number, e.header_offset, e.body_offset, "
+        "e.well_formed, e.request_date, e.ndocs, e.dossier_number, e.header_offset, e.header_len, e.body_offset, "
         "e.body_len, e.json_ok "
         "FROM entries e JOIN files f ON f.id = e.file_id "
         f"WHERE {' AND '.join(where)} "
@@ -178,27 +188,33 @@ def read_body(hit: SearchHit) -> bytes:
     """Return the exact body bytes of ``hit`` (terminator excluded).
 
     Raises ``IndexStale`` if the file is gone, if the header line at
-    ``header_offset`` is not ``### <name>.json``, or if the body does not END
-    where ``body_len`` says it does (file changed since indexing).
+    ``header_offset`` is not ``### <name>.json`` (trailing blanks allowed, as
+    the scanner allows them) or does not end right where the body starts, if
+    the body slice spans a line break, or if the body does not END where
+    ``body_len`` says it does (file changed since indexing).
 
-    That last check is what keeps a *silently wrong* body out of the UI. The
+    The end check is what keeps a *silently wrong* body out of the UI. The
     header check only proves the entry still starts here; ``body_len`` is taken
     on trust, and a body edited in place — or a file replaced while the index
     held the previous size — leaves every offset valid and only moves the end.
     The read would then stop mid-JSON and hand the caller a document cut in
     half; ``pretty_json`` would dress it up as ``{"_parseError": ...}`` and the
     user would blame the log file, which is fine. One byte answers it: after a
-    body comes the line terminator, or the end of the file.
+    body comes the line terminator, or the end of the file. A body that got
+    SHORTER can still pass that test (its slice then ends on a later line), so
+    a slice containing ``\n`` is stale too, and so is one whose LAST byte is
+    ``\r`` (a CRLF body shrunk by one byte: the slice then ends on the CR and
+    the trailer is the LF). A CR in the middle of a body is data, not a line
+    break (the scanner splits on LF only), and is returned as is.
     """
-    expected = b"### " + hit.name.encode("utf-8") + b".json"
+    expected = (b"### " + hit.name.encode("utf-8", "surrogateescape") + b".json").rstrip(_BLANKS)
     try:
         with hit.file_path.open("rb") as f:
             f.seek(hit.header_offset)
             # Bounded: a stale offset may land inside a multi-MB body line.
-            header = f.readline(len(expected) + 2).rstrip(b"\r\n")
-            if header != expected:
+            header = f.readline(max(hit.header_len, len(expected)) + 8)
+            if header.rstrip(_BLANKS) != expected or f.tell() != hit.body_offset:
                 raise IndexStale(hit.env, hit.day)
-            f.seek(hit.body_offset)
             chunk = f.read(hit.body_len + 1)  # one byte past the body
     except FileNotFoundError:
         raise IndexStale(hit.env, hit.day) from None
@@ -206,6 +222,8 @@ def read_body(hit: SearchHit) -> bytes:
     if len(body) != hit.body_len:  # truncated file
         raise IndexStale(hit.env, hit.day)
     if trailer not in (b"", b"\r", b"\n"):  # b"" = last line, no trailing newline
+        raise IndexStale(hit.env, hit.day)
+    if b"\n" in body or body.endswith(b"\r"):  # a shorter body: the slice runs into the terminator/next line
         raise IndexStale(hit.env, hit.day)
     return body
 

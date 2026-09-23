@@ -19,6 +19,7 @@ Two rules shape the file:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import dataclasses
 import logging
 import os
@@ -30,9 +31,9 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from qtrequestory import __version__
-from qtrequestory.core import facade, scheduler
-from qtrequestory.core.config import Config, load_config
-from qtrequestory.core.events import CancelToken, EventSink, LoggingSink
+from qtrequestory.core import daily, facade, scheduler
+from qtrequestory.core.config import Config, UnknownEnvironment, load_config, mirror_root_errors
+from qtrequestory.core.events import CancelToken, EventSink, FileSkipped, LoggingSink, format_size
 from qtrequestory.core.index.search import SearchHit, SearchQuery, pick_best
 from qtrequestory.core.jobs import EXIT_CANCELLED, EXIT_ERRORS, JobReport, run_index_job, run_sync_job
 from qtrequestory.core.logsetup import configure_logging, sync_logger
@@ -46,6 +47,56 @@ TASK_ACTIONS = ("install", "remove", "status", "run")
 NOTHING_FOUND = "nessuna chiamata trovata nella finestra indicata"
 NOT_INDEXED = ("l'indice non contiene ancora nulla per '{env}': "
                "esegui --sync (o --index se i log sono già in locale)")
+#: A config problem discovered before any job started, or an environment name
+#: nothing knows about: distinct from EXIT_ERRORS (1, a job ran and failed)
+#: and from the sync engine's own "nothing reachable" (also 2, but only after
+#: it tried the network) — here nothing was attempted at all.
+EXIT_CONFIG_ERROR = 2
+
+#: Modes that read/print — the ones a windowed build's headless invocation
+#: from an interactive terminal must not go silent for (Important #14).
+_HEADLESS_FLAGS = ("--sync", "--index", "--find", "--task", "--version")
+_ATTACH_PARENT_PROCESS = -1
+
+
+def _open_conout():
+    """Isolated so tests can stub it instead of opening a real console handle."""
+    return open("CONOUT$", "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+
+
+def _attach_parent_console(argv: list[str] | None) -> None:
+    """A windowed PyInstaller exe (``console=False``) has no console of its
+    own: ``sys.stdout``/``sys.stderr`` are ``None`` (see ``_guard_std_streams``
+    right after this), so a headless mode run from an interactive terminal
+    prints nothing anyone ever sees (Important #14).
+
+    ``AttachConsole(ATTACH_PARENT_PROCESS)`` reattaches to the launching
+    terminal's console when there is one. When there is none — the scheduled
+    task, a double-click — it returns 0 and this is a no-op: the following
+    ``_guard_std_streams`` still redirects to ``os.devnull``, exactly as
+    before. Whether this run is headless is decided on the raw argv, before
+    the parser exists, because this must run before ``_guard_std_streams``,
+    which itself protects argparse's own error path. Any failure (not
+    Windows, no ``ctypes.windll``, the API call itself) is swallowed: worst
+    case the output stays invisible, same as before this existed.
+
+    Both handles are opened into locals first and ``sys.stdout``/``sys.stderr``
+    are only reassigned once BOTH succeeded (fix round 1, Minor): reopening
+    stdout and then having stderr's ``open("CONOUT$", ...)`` fail would
+    otherwise leave stdout pointing at the console while stderr stays
+    whatever it was — a partial, inconsistent reattachment.
+    """
+    if sys.platform != "win32":
+        return
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if not any(flag in raw for flag in _HEADLESS_FLAGS):
+        return
+    try:
+        if ctypes.windll.kernel32.AttachConsole(_ATTACH_PARENT_PROCESS):
+            new_out, new_err = _open_conout(), _open_conout()
+            sys.stdout, sys.stderr = new_out, new_err
+    except (AttributeError, OSError):
+        pass
 
 
 def _guard_std_streams() -> None:
@@ -130,6 +181,7 @@ def _check_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) 
 
 
 def main(argv: list[str] | None = None) -> int:
+    _attach_parent_console(argv)
     _guard_std_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -143,9 +195,31 @@ def main(argv: list[str] | None = None) -> int:
     gui = not (args.sync or args.index or args.find or args.task)
     configure_logging(paths, headless=not gui, level=config.log_level)
 
+    if args.sync or args.index or args.find:
+        # ONLY mirror_root, not the full validate(): an emptied/relative
+        # mirror_root (Minor M3) must stop things here — letting --sync run
+        # against it once wrote into the live index instead of the mirror the
+        # user actually meant — but a bad log_level or a malformed schedule
+        # fall back silently already (see validate's own comments) and must
+        # keep doing that: none of --sync/--index/--find depend on either,
+        # and gating on them turned an unrelated typo into a hard refusal of
+        # the scheduled --sync (fix round 1). --find reaches this too: its
+        # index lives under mirror_root (Config.index_path) even though it
+        # never touches the network.
+        problems = mirror_root_errors(config)
+        if problems:
+            for problem in problems:
+                print(f"Errore di configurazione: {problem}")
+            return EXIT_CONFIG_ERROR
+
     if args.sync:
-        return _run_job(lambda sink, cancel: run_sync_job(
-            config, envs=args.env, force=args.force, dry_run=args.dry_run, sink=sink, cancel=cancel))
+        base_sink = LoggingSink(sync_logger())
+        job_sink = _dry_run_sink(base_sink, config) if args.dry_run else base_sink
+        return _run_job(
+            lambda sink, cancel: run_sync_job(
+                config, envs=args.env, force=args.force, dry_run=args.dry_run, sink=sink, cancel=cancel),
+            sink=job_sink,
+        )
     if args.index:
         return _run_job(lambda sink, cancel: run_index_job(
             config, envs=args.env, full_rebuild=args.rebuild, sink=sink, cancel=cancel))
@@ -167,21 +241,56 @@ def _resolve_paths(config_override: str | None) -> AppPaths:
 # ------------------------------------------------------------ sync / index ---
 
 
-def _run_job(job: Callable[[EventSink, CancelToken], JobReport]) -> int:
+def _dry_run_sink(base: EventSink, config: Config) -> EventSink:
+    """Wrap ``base`` so ``--sync --dry-run`` also lists what it would fetch.
+
+    The log sink writes nothing for ``FileSkipped`` (too chatty for
+    ``sync.log``, see ``LoggingSink``): a dry run leaves only the listing line,
+    one "anteprima" line per env and the "anteprima della sincronizzazione"
+    summary there — not which files it would fetch (Minor P1). The file list
+    is printed here, on the CLI side, like the old script did; ``base`` still
+    gets every event so ``sync.log`` reads the same as before.
+    """
+    def sink(ev: object) -> None:
+        if isinstance(ev, FileSkipped) and ev.reason == "dry-run":
+            day = daily.day_from_name(ev.name)
+            dest = daily.local_path(config.mirror_root, ev.env, day) if day is not None else "?"
+            print(f"[dry-run] scaricherei {ev.name} ({format_size(ev.size)}) -> {dest}")
+        base(ev)
+    return sink
+
+
+def _run_job(job: Callable[[EventSink, CancelToken], JobReport], *, sink: EventSink | None = None) -> int:
     """Run a core job with the headless sink, honouring Ctrl+C.
 
     The signal handler only sets the token: the job then unwinds through its own
     cancellation points, which is what releases the process lock and leaves the
     index consistent. Killing it mid-write would not.
+
+    An unknown environment (``UnknownEnvironment``) is a config problem, not a
+    job failure: printed and exit 2, same as the ``validate`` gate in
+    ``main``, distinct from a job that ran and failed.
+
+    Any OTHER exception is logged to ``sync.log`` with its traceback and
+    turned into exit code 1, never re-raised: this runs from an hourly
+    scheduled task as a windowed (``console=False``) exe, where an unhandled
+    exception would surface as a PyInstaller crash dialog nobody is there to
+    dismiss, leaving the process stuck and the next trigger silently dropped.
     """
     cancel = CancelToken()
-    sink = LoggingSink(sync_logger())
+    sink = sink if sink is not None else LoggingSink(sync_logger())
     with _sigint_cancels(cancel):
         try:
             return job(sink, cancel).exit_code
         except KeyboardInterrupt:  # no handler could be installed (not the main thread)
             cancel.cancel()
             return EXIT_CANCELLED
+        except UnknownEnvironment as e:
+            print(f"Errore: {e}")
+            return EXIT_CONFIG_ERROR
+        except Exception:
+            sync_logger().exception("eccezione non gestita durante l'esecuzione del job")
+            return EXIT_ERRORS
 
 
 @contextmanager
@@ -212,6 +321,11 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
     the "altre N entry" hint when the same day holds more matches.
     """
     env = args.env[0]
+    try:
+        config.require_env(env)
+    except UnknownEnvironment as e:
+        print(f"Errore: {e}")
+        return EXIT_CONFIG_ERROR
     day_to = _parse_day(parser, args.day_to) if args.day_to else date.today()
     window = args.days if args.days is not None else config.default_window_days
     day_from = _parse_day(parser, args.day_from) if args.day_from else day_to - timedelta(days=window)
@@ -245,7 +359,9 @@ def _run_find(parser: argparse.ArgumentParser, args: argparse.Namespace, config:
         out = extract.write_temp_file(hit, text)
 
     # Two spaces before the parenthesis, exactly as the legacy script printed it.
-    print(f"trovato in {hit.file_path.name}: {hit.name}.json  "
+    # A non-UTF-8 header comes back with surrogates: print() would choke on them.
+    name = hit.name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+    print(f"trovato in {hit.file_path.name}: {name}.json  "
           f"(requestDate {hit.request_date or '?'}, {_documents(hit)} documenti)")
     _print_others(others)
     print(f"scritto: {out}")

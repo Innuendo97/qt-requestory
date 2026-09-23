@@ -222,3 +222,30 @@ def test_documents_not_a_list_is_tolerated(tmp_path: Path):
     ])
     (e,), _ = scan_daily_file(str(path))
     assert e.json_ok is True and e.ndocs == 0 and e.doc_keys == () and e.request_date == "R"
+
+
+# ------------------------------------------------------ header raw bytes ---
+
+def test_header_len_is_the_raw_header_line_without_terminator(tmp_path: Path):
+    """Trailing blanks are accepted by HEADER_RE and counted in ``header_len``;
+    the name itself never carries them."""
+    name = entry_name(FDI_A, KEY_CTE)
+    path = tmp_path / "20260918.txt"
+    header = b"### " + name.encode() + b".json \t"
+    path.write_bytes(header + b"\r\n{}\r\n### " + name.encode() + b".json\n{}\n")
+    entries, _ = scan_daily_file(path)
+    assert [e.name.raw for e in entries] == [name, name]
+    assert entries[0].header_len == len(header)
+    assert entries[1].header_len == len(name) + 9
+
+
+def test_non_utf8_header_bytes_survive_as_surrogates(tmp_path: Path):
+    """Decoded with surrogateescape, so re-encoding gives back the exact bytes
+    (``replace`` would turn them into U+FFFD for good)."""
+    raw = FDI_A.encode() + b"_MOD_TEST_\xe0\xff_1a2b3c0200000031"
+    path = tmp_path / "20260918.txt"
+    path.write_bytes(b"### " + raw + b".json\r\n{}\r\n")
+    entries, _ = scan_daily_file(path)
+    assert len(entries) == 1
+    assert entries[0].name.raw.encode("utf-8", "surrogateescape") == raw
+    assert entries[0].header_len == len(raw) + 9

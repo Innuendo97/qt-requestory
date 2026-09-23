@@ -14,7 +14,9 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from qtrequestory.ui import app as app_module
+from qtrequestory.ui import theme
 from qtrequestory.ui.app import (
+    configure_application,
     INSTANCE_KEY_ENV_VAR,
     SingleInstance,
     instance_key,
@@ -34,6 +36,12 @@ def key(request) -> str:
     return f"qtrequestory-test-{os.getpid()}-{request.node.name}"
 
 
+@pytest.fixture(autouse=True)
+def restore_theme(themed):
+    """``run_gui`` applies the theme to the shared QApplication; undo it."""
+    yield
+
+
 @pytest.fixture
 def stub_exec(monkeypatch):
     """Replace the event loop with a callback that inspects the open windows."""
@@ -49,6 +57,19 @@ def stub_exec(monkeypatch):
     yield windows
     for window in windows:
         window.close()
+
+
+# ---------------------------------------------------------------- theme ---
+
+def test_configure_application_applies_the_saved_theme(qapp):
+    theme.save_mode(theme.Mode.DARK)
+
+    configure_application(qapp, "1.2.3")
+
+    assert qapp.styleSheet() == theme.build_qss(theme.DARK)
+    assert qapp.palette().window().color().name().upper() == theme.DARK.bg
+    qapp.setStyleSheet("")  # the stylesheet wrapper has no name of its own
+    assert qapp.style().name().lower() == "fusion", "never the native windows11 style"
 
 
 # --------------------------------------------------------- single instance ---
@@ -258,3 +279,143 @@ class _Result:
         self.start_sync = start_sync
         self.autosync = True
         self.config = None
+
+
+# ------------------------------------------------------ AppUserModelID ---
+#
+# Without an explicit AppUserModelID the onefile child process is grouped under
+# a generic identity and the taskbar shows the default Windows icon.
+
+def test_run_gui_sets_app_user_model_id_before_the_application(
+    qtbot, fake_core, monkeypatch, key, stub_exec
+):
+    monkeypatch.setattr(app_module, "instance_key", lambda: key)
+    calls: list[str] = []
+    real_app = QApplication.instance()
+
+    class RecordingApplication:
+        """Stands in for QApplication: records when run_gui first reaches for it."""
+
+        @staticmethod
+        def instance():
+            calls.append("QApplication.instance")
+            return None
+
+        def __new__(cls, *args, **kwargs):
+            calls.append("QApplication()")
+            return real_app
+
+    monkeypatch.setattr(app_module, "QApplication", RecordingApplication)
+    monkeypatch.setattr(app_module, "set_app_user_model_id", lambda: calls.append("aumid"))
+
+    assert run_gui(fake_core) == 7
+    assert calls[:3] == ["aumid", "QApplication.instance", "QApplication()"]
+
+
+def test_set_app_user_model_id_calls_shell32_on_windows(monkeypatch):
+    received: list[str] = []
+    shell32 = types.SimpleNamespace(
+        SetCurrentProcessExplicitAppUserModelID=lambda value: received.append(value) or 0
+    )
+    fake_ctypes = types.SimpleNamespace(windll=types.SimpleNamespace(shell32=shell32))
+    monkeypatch.setattr(app_module, "ctypes", fake_ctypes)
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+
+    app_module.set_app_user_model_id()
+
+    assert received == [app_module.APP_USER_MODEL_ID]
+    assert app_module.APP_USER_MODEL_ID == "qtRequestory.App"
+
+
+def test_set_app_user_model_id_tolerates_missing_windll(monkeypatch):
+    monkeypatch.setattr(app_module, "ctypes", types.SimpleNamespace())  # no windll
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    app_module.set_app_user_model_id()  # must not raise
+
+
+def test_set_app_user_model_id_tolerates_an_os_error(monkeypatch):
+    def refuse(_value):
+        raise OSError("denied")
+
+    shell32 = types.SimpleNamespace(SetCurrentProcessExplicitAppUserModelID=refuse)
+    monkeypatch.setattr(app_module, "ctypes",
+                        types.SimpleNamespace(windll=types.SimpleNamespace(shell32=shell32)))
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    app_module.set_app_user_model_id()
+
+
+def test_set_app_user_model_id_does_nothing_off_windows(monkeypatch):
+    touched: list[str] = []
+
+    class Explodes:
+        def __getattr__(self, name):
+            touched.append(name)
+            raise AssertionError("ctypes touched off Windows")
+
+    monkeypatch.setattr(app_module, "ctypes", Explodes())
+    monkeypatch.setattr(app_module.sys, "platform", "linux")
+    app_module.set_app_user_model_id()
+    assert touched == []
+
+
+# ----------------------------------------------------------- startup tasks ---
+
+@pytest.fixture
+def looping_exec(monkeypatch):
+    """An event loop that turns a few times, so a ``singleShot(0)`` fires."""
+    windows: list[MainWindow] = []
+
+    def fake_exec(self) -> int:
+        for _ in range(5):
+            QApplication.processEvents()
+        windows.extend(
+            w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()
+        )
+        return 7
+
+    monkeypatch.setattr(QApplication, "exec", fake_exec)
+    yield windows
+    for window in windows:
+        window.close()
+
+
+@pytest.fixture
+def startup_calls(monkeypatch) -> list[bool]:
+    """Replaces ``MainWindow.startup_tasks``: records whether the window was
+    already visible when it ran (DESIGN-ui: never before the window shows)."""
+    calls: list[bool] = []
+    monkeypatch.setattr(MainWindow, "startup_tasks", lambda self: calls.append(self.isVisible()))
+    return calls
+
+
+def test_run_gui_starts_the_startup_tasks_after_the_window_is_shown(
+    qtbot, fake_core, monkeypatch, key, looping_exec, startup_calls
+):
+    monkeypatch.setattr(app_module, "instance_key", lambda: key)
+
+    assert run_gui(fake_core) == 7
+    assert startup_calls == [True]
+
+
+def test_run_gui_can_be_told_not_to_start_them(
+    qtbot, fake_core, monkeypatch, key, looping_exec, startup_calls
+):
+    monkeypatch.setattr(app_module, "instance_key", lambda: key)
+
+    assert run_gui(fake_core, run_startup_tasks=False) == 7
+    assert startup_calls == []
+
+
+def test_a_sync_asked_for_by_the_wizard_replaces_the_startup_tasks(
+    qtbot, fake_core, monkeypatch, key, looping_exec, startup_calls
+):
+    """The wizard's first sync indexes too: a second run would only be refused."""
+    monkeypatch.setattr(app_module, "instance_key", lambda: key)
+    fake_core.config.first_run = True
+    monkeypatch.setattr(app_module, "wizard_available", lambda: True)
+    monkeypatch.setattr(
+        app_module, "show_first_run_wizard", lambda *a, **kw: _Result(start_sync=True)
+    )
+
+    assert run_gui(fake_core) == 7
+    assert startup_calls == []

@@ -17,7 +17,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import prefs, strings
+from qtrequestory.ui.actions import user_settings
 from qtrequestory.ui.contracts import (
     Config,
     CoreServices,
@@ -27,9 +28,12 @@ from qtrequestory.ui.contracts import (
 )
 
 __all__ = [
-    "FormValues", "SettingsPresenter", "canonical_schedule", "check_reachable", "form_of",
-    "normalised",
+    "FormValues", "PrefValues", "SettingsPresenter", "canonical_schedule", "check_reachable",
+    "form_of", "load_prefs", "normalised", "save_prefs",
 ]
+
+#: The ``search/key_mode`` values the Ricerca page understands.
+KEY_MODE_VALUES = ("exact", "contains")
 
 #: How ``ScheduleSettings.start_time`` is spelled once it has been through a widget.
 TIME_FORMAT = "%H:%M"
@@ -53,6 +57,34 @@ class FormValues:
     #: shape: a frozen dataclass of scalars, so comparing two forms (dirty
     #: tracking) and handing it to ``config.validate`` both work unchanged.
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
+
+
+@dataclass(frozen=True)
+class PrefValues:
+    """The Ricerca defaults kept in QSettings, not in ``config.json``.
+
+    They are the Search page's own keys (``ui/prefs.py``); Impostazioni only
+    edits their defaults, through the same Save as the rest of the form.
+    """
+
+    group_by_fdi: bool = prefs.GROUP_BY_FDI_DEFAULT
+    key_mode: str = prefs.KEY_MODE_DEFAULT
+
+
+def load_prefs() -> PrefValues:
+    """The stored preferences; an unknown key mode reads as the default."""
+    stored = user_settings()
+    group = stored.value(prefs.GROUP_BY_FDI_KEY, prefs.GROUP_BY_FDI_DEFAULT, type=bool)
+    mode = str(stored.value(prefs.KEY_MODE_KEY, prefs.KEY_MODE_DEFAULT))
+    if mode not in KEY_MODE_VALUES:
+        mode = prefs.KEY_MODE_DEFAULT
+    return PrefValues(group_by_fdi=bool(group), key_mode=mode)
+
+
+def save_prefs(values: PrefValues) -> None:
+    stored = user_settings()
+    stored.setValue(prefs.GROUP_BY_FDI_KEY, values.group_by_fdi)
+    stored.setValue(prefs.KEY_MODE_KEY, values.key_mode)
 
 
 def normalised(text: str) -> str:

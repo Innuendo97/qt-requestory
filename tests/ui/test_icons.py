@@ -57,7 +57,33 @@ def test_the_application_icon_keeps_its_own_colours(qapp):
         for y in range(image.height())
         if image.pixelColor(x, y).alpha() > 200
     }
-    assert "#0f6cbd" in colours
+    assert "#ffc857" in colours, "the highlighted (amber) log line"
+
+
+def test_app_icon_has_all_sizes(qapp):
+    """The window icon must carry the large sizes too.
+
+    With only small pixmaps Qt registers the window class with a fallback large
+    icon, and the taskbar shows the generic Windows one.
+    """
+    app_icon = icons.app_icon()
+    available = {size.width() for size in app_icon.availableSizes()}
+    assert set(icons.APP_ICON_SIZES) <= available
+    for size in icons.APP_ICON_SIZES:
+        pixmap = app_icon.pixmap(size, size)
+        assert not pixmap.isNull(), f"{size}px"
+
+
+def test_app_icon_sizes_are_what_the_shell_asks_for():
+    assert icons.APP_ICON_SIZES == (16, 20, 24, 32, 40, 48, 64, 256)
+
+
+def test_app_icon_falls_back_to_the_svg_without_the_ico(qapp, tmp_path, monkeypatch):
+    """A source checkout without a regenerated ``app.ico`` still gets every size."""
+    (tmp_path / "app.svg").write_bytes((icons.ICON_DIR / "app.svg").read_bytes())
+    monkeypatch.setattr(icons, "ICON_DIR", tmp_path)
+    available = {size.width() for size in icons.app_icon().availableSizes()}
+    assert set(icons.APP_ICON_SIZES) <= available
 
 
 def test_the_cache_can_be_cleared_when_the_palette_changes(qapp):

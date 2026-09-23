@@ -15,27 +15,19 @@ alternative is anchored and backtrack-free, so a block costs one linear scan —
 the cap in the pane is 4000 lines and every one of them is rehighlighted on a
 light/dark switch.
 
-**Why the colours are half palette, half table.** A ``QPalette`` has no role
-for "JSON string", so the four hues are two hand-picked sets (one for a light
-Base, one for a dark one) chosen for contrast against it; what the palette
-decides is *which* set, and the muted punctuation is literally the palette's
-own ``Text`` colour at reduced alpha, so it follows a custom theme for free.
-``QStyleHints.colorScheme`` is the tie-break when the palette says nothing, and
-its ``colorSchemeChanged`` signal re-derives everything.
+**Where the colours come from.** The four hues are the theme's ``code_*``
+tokens and the muted punctuation is the theme's ``text`` at reduced alpha, so
+the highlighter needs no colour of its own. ``theme.signals.changed`` fires
+after every theme switch (including the desktop going dark in "Sistema" mode)
+and re-derives everything.
 """
 from __future__ import annotations
 
 import re
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import (
-    QColor,
-    QGuiApplication,
-    QPalette,
-    QSyntaxHighlighter,
-    QTextCharFormat,
-    QTextDocument,
-)
+from PySide6.QtGui import QColor, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+
+from qtrequestory.ui import theme
 
 __all__ = ["JsonHighlighter"]
 
@@ -49,50 +41,32 @@ TOKENS = re.compile(
     r'|(?P<punctuation>[{}\[\],:])'
 )
 
-#: Foregrounds per token class, for a light and for a dark ``Base``. Both sets
-#: clear 4.5:1 against their background; ``punctuation`` is derived instead.
-LIGHT = {
-    "key": "#0B5394",
-    "string": "#9C2C2C",
-    "literal": "#1750C4",
-    "number": "#116329",
-}
-DARK = {
-    "key": "#9CDCFE",
-    "string": "#CE9178",
-    "literal": "#569CD6",
-    "number": "#B5CEA8",
-}
-
 #: How much of the text colour is left for the structural characters.
 PUNCTUATION_ALPHA = 130
 
 
 class JsonHighlighter(QSyntaxHighlighter):
-    """Colours a pretty-printed JSON document, following the current palette.
+    """Colours a pretty-printed JSON document with the current theme's tokens.
 
-    Attach it to a document and forget it: it re-derives its colours whenever
-    the system switches between light and dark, because the connection to
-    ``colorSchemeChanged`` dies with the highlighter (it is a ``QObject`` and
-    Qt drops the connection with the receiver).
+    Attach it to a document and forget it: it re-derives its colours on every
+    theme switch, and the connection to ``theme.signals.changed`` dies with the
+    highlighter (it is a ``QObject`` and Qt drops the connection with the
+    receiver).
     """
 
     def __init__(self, document: QTextDocument | None = None) -> None:
         super().__init__(document)
         self._formats: dict[str, QTextCharFormat] = {}
         self._build_formats()
-        hints = QGuiApplication.styleHints()
-        if hints is not None:  # pragma: no branch - always set under a QApplication
-            hints.colorSchemeChanged.connect(self._on_color_scheme_changed)
+        theme.signals.changed.connect(self.refresh_colors)
 
     # -- public ------------------------------------------------------------
 
     def refresh_colors(self) -> None:
-        """Re-derive the formats from the current palette and repaint.
+        """Re-derive the formats from the current theme and repaint.
 
-        Called on ``colorSchemeChanged`` and by the pane after any other event
-        that can swap the palette; safe with no document attached, which is the
-        state of a pane that has never shown a body.
+        Called on ``theme.signals.changed``; safe with no document attached,
+        which is the state of a pane that has never shown a body.
         """
         self._build_formats()
         if self.document() is not None:
@@ -111,14 +85,16 @@ class JsonHighlighter(QSyntaxHighlighter):
 
     # -- internals ----------------------------------------------------------
 
-    def _on_color_scheme_changed(self, _scheme: object) -> None:
-        self.refresh_colors()
-
     def _build_formats(self) -> None:
-        palette = QGuiApplication.palette()
-        colors = DARK if _is_dark(palette) else LIGHT
+        tokens = theme.tokens()
+        colors = {
+            "key": tokens.code_key,
+            "string": tokens.code_string,
+            "literal": tokens.code_literal,
+            "number": tokens.code_number,
+        }
         formats = {kind: _foreground(QColor(value)) for kind, value in colors.items()}
-        muted = QColor(palette.color(QPalette.ColorRole.Text))
+        muted = QColor(tokens.text)
         muted.setAlpha(PUNCTUATION_ALPHA)
         formats["punctuation"] = _foreground(muted)
         self._formats = formats
@@ -129,17 +105,3 @@ def _foreground(color: QColor) -> QTextCharFormat:
     char_format.setForeground(color)
     return char_format
 
-
-def _is_dark(palette: QPalette) -> bool:
-    """True when the text view's background is darker than its text.
-
-    The palette is asked first and the style hint only breaks a tie: a user who
-    forces a dark palette on a light desktop (or a test) must get readable
-    colours, and ``colorScheme`` reports the *desktop*, not this application.
-    """
-    base = palette.color(QPalette.ColorRole.Base).lightness()
-    text = palette.color(QPalette.ColorRole.Text).lightness()
-    if base != text:
-        return base < text
-    hints = QGuiApplication.styleHints()
-    return hints is not None and hints.colorScheme() == Qt.ColorScheme.Dark

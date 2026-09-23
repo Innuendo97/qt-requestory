@@ -13,6 +13,7 @@ which is exactly what the buttons do.
 from __future__ import annotations
 
 import dataclasses
+import threading
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,8 @@ GOOD_ENVS = [
 
 @pytest.fixture
 def wizard(qtbot, fake_core, runner):
+    """A genuine first run: no configuration saved yet (see ``rerun_wizard``)."""
+    fake_core.config.first_run = True
     widget = FirstRunWizard(fake_core, runner)
     qtbot.addWidget(widget)
     return widget
@@ -115,19 +118,75 @@ def test_an_empty_folder_field_keeps_avanti_disabled(wizard):
     assert wizard.folder_page.isComplete() is True
 
 
-def test_existing_log_files_are_announced(wizard, fake_core, tmp_path):
+def wait_count(qtbot, page) -> None:
+    """Until the file count running in the worker has answered."""
+    qtbot.waitUntil(lambda: not page.counting(), timeout=3000)
+
+
+def test_existing_log_files_are_announced(qtbot, wizard, fake_core, tmp_path):
     root = tmp_path / "mirror"
     fake_core.index.set_local_file_count(root, 7)
 
     wizard.folder_page.set_path(root)
+    wait_count(qtbot, wizard.folder_page)
 
     assert "7" in wizard.folder_page.info_label.text()
     assert wizard.folder_page.info_label.isVisibleTo(wizard.folder_page)
 
 
-def test_an_empty_folder_says_nothing(wizard, tmp_path):
+def test_an_empty_folder_says_nothing(qtbot, wizard, tmp_path):
     wizard.folder_page.set_path(tmp_path / "vuota")
+    wait_count(qtbot, wizard.folder_page)
     assert wizard.folder_page.info_label.text() == ""
+
+
+def test_the_files_are_counted_off_the_gui_thread_with_a_placeholder(
+        qtbot, wizard, fake_core, tmp_path, monkeypatch):
+    """Walking a big folder on the GUI thread froze the wizard (BACKLOG)."""
+    gate = threading.Event()
+    threads: list[int] = []
+
+    def slow_count(root=None) -> int:
+        threads.append(threading.get_ident())
+        gate.wait(5.0)
+        return 3
+
+    monkeypatch.setattr(fake_core.index, "count_local_files", slow_count)
+    page = wizard.folder_page
+    try:
+        page.set_path(tmp_path / "grande")
+        assert page.counting()
+        assert page.info_label.text() == strings.WIZARD_P1_COUNTING
+    finally:
+        gate.set()
+    wait_count(qtbot, page)
+    assert threads and threads[0] != threading.get_ident()
+    assert "3" in page.info_label.text()
+
+
+def test_a_folder_that_cannot_be_counted_says_nothing(qtbot, wizard, fake_core, tmp_path,
+                                                     monkeypatch):
+    def unreadable(root=None) -> int:
+        raise PermissionError("accesso negato")
+
+    monkeypatch.setattr(fake_core.index, "count_local_files", unreadable)
+    page = wizard.folder_page
+    page.set_path(tmp_path / "vietata")
+    wait_count(qtbot, page)
+    assert page.info_label.text() == ""
+
+
+def test_only_the_last_folder_counted_is_announced(qtbot, wizard, fake_core, tmp_path):
+    fake_core.index.set_local_file_count(tmp_path / "a", 5)
+    fake_core.index.set_local_file_count(tmp_path / "b", 9)
+    page = wizard.folder_page
+
+    page.set_path(tmp_path / "a")
+    page.set_path(tmp_path / "b")
+    wait_count(qtbot, page)
+    qtbot.wait(50)
+
+    assert "9" in page.info_label.text()
 
 
 def test_browse_fills_the_field(wizard, tmp_path, monkeypatch):
@@ -459,37 +518,36 @@ def test_the_automation_defaults_are_both_on(wizard):
     assert page.start_sync_requested() is True
 
 
-def test_the_legacy_task_notice_appears_only_when_one_is_registered(wizard, fake_core):
-    page = wizard.automation_page
-
-    page.initializePage()
+def test_the_legacy_task_checkbox_appears_only_when_one_is_registered(
+        shown_wizard, fake_core, tmp_path):
+    advance_to_automation(shown_wizard, tmp_path / "logs")
+    page = shown_wizard.automation_page
     assert page.has_legacy_task() is False
-    assert page.legacy_label.text() == ""
+    assert not page.legacy_check.isVisible()
+    assert not page.legacy_note.isVisible()
 
     fake_core.scheduler.set_legacy(True)
     page.initializePage()
     assert page.has_legacy_task() is True
-    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
+    assert page.legacy_check.isVisible()
+    assert page.legacy_note.isVisible()
 
 
-def test_the_legacy_notice_stops_promising_a_replacement_without_autosync(
-    shown_wizard, fake_core, tmp_path
-):
-    """Removal only happens inside the auto-sync branch, so "verrà sostituito"
-    with the box unticked would be a promise the wizard does not keep."""
+def test_the_legacy_task_is_kept_by_default(shown_wizard, fake_core, tmp_path):
+    """Removing a working sync the user never asked us to touch was the bug:
+    the two tasks coexist safely (README), so removal is opt-in."""
     fake_core.scheduler.set_legacy(True)
     advance_to_automation(shown_wizard, tmp_path / "logs")
     page = shown_wizard.automation_page
-    assert page.legacy_label.isVisible() is True
-    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
 
-    page.autosync_check.setChecked(False)
-
-    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK_KEPT
-    assert page.legacy_label.isVisible() is True
-
-    page.autosync_check.setChecked(True)
-    assert page.legacy_label.text() == strings.WIZARD_P3_LEGACY_TASK
+    assert page.legacy_check.text() == strings.WIZARD_P3_LEGACY_REMOVE
+    assert page.legacy_check.text() == "Rimuovi il vecchio task NginxLogSync"
+    assert page.legacy_check.isChecked() is False
+    assert page.legacy_note.text() == (
+        "Puoi tenerli entrambi finché non hai verificato che il nuovo funziona: "
+        "non si danneggiano a vicenda"
+    )
+    assert page.remove_legacy_requested() is False
 
 
 def test_the_automation_note_describes_the_schedule_that_would_be_registered(
@@ -533,19 +591,24 @@ def test_the_automation_note_follows_a_schedule_saved_after_the_page_was_built(
     assert "Ogni giorno alle 06:00, e al login." in page.autosync_note.text()
 
 
-def test_no_legacy_task_means_no_notice_whatever_the_checkbox_says(wizard, fake_core):
+def test_no_legacy_task_means_nothing_to_remove(wizard, fake_core):
     page = wizard.automation_page
     page.initializePage()
 
-    page.autosync_check.setChecked(False)
+    page.legacy_check.setChecked(True)  # hidden, but even so
 
-    assert page.legacy_label.text() == ""
+    assert page.remove_legacy_requested() is False
+
+
+def test_the_automation_page_no_longer_asks_for_the_editor(wizard):
+    """Notepad++ has nothing to do with automation: it is on page 1."""
+    assert not hasattr(wizard.automation_page, "editor_edit")
 
 
 def test_the_editor_field_is_prefilled_from_the_detected_editor(wizard, fake_core, tmp_path):
     editor = tmp_path / "notepad++.exe"
     fake_core.config.editor = editor
-    page = wizard.automation_page
+    page = wizard.folder_page
 
     page.initializePage()
 
@@ -554,12 +617,23 @@ def test_the_editor_field_is_prefilled_from_the_detected_editor(wizard, fake_cor
 
 def test_no_detected_editor_leaves_the_field_empty_with_a_hint(wizard, fake_core):
     fake_core.config.editor = None
-    page = wizard.automation_page
+    page = wizard.folder_page
 
     page.initializePage()
 
     assert page.editor_path() is None
-    assert page.editor_hint.text() == strings.WIZARD_P3_EDITOR_NOT_FOUND
+    assert page.editor_hint.text() == strings.WIZARD_P1_EDITOR_NOT_FOUND
+
+
+def test_a_configured_editor_wins_over_detection_on_a_rerun(rerun_wizard, fake_core, tmp_path):
+    mine = tmp_path / "mio" / "notepad++.exe"
+    fake_core.config.config = dataclasses.replace(fake_core.config.config, editor_path=mine)
+    fake_core.config.editor = tmp_path / "rilevato.exe"
+    page = rerun_wizard.folder_page
+
+    page.initializePage()
+
+    assert page.editor_path() == mine
 
 
 def test_the_folder_browse_button_is_wired(wizard, tmp_path, monkeypatch):
@@ -578,7 +652,7 @@ def test_browsing_for_the_editor_fills_the_field(wizard, tmp_path, monkeypatch):
     monkeypatch.setattr(
         QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(chosen), ""))
     )
-    page = wizard.automation_page
+    page = wizard.folder_page
 
     page.browse_editor()
 
@@ -631,23 +705,74 @@ def test_fine_without_autosync_registers_nothing(wizard, fake_core, tmp_path):
     assert wizard.wizard_result().autosync is False
 
 
-def test_the_legacy_task_is_removed_once_ours_is_registered(wizard, fake_core, tmp_path):
+@pytest.fixture
+def legacy_removals(fake_core, monkeypatch) -> list[int]:
+    """Every ``remove_legacy_task`` call (the fake has no counter of its own)."""
+    calls: list[int] = []
+    real = fake_core.scheduler.remove_legacy_task
+
+    def counted() -> None:
+        calls.append(1)
+        real()
+
+    monkeypatch.setattr(fake_core.scheduler, "remove_legacy_task", counted)
+    return calls
+
+
+def test_by_default_fine_never_removes_the_legacy_task(wizard, fake_core, tmp_path,
+                                                       legacy_removals):
     fake_core.scheduler.set_legacy(True)
     advance_to_automation(wizard, tmp_path / "logs")
 
     wizard.accept()
 
+    assert fake_core.scheduler.register_calls == 1
+    assert legacy_removals == [], "remove_legacy_task must not even be called"
+    assert fake_core.scheduler.detect_legacy_task() is True
+
+
+def test_the_legacy_task_is_removed_when_the_user_ticks_it(wizard, fake_core, tmp_path,
+                                                           legacy_removals):
+    fake_core.scheduler.set_legacy(True)
+    advance_to_automation(wizard, tmp_path / "logs")
+    wizard.automation_page.legacy_check.setChecked(True)
+
+    wizard.accept()
+
+    assert legacy_removals == [1]
     assert fake_core.scheduler.detect_legacy_task() is False
 
 
-def test_the_legacy_task_survives_when_autosync_is_off(wizard, fake_core, tmp_path):
+def test_the_legacy_task_is_removed_on_request_even_without_autosync(
+        wizard, fake_core, tmp_path, legacy_removals):
+    """An explicit choice: the user may be dropping the old sync altogether."""
     fake_core.scheduler.set_legacy(True)
     advance_to_automation(wizard, tmp_path / "logs")
     wizard.automation_page.autosync_check.setChecked(False)
+    wizard.automation_page.legacy_check.setChecked(True)
 
     wizard.accept()
 
-    assert fake_core.scheduler.detect_legacy_task() is True, "nothing replaced it"
+    assert legacy_removals == [1]
+    assert fake_core.scheduler.register_calls == 0
+
+
+def test_the_legacy_task_survives_when_ours_could_not_be_registered(
+        wizard, fake_core, tmp_path, monkeypatch, legacy_removals):
+    """Asked to replace the old task, failing to register the new one: keep
+    the old one, or the user is left with no sync at all."""
+    def boom() -> None:
+        raise SchedulerError("schtasks ha restituito 1")
+
+    monkeypatch.setattr(fake_core.scheduler, "register", boom)
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    fake_core.scheduler.set_legacy(True)
+    advance_to_automation(wizard, tmp_path / "logs")
+    wizard.automation_page.legacy_check.setChecked(True)
+
+    wizard.accept()
+
+    assert legacy_removals == []
 
 
 def test_a_scheduler_failure_is_reported_but_never_blocks_fine(
@@ -704,6 +829,7 @@ def test_a_failure_removing_the_legacy_task_is_swallowed(
 
     monkeypatch.setattr(fake_core.scheduler, "remove_legacy_task", boom)
     advance_to_automation(wizard, tmp_path / "logs")
+    wizard.automation_page.legacy_check.setChecked(True)
 
     wizard.accept()
 
@@ -739,9 +865,320 @@ def test_run_first_run_wizard_returns_the_result_when_accepted(
 
 
 def test_the_wizard_has_exactly_the_three_pages_of_the_design(wizard):
-    titles = [wizard.page(pid).title() for pid in wizard.pageIds()]
+    titles = [wizard.page(pid).step_title() for pid in wizard.pageIds()]
     assert titles == [
         strings.WIZARD_P1_TITLE,
         strings.WIZARD_P2_TITLE,
         strings.WIZARD_P3_TITLE,
     ]
+
+
+# ------------------------------------------- 3. automazione, on a rerun ---
+
+@pytest.fixture
+def rerun_wizard(qtbot, fake_core, runner):
+    """"Riesegui configurazione iniziale": a configuration already exists."""
+    fake_core.config.first_run = False
+    widget = FirstRunWizard(fake_core, runner)
+    qtbot.addWidget(widget)
+    return widget
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_a_rerun_pre_checks_autosync_from_the_scheduled_task(
+        qtbot, rerun_wizard, fake_core, tmp_path, registered):
+    """Rerunning the wizard must not silently turn automation back on."""
+    fake_core.scheduler.set_status(registered=registered)
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    page = rerun_wizard.automation_page
+    qtbot.waitUntil(page.autosync_check.isEnabled, timeout=5000)
+    assert page.autosync_check.isChecked() is registered
+    assert not page.autosync_checking.isVisible()
+
+
+def test_the_checkbox_waits_disabled_while_the_task_is_being_checked(
+        qtbot, rerun_wizard, fake_core, tmp_path, monkeypatch):
+    gate = threading.Event()
+    real_status = fake_core.scheduler.status
+
+    def slow_status():
+        gate.wait(5.0)
+        return real_status()
+
+    monkeypatch.setattr(fake_core.scheduler, "status", slow_status)
+    rerun_wizard.show()
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    page = rerun_wizard.automation_page
+    try:
+        assert not page.autosync_check.isEnabled()
+        assert page.autosync_checking.isVisible()
+        assert page.autosync_checking.text() == strings.WIZARD_P3_AUTOSYNC_CHECKING
+    finally:
+        gate.set()
+    qtbot.waitUntil(page.autosync_check.isEnabled, timeout=5000)
+    assert not page.autosync_checking.isVisible()
+
+
+def test_a_first_run_keeps_autosync_on_without_asking(qtbot, wizard, fake_core, tmp_path,
+                                                      monkeypatch):
+    monkeypatch.setattr(fake_core.scheduler, "status",
+                        lambda: pytest.fail("a first run has no task to ask about"))
+    advance_to_automation(wizard, tmp_path / "logs")
+    page = wizard.automation_page
+    assert page.autosync_check.isEnabled()
+    assert page.autosync_check.isChecked()
+
+
+def test_the_answer_does_not_override_a_choice_made_meanwhile(
+        qtbot, rerun_wizard, fake_core, tmp_path):
+    """Going back and forth does not ask again and undo what the user ticked."""
+    fake_core.scheduler.set_status(registered=False)
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    page = rerun_wizard.automation_page
+    qtbot.waitUntil(page.autosync_check.isEnabled, timeout=5000)
+    page.autosync_check.setChecked(True)
+    rerun_wizard.back()
+    rerun_wizard.next()
+    qtbot.wait(100)
+    assert page.autosync_check.isChecked()
+
+
+def test_fine_before_the_answer_registers_nothing(qtbot, rerun_wizard, fake_core, tmp_path,
+                                                  monkeypatch):
+    gate = threading.Event()
+    real_status = fake_core.scheduler.status
+
+    def slow_status():
+        gate.wait(5.0)
+        return real_status()
+
+    monkeypatch.setattr(fake_core.scheduler, "status", slow_status)
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    try:
+        rerun_wizard.accept()
+    finally:
+        gate.set()
+    assert fake_core.scheduler.register_calls == 0
+    assert rerun_wizard.wizard_result().autosync is False
+
+
+# ------------------------------------------------ header, intro, stepper ---
+
+def test_every_page_has_the_header_with_icon_title_and_step(wizard):
+    pages = [wizard.page(pid) for pid in wizard.pageIds()]
+    for number, page in enumerate(pages, 1):
+        header = page.header
+        assert header.title_label.text() == page.step_title()
+        assert header.step_label.text() == f"Passo {number} di 3"
+        assert header.step_label.property("role") == "muted"
+        pixmap = header.icon_label.pixmap()
+        assert not pixmap.isNull()
+        assert pixmap.deviceIndependentSize().toSize().width() == 48
+
+
+def test_qt_draws_no_second_title_above_ours(wizard):
+    """QWizard renders ``title()`` in its own banner: ours replaces it."""
+    for pid in wizard.pageIds():
+        assert wizard.page(pid).title() == ""
+        assert wizard.page(pid).subTitle() == ""
+
+
+def test_page_one_introduces_the_tool_and_gives_the_readme_advice(wizard):
+    intro = wizard.folder_page.intro_label.text()
+    assert strings.WIZARD_P1_INTRO in intro
+    assert ("scegli una cartella su un disco locale capiente, "
+            "non una cartella sincronizzata nel cloud") in intro
+
+
+def test_only_page_one_has_the_intro(wizard):
+    assert not hasattr(wizard.environments_page, "intro_label")
+    assert not hasattr(wizard.automation_page, "intro_label")
+
+
+# ------------------------------------ 3. automazione: unticking on a rerun ---
+
+def _answered_rerun(qtbot, rerun_wizard, fake_core, tmp_path, *, registered: bool):
+    fake_core.scheduler.set_status(registered=registered)
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    page = rerun_wizard.automation_page
+    qtbot.waitUntil(page.autosync_check.isEnabled, timeout=5000)
+    return page
+
+
+def test_unticking_a_registered_task_on_a_rerun_removes_it(qtbot, rerun_wizard, fake_core,
+                                                          tmp_path):
+    """The box is pre-checked from the real task: unticking it must mean "off"."""
+    page = _answered_rerun(qtbot, rerun_wizard, fake_core, tmp_path, registered=True)
+    page.autosync_check.setChecked(False)
+
+    rerun_wizard.accept()
+
+    assert fake_core.scheduler.unregister_calls == 1
+    assert fake_core.scheduler.register_calls == 0
+    assert rerun_wizard.wizard_result().autosync is False
+
+
+def test_leaving_an_unregistered_task_off_touches_nothing(qtbot, rerun_wizard, fake_core,
+                                                         tmp_path):
+    _answered_rerun(qtbot, rerun_wizard, fake_core, tmp_path, registered=False)
+
+    rerun_wizard.accept()
+
+    assert fake_core.scheduler.unregister_calls == 0
+    assert fake_core.scheduler.register_calls == 0
+
+
+def test_a_first_run_without_autosync_never_unregisters(wizard, fake_core, tmp_path):
+    advance_to_automation(wizard, tmp_path / "logs")
+    wizard.automation_page.autosync_check.setChecked(False)
+
+    wizard.accept()
+
+    assert fake_core.scheduler.unregister_calls == 0
+
+
+def test_fine_before_the_answer_unregisters_nothing(qtbot, rerun_wizard, fake_core, tmp_path,
+                                                    monkeypatch):
+    """No answer yet means we do not know the task exists: touch nothing."""
+    gate = threading.Event()
+    real_status = fake_core.scheduler.status
+    fake_core.scheduler.set_status(registered=True)
+
+    def slow_status():
+        gate.wait(5.0)
+        return real_status()
+
+    monkeypatch.setattr(fake_core.scheduler, "status", slow_status)
+    advance_to_automation(rerun_wizard, tmp_path / "logs")
+    try:
+        rerun_wizard.accept()
+    finally:
+        gate.set()
+    assert fake_core.scheduler.unregister_calls == 0
+
+
+def test_a_failure_unregistering_is_reported_but_never_blocks_fine(
+        qtbot, rerun_wizard, fake_core, tmp_path, monkeypatch):
+    page = _answered_rerun(qtbot, rerun_wizard, fake_core, tmp_path, registered=True)
+
+    def boom() -> None:
+        raise SchedulerError("accesso negato")
+
+    monkeypatch.setattr(fake_core.scheduler, "unregister", boom)
+    shown: list[tuple] = []
+    monkeypatch.setattr(QMessageBox, "information",
+                        staticmethod(lambda *args, **kw: shown.append(args)))
+    page.autosync_check.setChecked(False)
+
+    rerun_wizard.accept()
+
+    assert shown and "accesso negato" in shown[0][2]
+    assert rerun_wizard.wizard_result() is not None
+    assert rerun_wizard.wizard_result().autosync is True, "the task is still there"
+
+
+# ------------------------------------------------ closing cancels the jobs ---
+
+@pytest.mark.parametrize("close", ["reject", "accept"])
+def test_closing_the_wizard_cancels_the_reachability_check(qtbot, wizard, fake_core, tmp_path,
+                                                          monkeypatch, close):
+    gate = threading.Event()
+    monkeypatch.setattr(fake_core.sync, "check_reachable",
+                        lambda env, timeout=5.0: gate.wait(5.0) or True)
+    advance_to_automation(wizard, tmp_path / "logs")
+    wizard.environments_page.table.set_environments(GOOD_ENVS)
+    job = wizard.environments_page.check_reachability()
+    try:
+        getattr(wizard, close)()
+        assert job.token.is_set(), "a closed wizard must not keep probing"
+    finally:
+        gate.set()
+
+
+def test_closing_the_wizard_cancels_the_file_count(qtbot, wizard, fake_core, tmp_path,
+                                                  monkeypatch):
+    gate = threading.Event()
+    monkeypatch.setattr(fake_core.index, "count_local_files",
+                        lambda root=None: gate.wait(5.0) and 0)
+    wizard.folder_page.set_path(tmp_path / "grande")
+    job = wizard.folder_page.count_job()
+    try:
+        wizard.reject()
+        assert job is not None and job.token.is_set()
+    finally:
+        gate.set()
+
+
+# ------------------------------------------------- the environments table ---
+
+def test_empty_cells_show_a_placeholder(wizard):
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    page = wizard.environments_page
+    page.add_environment()
+    table = page.table
+    delegate = table.itemDelegate()
+
+    def shown(column: int) -> str:
+        option = QStyleOptionViewItem()
+        delegate.initStyleOption(option, table.model().index(0, column))
+        return option.text
+
+    assert shown(table.COL_NAME) == "nome"
+    assert shown(table.COL_URL) == "https://…"
+
+    table.item(0, table.COL_NAME).setText("coll")
+    assert shown(table.COL_NAME) == "coll"
+    assert page.environments() == [Environment("coll", "", True)], "never saved as data"
+
+
+def test_the_cell_editor_carries_the_placeholder_too(wizard):
+    from PySide6.QtWidgets import QLineEdit, QStyleOptionViewItem
+
+    page = wizard.environments_page
+    page.add_environment()
+    table = page.table
+    editor = table.itemDelegate().createEditor(
+        table.viewport(), QStyleOptionViewItem(), table.model().index(0, table.COL_URL))
+    assert isinstance(editor, QLineEdit)
+    assert editor.placeholderText() == "https://…"
+
+
+def test_a_new_row_is_highlighted_with_the_theme_selection(qtbot, themed, fake_core, runner):
+    """Not an accent block: the theme's quiet selection colour."""
+    from PySide6.QtGui import QPalette
+
+    from qtrequestory.ui import theme
+
+    theme.apply(themed, theme.Mode.LIGHT)
+    widget = FirstRunWizard(fake_core, runner)
+    qtbot.addWidget(widget)
+    table = widget.environments_page.table
+    assert table.styleSheet() == ""
+    assert table.palette().color(QPalette.ColorRole.Highlight).name().upper() == \
+        theme.LIGHT.selection
+    widget.environments_page.add_environment()
+    assert table.currentRow() == 0
+
+
+# ------------------------------------ cancelling keeps it a first run ---
+
+def test_cancelling_the_first_run_wizard_keeps_it_a_first_run(qtbot, fake_core, runner, tmp_path):
+    """BACKLOG: a cancelled wizard used to leave a config.json behind, so it
+    never came back. Reproduced with the REAL config service in a temp home."""
+    from qtrequestory.core import facade
+    from qtrequestory.core.paths import AppPaths
+
+    real_config = facade.ConfigService(AppPaths(tmp_path / "home").ensure(),
+                                       exe_dir=tmp_path / "exe", editor_candidates=[])
+    services = dataclasses.replace(fake_core, config=real_config)
+    assert real_config.is_first_run()
+
+    widget = FirstRunWizard(services, runner)
+    qtbot.addWidget(widget)
+    advance_to_automation(widget, tmp_path / "logs")  # every page read the config
+    widget.reject()
+
+    assert real_config.is_first_run(), "the wizard must come back next time"
+    assert not real_config.config_path().exists()
+    assert fake_core.scheduler.register_calls == 0

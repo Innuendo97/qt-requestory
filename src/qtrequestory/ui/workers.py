@@ -43,8 +43,8 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgress, LogMessage
 
 __all__ = [
-    "DEFAULT_MAX_THREADS", "JOB_NAMES", "SCHEDULER_JOB", "CancelToken", "Job", "JobRunner",
-    "QtEventSink", "Worker", "WorkerSignals",
+    "DEFAULT_MAX_THREADS", "JOB_NAMES", "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
+    "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals",
 ]
 
 log = logging.getLogger(__name__)
@@ -59,14 +59,16 @@ PROGRESS_INTERVAL_S = 0.1
 SCHEDULER_JOB = "scheduler"
 
 #: Every name a page submits under, in one place. At most ONE job per name is
-#: ever live — :attr:`JobRunner.EXCLUSIVE` refuses a second, and every other
-#: name supersedes the previous one — so this list is an exact upper bound on
-#: the number of jobs that can run at the same time, and therefore the right
-#: size for the pool. A name missing here is a job that may have to WAIT for a
-#: 20-minute download before it starts; ``tests/ui/test_workers.py`` checks the
-#: list against the constants the pages define.
+#: ever *live* — :attr:`JobRunner.EXCLUSIVE` refuses a second, and every other
+#: name supersedes the previous one — so this list bounds the jobs whose result
+#: anybody still waits for, and sizes the pool (see
+#: :data:`DEFAULT_MAX_THREADS`). A name missing here is a job that may have to
+#: WAIT for a 20-minute download before it starts; ``tests/ui/test_workers.py``
+#: checks the list against the constants the pages define.
 JOB_NAMES = (
     "sync",                 # SyncPage: download + index
+    "sync-task-status",     # SyncPage: scheduler.status() for the auto-sync card
+    "sync-reachability",    # SyncPage: is each environment reachable? (on show)
     "index",                # Impostazioni: [Ricostruisci indice]
     SCHEDULER_JOB,          # SyncPage checkbox and a save in Impostazioni
     "search",               # Ricerca: the query
@@ -76,10 +78,21 @@ JOB_NAMES = (
     "check-envs",           # Impostazioni: [Verifica]
     "about-log",            # Info: the app.log tail
     "wizard-reachability",  # first-run wizard, page 2
+    "wizard-task-status",   # first-run wizard, page 3: is the task registered?
+    "wizard-count-files",   # first-run wizard, page 1: log files already there
 )
 
-#: One thread per name in :data:`JOB_NAMES`, so nothing ever queues.
-DEFAULT_MAX_THREADS = len(JOB_NAMES)
+#: Extra threads for SUPERSEDED jobs. Superseding silences a job and sets its
+#: cancel token, but the thread stays busy until the core function reaches a
+#: check point — and ``read_body`` or a single SQLite query has none. Browsing
+#: down the results fast can therefore hold a few threads with jobs nobody
+#: listens to any more.
+SUPERSEDED_HEADROOM = 4
+
+#: One thread per name in :data:`JOB_NAMES` plus :data:`SUPERSEDED_HEADROOM`.
+#: A live job queues only when more than that many superseded ones are still
+#: finishing their last blocking call at the same moment — rare, and short.
+DEFAULT_MAX_THREADS = len(JOB_NAMES) + SUPERSEDED_HEADROOM
 
 _next_id = itertools.count(1).__next__
 
@@ -226,7 +239,7 @@ class Worker(QRunnable):
         except Cancelled:
             self._emit("cancelled")
         except Exception as exc:  # noqa: BLE001 - any core failure becomes a message
-            log.exception("job %s failed", getattr(self._fn, "__name__", self._fn))
+            log.exception("operazione %s non riuscita", getattr(self._fn, "__name__", self._fn))
             self._emit("error", type(exc).__name__, str(exc))
         finally:
             if self._done is not None:
@@ -269,7 +282,7 @@ class Job:
     """
 
     __slots__ = ("id", "name", "signals", "sink", "token", "superseded", "finished",
-                 "_delivery")
+                 "succeeded", "_delivery")
 
     def __init__(self, job_id: int, name: str, signals: WorkerSignals, sink: QtEventSink,
                  token: CancelToken) -> None:
@@ -280,6 +293,8 @@ class Job:
         self.token = token
         self.superseded = False
         self.finished = False
+        #: True once ``result`` was delivered (not ``error``/``cancelled``).
+        self.succeeded = False
         #: Set by the runner; kept here so the relay lives as long as the job.
         self._delivery: _Delivery | None = None
 
@@ -301,14 +316,17 @@ class Job:
 class JobRunner(QObject):
     """The one thread pool of the application, shared by every page.
 
-    One thread per name in :data:`JOB_NAMES` — ten of them — because exactly
-    one job per name is ever live and therefore nothing can ever queue. The
-    pool used to hold four threads while the UI submitted nine names, which
-    meant a [Cerca] could sit behind a 20-minute download waiting for a
-    *thread*, not for anything it needed. Idle pool threads are not created
-    until a job needs one, so the ceiling costs nothing when the user is doing
-    one thing at a time. The runner is created by ``run_gui`` and passed to
-    every page factory.
+    :data:`DEFAULT_MAX_THREADS` threads: one per name in :data:`JOB_NAMES`
+    (one live job per name) plus headroom for superseded jobs still finishing
+    their last blocking call. The pool used to hold four threads while the UI
+    submitted nine names, which meant a [Cerca] could sit behind a 20-minute
+    download waiting for a *thread*, not for anything it needed. Idle pool
+    threads are not created until a job needs one, so the ceiling costs nothing
+    when the user is doing one thing at a time. The runner is created by
+    ``run_gui`` and passed to every page factory.
+
+    :attr:`job_finished` tells the shell that a job is over, whatever page
+    started it: ``MainWindow`` refreshes every page after a sync or an index.
     """
 
     #: A submit with one of these names is refused while one is still running,
@@ -320,6 +338,9 @@ class JobRunner(QObject):
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)
+    #: ``(name, ok)`` once a live job is over; ``ok`` is False after an error
+    #: or a cancellation. A superseded job is silent here too.
+    job_finished = Signal(str, bool)
 
     def __init__(self, parent: QObject | None = None, *,
                  max_threads: int = DEFAULT_MAX_THREADS,
@@ -363,6 +384,8 @@ class JobRunner(QObject):
         # the sink was built here, on the GUI thread, so an emission from the
         # worker is queued to this thread. See QtEventSink.
         sink.event.connect(partial(_relay_event, delivery))
+        signals.result.connect(partial(_mark_succeeded, job))
+        signals.finished.connect(partial(self._announce_finished, job))
         self._jobs[name] = job
 
         worker = Worker(signals, job.token, sink, fn, args, kwargs, delivery=delivery)
@@ -378,9 +401,13 @@ class JobRunner(QObject):
         if not self._closing:
             self._pool.start(worker)
 
+    def _announce_finished(self, job: Job) -> None:
+        """GUI thread: ``finished`` of a live job was just delivered."""
+        self.job_finished.emit(job.name, job.succeeded)
+
     def max_thread_count(self) -> int:
         """How many jobs can run at once. Exposed so a test can pin it to
-        ``len(JOB_NAMES)`` rather than to a number written twice."""
+        :data:`DEFAULT_MAX_THREADS` rather than to a number written twice."""
         return self._pool.maxThreadCount()
 
     def job(self, name: str) -> Job | None:
@@ -434,6 +461,11 @@ def _relay_event(delivery: _Delivery, ev: Event) -> None:
     delivery.send("progress", ev)
     if isinstance(ev, LogMessage):
         delivery.send("log", ev.text)
+
+
+def _mark_succeeded(job: Job, _value: object) -> None:
+    """GUI thread, on the delivered ``result``: :attr:`Job.succeeded`."""
+    job.succeeded = True
 
 
 def _mark_finished(job: Job) -> None:

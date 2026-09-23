@@ -110,3 +110,28 @@ def runner(qapp):
     job_runner = JobRunner()
     yield job_runner
     job_runner.shutdown(3000)
+
+
+@pytest.fixture
+def themed(qapp):
+    """Let a test call ``theme.apply`` and put the application back afterwards.
+
+    ``apply`` changes process-wide state — style, palette, stylesheet, font and
+    the colour-scheme hint — that every later test would otherwise inherit.
+    """
+    from qtrequestory.ui import icons, theme
+
+    style = qapp.style().name()
+    palette = qapp.palette()
+    sheet = qapp.styleSheet()
+    font = qapp.font()
+    yield qapp
+    theme.reset()
+    qapp.setStyleSheet(sheet)
+    qapp.setStyle(style)
+    qapp.setPalette(palette)
+    qapp.setFont(font)
+    hints = qapp.styleHints()
+    if hasattr(hints, "unsetColorScheme"):
+        hints.unsetColorScheme()
+    icons.clear_cache()

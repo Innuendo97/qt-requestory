@@ -164,6 +164,32 @@ def test_sync_job_unreachable_env_still_indexes_local_files(cfg: Config, stub_se
     assert _search_names(cfg, "coll", FDI_A) == [entry_name(FDI_A, KEY_CTE)]
 
 
+def test_sync_job_indexes_a_disabled_env_too(cfg: Config, stub_server: StubServer):
+    """M23: ``envs=None`` only SYNCS enabled environments (``core.sync``'s
+    ``enabled_environments()``), but ``_index_envs`` deliberately indexes every
+    configured one regardless — a disabled env may still hold history worth
+    searching (see ``core/jobs.py``). A disabled "coll" with a pre-existing
+    local file (from before it was disabled) must therefore end up indexed by
+    a plain ``--sync``, even though the sync itself never touches it.
+    """
+    cfg = dataclasses.replace(
+        cfg, environments=[dataclasses.replace(e, enabled=(e.name != "coll")) for e in cfg.environments]
+    )
+    from datetime import date
+    make_daily_file(cfg.mirror_root, "coll", date(2026, 9, 15), [(entry_name(FDI_B, KEY_CTE), synthetic_body(FDI_B, KEY_CTE))])
+    _serve(stub_server, "svil", {f"{DAY}.txt": _daily((entry_name(FDI_A, KEY_SINT), synthetic_body(FDI_A, KEY_SINT)))})
+    sink = CollectingSink()
+
+    report = run_sync_job(cfg, sink=sink, cancel=CancelToken())
+
+    assert report.exit_code == 0
+    assert [r.env for r in report.sync.results] == ["svil"]  # coll was never synced
+    assert all("/coll/" not in path for _, path in stub_server.requests)
+    assert report.indexed_files == 2  # the fresh svil download AND the pre-existing coll file
+    assert _search_names(cfg, "coll", FDI_B) == [entry_name(FDI_B, KEY_CTE)]
+    assert _search_names(cfg, "svil", FDI_A) == [entry_name(FDI_A, KEY_SINT)]
+
+
 def test_sync_job_index_failure_is_logged_not_fatal(cfg: Config, stub_server: StubServer, monkeypatch):
     _serve(stub_server, "svil", {f"{DAY}.txt": _daily((entry_name(FDI_A, KEY_SINT), synthetic_body(FDI_A, KEY_SINT)))})
     cfg = dataclasses.replace(cfg, environments=cfg.environments[:1])
@@ -215,3 +241,44 @@ def test_index_job_failure_exit_1(cfg: Config, monkeypatch):
     report = run_index_job(cfg, sink=sink, cancel=CancelToken())
     assert report.exit_code == 1
     assert any("disk full" in e.text for e in sink.of(LogMessage))
+
+
+def test_index_job_rejects_an_unknown_environment(cfg: Config):
+    """Final review #4: ``--index -e <typo>`` used to exit 0 having done nothing."""
+    from qtrequestory.core.config import UnknownEnvironment
+
+    with pytest.raises(UnknownEnvironment):
+        run_index_job(cfg, envs=["nope"], sink=CollectingSink(), cancel=CancelToken())
+
+
+def test_sync_job_dry_run_is_logged_as_anteprima(cfg: Config, stub_server: StubServer):
+    """Final review #3: the window's "Anteprima" writes sync.log through the
+    same LoggingSink; its lines must not read like a real sync."""
+    from qtrequestory.core.events import LoggingSink
+
+    _serve(stub_server, "svil", {f"{DAY}.txt": _daily((entry_name(FDI_A, KEY_SINT), synthetic_body(FDI_A, KEY_SINT)))})
+
+    def logged_run(**kw) -> list[str]:
+        lines: list[str] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                lines.append(record.getMessage())
+
+        logger = logging.getLogger("test.dry_run_log")
+        handler = _Capture()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        try:
+            run_sync_job(cfg, envs=["svil"], sink=LoggingSink(logger), cancel=CancelToken(), **kw)
+        finally:
+            logger.removeHandler(handler)
+        return lines
+
+    preview = logged_run(dry_run=True)
+    assert any(line.startswith("svil: anteprima") for line in preview), preview
+    assert any(line.startswith("anteprima della sincronizzazione terminata") for line in preview), preview
+
+    real = logged_run()
+    assert real and all("anteprima" not in line for line in real), real

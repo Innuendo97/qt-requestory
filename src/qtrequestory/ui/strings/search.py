@@ -1,46 +1,75 @@
-"""Strings of the Ricerca page (form, results table) and the preview pane.
+"""Strings of the Ricerca page (bar, results, empty states) and the preview pane.
 
-Owned by: Task 12 (form + table) and Task 13 (preview pane, in a clearly
-separated block at the END of this file).
+Owned by the Search unit (Tasks 14-16); the preview pane's strings are in a
+clearly separated block at the END of this file.
 Only ``UPPER_CASE`` string constants; the package re-exports every public
 name defined here, so keep names unique across the strings package (prefix them
 with the page, e.g. ``SEARCH_``, ``SYNC_``).
 """
 
-# --- form -------------------------------------------------------------------
+# --- filter bar -------------------------------------------------------------
 
 SEARCH_ENV_LABEL = "Ambiente"
-SEARCH_FDI_LABEL = "FDI"
-SEARCH_FDI_PLACEHOLDER = "uuid o prefisso"
-SEARCH_FDI_TOOLTIP = (
-    "Identificativo della pratica: uuid completo o solo le prime cifre.\n"
-    "Incollando il nome di una chiamata viene compilata anche la template key."
+SEARCH_OMNIBOX_PLACEHOLDER = "Incolla un FDI, una template key o un nome file .json"
+#: Placeholder once an FDI chip is in the field.
+SEARCH_OMNIBOX_PLACEHOLDER_KEY = "aggiungi una template key…"
+#: Placeholder once a key chip (and no FDI) is in the field.
+SEARCH_OMNIBOX_PLACEHOLDER_FDI = "aggiungi un FDI…"
+SEARCH_OMNIBOX_TOOLTIP = (
+    "FDI (anche solo le prime cifre), template key o nome di una chiamata.\n"
+    "Ctrl+L: FDI · Ctrl+K: template key · Freccia giù: ricerche recenti"
 )
-SEARCH_KEY_LABEL = "Template key"
-SEARCH_KEY_PLACEHOLDER = "tutte le template key"
-SEARCH_KEY_TOOLTIP = "Nome del modello richiesto; scrivi una parte del nome per filtrare l'elenco."
-SEARCH_PERIOD_LABEL = "Periodo"
+#: The small caption in front of a chip's value.
+SEARCH_CHIP_FDI = "FDI"
+SEARCH_CHIP_KEY = "KEY"
+SEARCH_CHIP_REMOVE = "Rimuovi il filtro"
+SEARCH_KEY_MODE_EXACT = "esatta"
+SEARCH_KEY_MODE_CONTAINS = "contiene"
+SEARCH_KEY_MODE_TOOLTIP = "Come confrontare la template key"
 SEARCH_PERIOD_7 = "7 gg"
 SEARCH_PERIOD_30 = "30 gg"
 SEARCH_PERIOD_90 = "90 gg"
-SEARCH_PERIOD_CUSTOM = "Personalizzato"
-SEARCH_DATE_FROM_LABEL = "dal"
-SEARCH_DATE_TO_LABEL = "al"
+SEARCH_PERIOD_CUSTOM_TOOLTIP = "Scegli un intervallo di date"
+#: Tooltip of the calendar button while a custom range is active; {first}/{last} = dd/MM/yyyy.
+SEARCH_PERIOD_CUSTOM_ACTIVE_TOOLTIP = "Dal {first} al {last}"
+SEARCH_DATE_FROM_LABEL = "Dal"
+SEARCH_DATE_TO_LABEL = "Al"
+SEARCH_PERIOD_APPLY = "Applica"
 #: Qt date format of every date the page shows (also the ``QDateEdit`` mask).
 SEARCH_DATE_FORMAT = "dd/MM/yyyy"
 SEARCH_BTN = "Cerca"
+#: The [Cerca] button while a search runs.
+SEARCH_BTN_BUSY = "Cerca…"
 SEARCH_BTN_TOOLTIP = "Cerca nei log locali (Invio)"
 SEARCH_BTN_DISABLED_TOOLTIP = "Inserisci un FDI (anche solo le prime cifre) oppure una template key."
+#: Between the parts of a recent search ("coll · 1a2b3c4d… · MOD_TEST_A").
+SEARCH_RECENT_SEPARATOR = " · "
+SEARCH_RECENT_TITLE = "Ricerche recenti"
+#: A recent search of an environment that is no longer enabled; {env} = its name.
+SEARCH_RECENT_ENV_DISABLED = "L'ambiente {env} non è abilitato: ricerca non eseguita."
 
-# --- coverage, summary, banner ----------------------------------------------
+# --- meta line, banners -----------------------------------------------------
 
-#: {env} = environment name, {first}/{last} = dd/MM/yyyy of the indexed range.
-SEARCH_COVERAGE = "Log locali {env}: dal {first} al {last} · le chiamate di oggi arrivano domani"
+#: Right half of the meta line; {env} = environment, {first}/{last} = dd/MM/yyyy.
+SEARCH_COVERAGE = "log {env} dal {first} al {last}"
+SEARCH_COVERAGE_TOOLTIP = (
+    "Giorni presenti nell'indice locale. Le chiamate di oggi arrivano domani "
+    "con il file del giorno."
+)
 #: {env}: nothing is indexed yet for that environment.
-SEARCH_COVERAGE_NONE = "Nessun log locale per {env}: non c'è ancora niente da cercare."
+SEARCH_COVERAGE_NONE = "nessun log locale per {env}"
+#: The coverage warning; {env} = environment.
+SEARCH_GAP_ONE = "manca 1 giorno in {env}"
+#: {n} = missing weekdays, {env} = environment.
+SEARCH_GAP_MANY = "mancano {n} giorni in {env}"
+#: Tooltip of the coverage warning; {days} = the missing days, dd/MM, comma separated.
+SEARCH_GAP_TOOLTIP = "Giorni feriali senza file locale: {days}"
+SEARCH_GAP_BTN = "Vai a Sincronizzazione"
 SEARCH_SUMMARY_TAIL = "ordinate dalla più recente"
-#: {calls}/{fdis}/{days} = the three counts below, already pluralised.
-SEARCH_SUMMARY = "{calls} · {fdis} · {days} · " + SEARCH_SUMMARY_TAIL
+#: {column} = the header label of the sort column.
+SEARCH_SUMMARY_TAIL_COLUMN = "ordinate per {column}"
+#: {calls}/{fdis}/{days} = the three counts below, already pluralised; {tail} = a tail above.
+SEARCH_SUMMARY = "{calls} · {fdis} · {days} · {tail}"
 SEARCH_SUMMARY_CALLS_ONE = "1 chiamata"
 #: {n} = number of hits.
 SEARCH_SUMMARY_CALLS_MANY = "{n} chiamate"
@@ -50,7 +79,6 @@ SEARCH_SUMMARY_FDIS_MANY = "{n} FDI"
 SEARCH_SUMMARY_DAYS_ONE = "1 giorno"
 #: {n} = number of distinct days.
 SEARCH_SUMMARY_DAYS_MANY = "{n} giorni"
-SEARCH_RUNNING = "Ricerca in corso…"
 #: {error} = the message of the failed search job.
 SEARCH_FAILED = "Ricerca non riuscita: {error}"
 #: {n} = files the index has not scanned yet.
@@ -58,14 +86,18 @@ SEARCH_STALE_BANNER = "Indice in aggiornamento… {n} file non sono ancora ricer
 
 # --- results table ----------------------------------------------------------
 
-SEARCH_COL_DAY = "Giorno"
-SEARCH_COL_TIME = "Ora"
+SEARCH_COL_WHEN = "Quando"
 SEARCH_COL_KEY = "Template key"
 SEARCH_COL_FDI = "FDI"
-SEARCH_COL_NDOCS = "N. doc"
+SEARCH_COL_NDOCS = "Doc"
 SEARCH_COL_SIZE = "Dim."
-SEARCH_COL_CALL_ID = "ID chiamata"
-SEARCH_COL_FILE = "File"
+#: The row of an FDI group; {fdi} = the whole FDI, {when} = dd/MM/yyyy HH:mm:ss
+#: of its newest call, {calls} = SEARCH_SUMMARY_CALLS_ONE / _MANY.
+SEARCH_GROUP_LABEL = "{fdi} · {when} · {calls}"
+#: The group of the calls the log records without an FDI.
+SEARCH_GROUP_NO_FDI = "senza FDI"
+SEARCH_GROUP_TOGGLE = "Raggruppa per FDI"
+SEARCH_GROUP_TOGGLE_TOOLTIP = "Mostra le chiamate raggruppate per FDI oppure in un elenco unico"
 #: Shown where the log carries no value at all (no time, no FDI, no call id).
 SEARCH_VALUE_MISSING = "—"
 #: Shown where the value should exist but could not be read (unparsable body).
@@ -88,6 +120,10 @@ SEARCH_MENU_ONLY_KEY = "Cerca solo questa template key"
 SEARCH_MENU_OPEN_DAY_FOLDER = "Apri cartella del log del giorno"
 SEARCH_STATUS_COPIED_FDI = "FDI copiato negli appunti."
 SEARCH_STATUS_COPIED_KEY = "Template key copiata negli appunti."
+#: Ctrl+Shift+C: the selected row as one tab-separated line.
+SEARCH_STATUS_COPIED_ROW = "Riga copiata negli appunti (TSV)."
+#: A body action (Ctrl+C, Ctrl+O, Ctrl+S…) with no call selected.
+SEARCH_NOTHING_SELECTED = "Nessuna chiamata selezionata."
 #: Tooltip of the three body actions while no preview pane is installed.
 SEARCH_NO_PREVIEW_TOOLTIP = "L'anteprima non è disponibile in questa versione."
 
@@ -102,14 +138,31 @@ SEARCH_EMPTY_NO_RESULTS_HINT = "Controlla l'ambiente, il periodo e i filtri."
 #: {file} = YYYYMMDD.txt of today; shown when the window ends today.
 SEARCH_EMPTY_HINT_TODAY = "Le chiamate di oggi arrivano domani con il file {file}."
 SEARCH_EMPTY_HINT_SHORT_FDI = "Prova con l'FDI completo."
-#: Shown whenever the query carried a template key: the match is exact, and
-#: nothing else on the page says so. Keys come in suffix families
+#: Shown when an EXACT key search found nothing. Keys come in suffix families
 #: (_LUCE / _GAS / _DUAL / _386), so typing half of one is the natural mistake.
 SEARCH_EMPTY_HINT_EXACT_KEY = (
-    "La template key deve essere completa: la ricerca non accetta parti di key. "
-    "Scegli la key dall'elenco a discesa del campo «Template key»."
+    "La template key deve essere completa: scegli la key dall'elenco "
+    "oppure passa a «contiene»."
 )
-SEARCH_EMPTY_WIDEN_BTN = "Cerca negli ultimi 90 giorni"
+SEARCH_EMPTY_WIDEN_BTN = "Allarga a 90 giorni"
+#: The no-log state when the mirror has files but the index is empty (after a
+#: schema upgrade threw the old index away); {env} = environment.
+SEARCH_EMPTY_REBUILDING_TITLE = "L'indice è in ricostruzione."
+SEARCH_EMPTY_REBUILDING_HINT = (
+    "I log di {env} sono nel mirror locale ma non ancora nell'indice: diventano "
+    "ricercabili dopo la prossima indicizzazione o sincronizzazione."
+)
+SEARCH_START_TITLE = "Incolla un FDI, una template key o un nome file .json"
+SEARCH_START_HINT_FDI = "un FDI intero o solo le sue prime cifre"
+SEARCH_START_HINT_KEY = "una template key, oppure una sua parte con «contiene»"
+SEARCH_START_HINT_NAME = "il nome di una chiamata copiato dal log: compila FDI e key insieme"
+SEARCH_START_SHORTCUTS = (
+    "Ctrl+L FDI · Ctrl+K template key · Invio apre la chiamata · Ctrl+C copia il JSON · "
+    "trascina una riga per ottenere il file"
+)
+SEARCH_EMPTY_NO_ENV_TITLE = "Nessun ambiente abilitato."
+SEARCH_EMPTY_NO_ENV_HINT = "Abilita almeno un ambiente in Impostazioni per poter cercare nei suoi log."
+SEARCH_EMPTY_NO_ENV_BTN = "Apri Impostazioni"
 
 # --- preview slot -----------------------------------------------------------
 
@@ -130,34 +183,53 @@ PREVIEW_LOADING = "Lettura del body…"
 
 # -- header ------------------------------------------------------------------
 
+#: The primary button when Notepad++ is the editor (configured or found).
 PREVIEW_BTN_OPEN_EDITOR = "Apri in Notepad++"
-PREVIEW_BTN_COPY = "Copia negli appunti"
+#: ... and when it is another editor, or the application Windows associates.
+PREVIEW_BTN_OPEN_DEFAULT = "Apri nell'editor"
 PREVIEW_TOOLTIP_OPEN_EDITOR = "Apri il body completo nell'editor (Ctrl+O)"
-PREVIEW_TOOLTIP_SAVE_AS = "Salva il body completo in un file (Ctrl+S)"
-PREVIEW_TOOLTIP_COPY = "Copia il body completo negli appunti (Ctrl+C)"
-PREVIEW_TOOLTIP_FOLDER = "Apri la cartella dei file estratti (Ctrl+Shift+O)"
+PREVIEW_TOOLTIP_COPY = "Copia JSON (Ctrl+C)"
+PREVIEW_TOOLTIP_SAVE_AS = "Salva con nome… (Ctrl+S)"
+PREVIEW_TOOLTIP_FOLDER = "Apri cartella (Ctrl+Shift+O)"
 #: Tooltip of the file-name label; {name} = the name the actions will produce.
 PREVIEW_NAME_TOOLTIP = "Nome del file estratto: {name}"
+PREVIEW_MENU_COPY_NAME = "Copia nome file"
+PREVIEW_STATUS_COPIED_NAME = "Nome file copiato negli appunti."
+PREVIEW_TAB_JSON = "JSON"
+PREVIEW_TAB_DETAILS = "Dettagli"
+
+# -- Dettagli tab --------------------------------------------------------------
+
+PREVIEW_DETAIL_ENV = "Ambiente"
+PREVIEW_DETAIL_DAY = "Giorno"
+PREVIEW_DETAIL_TIME = "Ora"
+PREVIEW_DETAIL_LOG = "File di log"
+PREVIEW_DETAIL_SIZE = "Dimensione"
+PREVIEW_DETAIL_NDOCS = "N. documenti"
+PREVIEW_DETAIL_FDI = "FDI"
+PREVIEW_DETAIL_KEY = "Template key"
+PREVIEW_DETAIL_NAME = "Nome chiamata"
 
 # -- footer ------------------------------------------------------------------
 
 #: {shown} = the cap, {total} = the body's line count, both already formatted
 #: with the Italian thousands separator ("4.000", "12.480").
 PREVIEW_TRUNCATED = (
-    "Anteprima: prime {shown} righe di {total} — Apri in Notepad++ per il body completo"
+    "Anteprima: prime {shown} righe di {total} — apri nell'editor per il body completo"
 )
 #: {message} = the error text of the failed read.
 PREVIEW_ERROR = "Impossibile leggere il body: {message}"
 
-# -- status bar messages -----------------------------------------------------
+# -- confirmations -----------------------------------------------------------
 
-#: {size} = the size of the copied text ("312,5 KB"), built by
-#: ``sync_format.format_size`` from the ``SYNC_UNIT_*`` constants — the same
-#: ones the Sincronizzazione page and the results table use.
-PREVIEW_STATUS_COPIED = "Copiato negli appunti ({size})"
-#: {path} = the file the user chose in the save dialog.
-PREVIEW_STATUS_SAVED = "Salvato in {path}"
+#: Toast after Copia JSON; {size} = the body's size ("157 KB"), built by
+#: ``sync_format.format_size`` — the same formatter as the rest of the UI.
+PREVIEW_TOAST_COPIED = "JSON copiato · {size}"
+#: Toast after Salva con nome…; {name} = the file name chosen.
+PREVIEW_TOAST_SAVED = "Salvato: {name}"
+#: After [Apri]: Notepad++ opened it / another configured editor / the app Windows associates.
 PREVIEW_STATUS_OPENED_EDITOR = "Aperto in Notepad++"
+PREVIEW_STATUS_OPENED_OTHER = "Aperto nell'editor"
 PREVIEW_STATUS_OPENED_DEFAULT = "Aperto con l'applicazione predefinita"
 #: {path} = the folder the extracted files are written into.
 PREVIEW_STATUS_FOLDER = "Aperta la cartella {path}"
@@ -179,3 +251,8 @@ PREVIEW_FIND_PREVIOUS_GLYPH = "▲"
 PREVIEW_FIND_CLOSE_GLYPH = "✕"
 #: {text} = what the user typed in the find bar.
 PREVIEW_FIND_NOT_FOUND = "«{text}» non è presente nel body."
+#: The match is in the part of the body the preview does not show; {shown} = the cap ("4.000").
+PREVIEW_FIND_BEYOND = "trovato oltre la riga {shown}: apri nell'editor"
+
+#: Window-title context of the selected call; {env} = environment, {fdi} = first 8 chars.
+SEARCH_WINDOW_CONTEXT = "{env} · {fdi}"

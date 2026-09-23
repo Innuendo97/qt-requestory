@@ -1,214 +1,199 @@
 """One environment's card on the Sincronizzazione page.
 
 The card answers, at a glance, the only question the page exists for: *is my
-local copy of this environment any good?* — a status pill, when it was last
-filled, how much of it there is, and whether the index has caught up.
+local copy of this environment any good?* Its header is the name, a badge and
+the host; below come two labelled rows ("Ultima sincronizzazione", "Archivio
+locale"), the index backlog when there is one, and the 30-day coverage
+calendar. While a run is on this environment the card also shows the current
+file, a bar, the totals and the rate with the ETA — each card its own progress,
+so two cards can no longer both say "in corso".
 
-Two rules from DESIGN-ui shape it:
-
-* **The pill is never red.** An unreachable endpoint is the normal state of
-  this tool outside the office VPN, and a red badge would turn "you are not on
-  the VPN" into "something is broken". Unreachable and never-synced are grey,
-  errors are amber, everything else is the ordinary text colour.
-* **Colours are derived, not chosen.** Grey is the palette's ``Mid`` role, so
-  the card follows light and dark on its own; only the amber is a literal, and
-  it has one value per scheme. :meth:`EnvCard.retune` re-applies it when the
-  system switches — the page calls it, so there is one connection for the whole
-  page instead of one per card.
-
-The state comes from two different places and neither is enough on its own:
-``EnvStatus`` describes the mirror on disk (cheap, no network), while "in
-corso", "non raggiungibile" and "completato con N errori" are outcomes of a
-run. They are kept apart (:meth:`set_status`, :meth:`set_running`,
-:meth:`set_outcome`) and combined by :meth:`_refresh_pill`.
+The card decides nothing: the badge comes ready-made from
+:func:`~.sync_badge.badge_for` (through the page's presenter, which also feeds
+the app-bar chip, so the two always agree), and the progress texts from
+:func:`~.sync_format.strip_texts`. Colours are the theme's: the badge is a
+``QLabel`` with a ``pill`` property, the card a ``QFrame[role="card"]``.
 """
 from __future__ import annotations
 
+from datetime import date
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPalette
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
-from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import EnvStatus
-from qtrequestory.ui.pages.sync_format import format_size, format_when
+from qtrequestory.ui import strings, theme
+from qtrequestory.ui.contracts import CoverageDays, EnvStatus
+from qtrequestory.ui.pages.coverage_strip import CoverageStrip
+from qtrequestory.ui.pages.sync_badge import NEVER, Badge, badge_for
+from qtrequestory.ui.pages.sync_format import StripTexts, format_days, format_size, format_when
 
-__all__ = [
-    "AMBER_DARK", "AMBER_LIGHT", "EnvCard",
-    "PILL_ERRORS", "PILL_FRESH", "PILL_NEVER", "PILL_RUNNING", "PILL_STALE",
-    "PILL_UNREACHABLE", "pill_color", "pill_text",
-]
+__all__ = ["CARD_MIN_WIDTH", "EnvCard"]
 
-PILL_FRESH = "fresh"
-PILL_STALE = "stale"
-PILL_UNREACHABLE = "unreachable"
-PILL_RUNNING = "running"
-PILL_NEVER = "never"
-PILL_ERRORS = "errors"
-
-#: DESIGN-ui §Visual style: the one literal colour of the application.
-AMBER_LIGHT = "#B7791F"
-AMBER_DARK = "#E3A23A"
-
-CARD_MIN_WIDTH = 240
-
-
-def _dark() -> bool:
-    return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
-
-
-def pill_color(kind: str) -> QColor:
-    """The muted colour of a pill; never a red, whatever the palette says."""
-    palette = QGuiApplication.palette()
-    if kind == PILL_ERRORS:
-        return QColor(AMBER_DARK if _dark() else AMBER_LIGHT)
-    if kind in (PILL_UNREACHABLE, PILL_NEVER):
-        return palette.color(QPalette.ColorRole.Mid)
-    return palette.color(QPalette.ColorRole.WindowText)
-
-
-def pill_text(kind: str, failed: int = 0) -> str:
-    """The Italian label of a pill; ``failed`` only matters for ``PILL_ERRORS``."""
-    if kind == PILL_ERRORS:
-        if failed == 1:
-            return strings.SYNC_PILL_ERROR_ONE
-        return strings.SYNC_PILL_ERRORS.format(n=failed)
-    return {
-        PILL_FRESH: strings.SYNC_PILL_FRESH,
-        PILL_STALE: strings.SYNC_PILL_STALE,
-        PILL_UNREACHABLE: strings.SYNC_PILL_UNREACHABLE,
-        PILL_RUNNING: strings.SYNC_PILL_RUNNING,
-        PILL_NEVER: strings.SYNC_PILL_NEVER,
-    }[kind]
+CARD_MIN_WIDTH = 320
 
 
 class EnvCard(QFrame):
-    """The card of one environment: name, pill, four facts and the host."""
+    """The card of one environment: header, facts, coverage and its own progress."""
 
     def __init__(self, env_name: str, url: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.env_name = env_name
-        self._url = url
-        self._status: EnvStatus | None = None
-        self._running = False
-        self._outcome: str | None = None
-        self._failed = 0
-        self.pill_kind = PILL_NEVER
+        self._host = urlsplit(url).netloc or url
+        self.pill_kind = NEVER
 
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        theme.set_role(self, "card")
         self.setMinimumWidth(CARD_MIN_WIDTH)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        self.name_label = QLabel(env_name)
-        font = self.name_label.font()
-        font.setBold(True)
-        self.name_label.setFont(font)
-        self.pill = QLabel()
-        self.last_label = QLabel()
-        self.local_label = QLabel()
-        self.latest_label = QLabel()
-        self.index_label = QLabel()
-        self.url_label = QLabel(urlsplit(url).netloc or url)
-        self.url_label.setToolTip(url)
-
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(2)
-        header = QWidget()
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(0)
-        header_layout.addWidget(self.name_label)
-        header_layout.addWidget(self.pill)
-        layout.addWidget(header)
-        layout.addSpacing(4)
-        for label in (self.last_label, self.local_label, self.latest_label, self.index_label,
-                      self.url_label):
-            layout.addWidget(label)
+        layout.setContentsMargins(theme.SPACE[3], theme.SPACE[2], theme.SPACE[3], theme.SPACE[2])
+        layout.setSpacing(theme.SPACE[1])
+        layout.addLayout(self._build_header(url))
+        layout.addLayout(self._build_rows())
+        self.strip = CoverageStrip()
+        layout.addWidget(self.strip)
+        self.progress_box = self._build_progress()
+        layout.addWidget(self.progress_box)
 
-        self.set_status(None)
+        self.set_status(None, None)
+        self.set_badge(badge_for(None))
+        self.set_progress(None)
+
+    # -- construction ------------------------------------------------------
+
+    def _build_header(self, url: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(theme.SPACE[1])
+        self.name_label = QLabel(self.env_name)
+        theme.set_role(self.name_label, "section")
+        self.pill = QLabel()
+        self.pill.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.host_label = QLabel(self._host)
+        self.host_label.setToolTip(url)
+        self.host_label.setFont(theme.mono_font())
+        theme.set_role(self.host_label, "muted")
+        self.host_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.host_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(self.name_label)
+        row.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.host_label, 1)
+        return row
+
+    def _build_rows(self) -> QGridLayout:
+        grid = QGridLayout()
+        grid.setContentsMargins(0, theme.SPACE[0], 0, theme.SPACE[0])
+        grid.setHorizontalSpacing(theme.SPACE[2])
+        grid.setVerticalSpacing(theme.SPACE[0])
+        self.row_labels: list[QLabel] = []
+
+        def row(r: int, text: str) -> QLabel:
+            key = QLabel(text)
+            theme.set_role(key, "muted")
+            value = QLabel()
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(key, r, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            grid.addWidget(value, r, 1)
+            self.row_labels.append(key)
+            return value
+
+        self.last_value = row(0, strings.SYNC_CARD_LAST_LABEL)
+        self.archive_value = row(1, strings.SYNC_CARD_ARCHIVE_LABEL)
+        self.index_value = row(2, strings.SYNC_CARD_INDEX_LABEL)
+        self._index_key = self.row_labels[-1]
+        grid.setColumnStretch(1, 1)
+        return grid
+
+    def _build_progress(self) -> QWidget:
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, theme.SPACE[0], 0, 0)
+        layout.setSpacing(2)
+        top = QHBoxLayout()
+        self.progress_label = QLabel()
+        self.progress_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.totals_label = QLabel()
+        theme.set_role(self.totals_label, "muted")
+        top.addWidget(self.progress_label, 1)
+        top.addWidget(self.totals_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(False)
+        self.rate_label = QLabel()
+        theme.set_role(self.rate_label, "muted")
+        layout.addLayout(top)
+        layout.addWidget(self.progress_bar)
+        layout.addWidget(self.rate_label)
+        return box
 
     # -- state -------------------------------------------------------------
 
-    def set_status(self, status: EnvStatus | None) -> None:
-        """Fill the four fact lines from what the core knows about the mirror."""
-        self._status = status
-        self.last_label.setText(strings.SYNC_CARD_LAST.format(when=self._when()))
-        self.local_label.setText(strings.SYNC_CARD_LOCAL.format(
-            days=status.n_local_files if status else 0,
-            size=format_size(status.local_bytes if status else 0),
-        ))
-        self.latest_label.setText(
-            strings.SYNC_CARD_LATEST.format(day=status.latest_day.strftime("%d/%m/%Y"))
-            if status is not None and status.latest_day is not None
-            else strings.SYNC_CARD_LATEST_NONE
+    def set_status(self, status: EnvStatus | None, coverage: CoverageDays | None,
+                   today: date | None = None) -> None:
+        """Fill the rows and the calendar from what the core knows (no network)."""
+        when = format_when(status.last_success if status else None)
+        downloaded = status.last_downloaded if status is not None else 0
+        if status is not None and status.last_success is not None and downloaded:
+            when += (strings.SYNC_CARD_DOWNLOADED_ONE if downloaded == 1
+                     else strings.SYNC_CARD_DOWNLOADED.format(n=downloaded))
+        self.last_value.setText(strings.SYNC_CARD_LAST.format(when=when))
+        n_files = status.n_local_files if status else 0
+        first = coverage.first_local if coverage is not None else None
+        self.archive_value.setText(
+            strings.SYNC_CARD_ARCHIVE.format(
+                days=format_days(n_files), size=format_size(status.local_bytes),
+                first=first.strftime("%d/%m/%Y"))
+            if status is not None and n_files and first is not None
+            else strings.SYNC_CARD_ARCHIVE_EMPTY
         )
         pending = status.index_pending if status else 0
-        self.index_label.setText(
-            strings.SYNC_CARD_INDEX_OK if pending == 0
-            else strings.SYNC_CARD_INDEX_PENDING.format(n=pending)
-        )
-        self._refresh_pill()
+        self.index_value.setText(strings.SYNC_CARD_INDEX_PENDING.format(n=pending))
+        self.index_value.setVisible(pending > 0)
+        self._index_key.setVisible(pending > 0)
+        self.strip.set_coverage(coverage, today)
 
-    def set_running(self, running: bool) -> None:
-        """A run has this environment in hand; it also clears the old verdict.
+    def set_badge(self, badge: Badge) -> None:
+        self.pill_kind = badge.kind
+        self.pill.setText(badge.text)
+        self.pill.setProperty("pill", badge.tone)
+        theme.repolish(self.pill)
 
-        Starting a new run makes "non raggiungibile" from ten minutes ago a
-        stale claim, so it goes as soon as the card starts spinning.
-        """
-        self._running = running
-        if running:
-            self._outcome, self._failed = None, 0
-        self._refresh_pill()
+    def set_progress(self, texts: StripTexts | None) -> None:
+        """This card's run progress; ``None`` hides it (not this env's turn)."""
+        self.progress_box.setVisible(texts is not None)
+        if texts is None:
+            self.progress_bar.setValue(0)
+            return
+        if texts.label:
+            self.progress_label.setText(texts.label)
+        self.totals_label.setText(texts.totals)
+        self.rate_label.setText(texts.rate)
+        self.rate_label.setVisible(bool(texts.rate))
+        self.progress_bar.setValue(texts.percent)
 
-    def set_outcome(self, status: str | None, failed: int = 0) -> None:
-        """What the finished run said about this env (``EnvResult.status``)."""
-        self._outcome, self._failed = status, failed
-        self._refresh_pill()
-
-    def retune(self) -> None:
-        """Re-apply the pill colour after a light/dark switch."""
-        self.pill.setStyleSheet(f"color: {pill_color(self.pill_kind).name()};")
-
-    # -- internals ---------------------------------------------------------
-
-    def _when(self) -> str:
-        return format_when(self._status.last_success if self._status else None)
-
-    def _refresh_pill(self) -> None:
-        self.pill_kind = self._kind()
-        self.pill.setText(pill_text(self.pill_kind, self._failed))
-        self.retune()
-
-    def _kind(self) -> str:
-        """The single pill that describes this environment right now.
-
-        Order matters: what is happening beats what happened, and what happened
-        during the last run beats what the mirror looks like on disk.
-        """
-        if self._running:
-            return PILL_RUNNING
-        if self._outcome == "unreachable":
-            return PILL_UNREACHABLE
-        if self._outcome == "errors" and self._failed:
-            return PILL_ERRORS
-        if self._status is None:
-            return PILL_NEVER
-        if self._status.fresh:
-            return PILL_FRESH
-        if self._status.never_synced:
-            return PILL_NEVER
-        return PILL_STALE
+    def set_progress_text(self, text: str) -> None:
+        """"Avvio…" / "Annullamento…" in place of the file name."""
+        self.progress_label.setText(text)
 
     # -- painting ----------------------------------------------------------
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        """Elide the host: a long URL must not stretch the whole cards row."""
+        """Elide the host: a long URL must not stretch the whole cards grid."""
         super().resizeEvent(event)
-        host = urlsplit(self._url).netloc or self._url
-        width = max(0, self.url_label.width())
-        self.url_label.setText(
-            QFontMetrics(self.url_label.font()).elidedText(host, Qt.TextElideMode.ElideMiddle, width)
-            if width else host
+        width = max(0, self.host_label.width())
+        self.host_label.setText(
+            QFontMetrics(self.host_label.font()).elidedText(
+                self._host, Qt.TextElideMode.ElideMiddle, width)
+            if width else self._host
         )

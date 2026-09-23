@@ -1,4 +1,4 @@
-"""The [abilitato | nome | URL] environments table.
+"""The [Attivo | Nome | URL] environments table.
 
 Two places edit the same list of environments — the first-run wizard and the
 Impostazioni page — and they must behave identically, so the widget lives here
@@ -17,7 +17,7 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Environment
 
 EnvironmentImporter = Callable[[Path], list[Environment]]
@@ -47,6 +47,7 @@ class EnvTable(QTableWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setAlternatingRowColors(True)
+        theme.set_table_look(self)
         header = self.horizontalHeader()
         header.setSectionResizeMode(self.COL_ENABLED, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.ResizeToContents)

@@ -104,6 +104,16 @@ def test_housekeeping_missing_dir_returns_zero(tmp_path: Path):
     assert housekeeping(tmp_path / "missing", 24) == 0
 
 
+def test_housekeeping_an_unlistable_dir_returns_zero(tmp_path: Path, monkeypatch):
+    """A folder that exists but cannot be listed (permissions, a network share
+    that dropped) is housekeeping skipped, never an error in the extraction."""
+    def refuse(self):
+        raise PermissionError("accesso negato")
+
+    monkeypatch.setattr(Path, "iterdir", refuse)
+    assert housekeeping(tmp_path, 24) == 0
+
+
 # --------------------------------------------------------- write_temp_file ---
 
 def test_write_temp_file_creates_dir_and_writes_pure_body(tmp_path: Path):

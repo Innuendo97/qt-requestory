@@ -12,6 +12,7 @@ connects to it, which makes the first one raise its window, and exits.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import re
@@ -19,22 +20,20 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtWidgets import QApplication
 
-from qtrequestory.ui import icons, strings
+from qtrequestory.ui import icons, strings, theme
 from qtrequestory.ui.contracts import CoreServices
 from qtrequestory.ui.main_window import MainWindow
 from qtrequestory.ui.workers import JobRunner
 
-__all__ = ["INSTANCE_KEY_ENV_VAR", "SingleInstance", "instance_key", "run_gui",
-           "show_first_run_wizard", "wizard_available"]
+__all__ = ["APP_USER_MODEL_ID", "INSTANCE_KEY_ENV_VAR", "SingleInstance", "instance_key",
+           "run_gui", "set_app_user_model_id", "show_first_run_wizard", "wizard_available"]
 
 log = logging.getLogger(__name__)
 
-#: Qt style that gives the native Windows 11 look; absent on older Qt/Linux.
-PREFERRED_STYLE = "windows11"
 CONNECT_TIMEOUT_MS = 300
 
 #: Overrides the local-server name. A named pipe is machine-global, so two test
@@ -42,6 +41,25 @@ CONNECT_TIMEOUT_MS = 300
 #: each other and each think it is the second instance. The test harness sets
 #: this to something unique per process; the application never sets it.
 INSTANCE_KEY_ENV_VAR = "QTREQUESTORY_INSTANCE_KEY"
+
+#: The taskbar identity. Without an explicit one the process (under onefile, the
+#: extracted child of the bootloader) is grouped under a generic identity and
+#: the taskbar shows the default Windows icon instead of ours.
+APP_USER_MODEL_ID = "qtRequestory.App"
+
+
+def set_app_user_model_id() -> None:
+    """Give the process its own taskbar identity (Windows only, best effort).
+
+    Must run before the ``QApplication`` exists: the shell reads the ID when the
+    first window is created.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except (AttributeError, OSError) as exc:
+        log.warning("impossibile impostare l'AppUserModelID: %s", exc)
 
 
 def instance_key() -> str:
@@ -129,24 +147,31 @@ def _wizard_entry_point() -> Callable[..., Any] | None:
 
 
 def configure_application(app: QApplication, version: str = "") -> None:
-    """Name, icon and style — everything Qt derives from the application.
+    """Name, icon and theme — everything Qt derives from the application.
 
     The names are also what ``QSettings(ORG_NAME, APP_NAME)`` keys off, so they
-    must match the constants the pages use.
+    must match the constants the pages use. The theme goes last: its mode is
+    read from ``QSettings``, which keys off those names.
     """
     app.setApplicationName(strings.APP_NAME)
     app.setApplicationDisplayName(strings.APP_NAME)
     app.setOrganizationName(strings.ORG_NAME)
     app.setApplicationVersion(version)
     app.setWindowIcon(icons.app_icon())
-    if PREFERRED_STYLE in {key.lower() for key in QStyleFactory.keys()}:
-        app.setStyle(PREFERRED_STYLE)
-    styles = app.styleHints()
-    styles.colorSchemeChanged.connect(lambda _scheme: icons.clear_cache())
+    theme.apply(app)
 
 
-def run_gui(services: CoreServices, argv: list[str] | None = None) -> int:
-    """Start the GUI and return the exit code for ``cli.main``."""
+def run_gui(services: CoreServices, argv: list[str] | None = None, *,
+            run_startup_tasks: bool = True) -> int:
+    """Start the GUI and return the exit code for ``cli.main``.
+
+    Once the window is visible — never before (DESIGN-ui "Startup order") —
+    ``MainWindow.startup_tasks`` indexes what is pending and runs a non-forced
+    sync, unless the first-run wizard asked for a sync of its own (which
+    indexes too). ``run_startup_tasks=False`` is for callers that must not
+    start background jobs.
+    """
+    set_app_user_model_id()
     app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
     configure_application(app, services.version())
 
@@ -174,6 +199,10 @@ def run_gui(services: CoreServices, argv: list[str] | None = None) -> int:
         window.show()
         if start_sync:
             window.start_sync()
+        elif run_startup_tasks:
+            # The window is the timer's context: a window already gone by the
+            # time the loop turns cancels the call instead of crashing it.
+            QTimer.singleShot(0, window, window.startup_tasks)
         return app.exec()
     finally:
         runner.shutdown()

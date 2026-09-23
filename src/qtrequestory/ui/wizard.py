@@ -9,14 +9,20 @@ DESIGN-ui §"First-run wizard" lists, in that order:
 
 1. build the ``Config`` from the pages and ``config.save`` it — first, so a
    failure of anything below still leaves the user configured;
-2. if automation was asked for, register the scheduled task, and only once ours
-   is registered remove the legacy ``NginxLogSync`` one it replaces;
-3. hand the caller a :class:`WizardResult` saying what to do next.
+2. the scheduled task: register it when automation is ticked; on a rerun that
+   found it registered, *unregister* it when the user unticked the box;
+3. the legacy ``NginxLogSync`` task: removed only when the user ticked "Rimuovi
+   il vecchio task NginxLogSync" (off by default — the two coexist safely), and
+   never when ours was asked for but could not be registered;
+4. hand the caller a :class:`WizardResult` saying what to do next.
 
-Only step 1 can stop the wizard from closing, and then it says why: a scheduled
-task that could not be registered is reported and forgotten (the
-Sincronizzazione page can register it later), because by then the configuration
-is already on disk.
+Only step 1 can stop the wizard from closing, and then it says why: a scheduler
+call that fails is reported and forgotten (the Sincronizzazione page can retry
+it later), because by then the configuration is already on disk.
+
+Closing the wizard in any way (``done``) cancels the jobs its pages started —
+the reachability probe above all, which would otherwise keep a pool thread
+busy for one HTTP timeout per environment.
 """
 from __future__ import annotations
 
@@ -25,7 +31,7 @@ import logging
 
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget, QWizard
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Config, CoreServices
 from qtrequestory.ui.wizard_pages import AutomationPage, EnvironmentsPage, LogFolderPage
 from qtrequestory.ui.workers import JobRunner
@@ -65,9 +71,9 @@ class FirstRunWizard(QWizard):
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
 
-        self.folder_page = LogFolderPage(services)
+        self.folder_page = LogFolderPage(services, runner)
         self.environments_page = EnvironmentsPage(services, runner)
-        self.automation_page = AutomationPage(services)
+        self.automation_page = AutomationPage(services, runner)
         for page in (self.folder_page, self.environments_page, self.automation_page):
             self.addPage(page)
 
@@ -80,6 +86,9 @@ class FirstRunWizard(QWizard):
             (QWizard.WizardButton.CancelButton, strings.BTN_CANCEL),
         ):
             self.setButtonText(role, text)
+        # The forward buttons are the page's main action, as elsewhere in the app.
+        for role in (QWizard.WizardButton.NextButton, QWizard.WizardButton.FinishButton):
+            theme.set_role(self.button(role), "primary")
 
     # -- result -------------------------------------------------------------
 
@@ -108,13 +117,20 @@ class FirstRunWizard(QWizard):
                 strings.WIZARD_SAVE_FAILED.format(error=exc),
             )
             return
-        autosync = self.automation_page.autosync_enabled() and self._enable_automation()
+        autosync = self._apply_automation()
         self._result = WizardResult(
             config=cfg,
             start_sync=self.automation_page.start_sync_requested(),
             autosync=autosync,
         )
         super().accept()
+
+    def done(self, result: int) -> None:
+        """Every way out ([Fine], [Annulla], Esc, the close button) stops the
+        background work the pages started: nobody is left to read it."""
+        for page in (self.folder_page, self.environments_page, self.automation_page):
+            page.cancel_jobs()
+        super().done(result)
 
     def build_config(self) -> Config:
         """The three pages' answers on top of the current configuration."""
@@ -126,12 +142,27 @@ class FirstRunWizard(QWizard):
             # optional: a None here would be written into config.json.
             mirror_root=folder if folder is not None else base.mirror_root,
             environments=self.environments_page.environments(),
-            editor_path=self.automation_page.editor_path(),
+            editor_path=self.folder_page.editor_path(),
         )
 
     # -- internals ----------------------------------------------------------
 
-    def _enable_automation(self) -> bool:
+    def _apply_automation(self) -> bool:
+        """Steps 2 and 3 of [Fine]; returns whether our task is now active."""
+        page = self.automation_page
+        if page.autosync_enabled():
+            autosync = self._register()
+            if not autosync:
+                return False  # asked to replace the old task, and could not: keep it
+        elif page.unregister_requested():
+            autosync = not self._unregister()
+        else:
+            autosync = False
+        if page.remove_legacy_requested():
+            self._remove_legacy()
+        return autosync
+
+    def _register(self) -> bool:
         """Register the task; ``False`` (and one dialog) when it did not work.
 
         Broad ``except``: this runs while the wizard is closing, and a scheduler
@@ -148,12 +179,28 @@ class FirstRunWizard(QWizard):
                 strings.WIZARD_SCHEDULER_FAILED.format(error=exc),
             )
             return False
-        if self.automation_page.has_legacy_task():
-            try:
-                self._services.scheduler.remove_legacy_task()
-            except Exception as exc:  # noqa: BLE001 - ours is registered; this is tidying
-                log.warning("rimozione del vecchio task NginxLogSync non riuscita: %s", exc)
         return True
+
+    def _unregister(self) -> bool:
+        """A rerun turned automation off: remove our task. ``False`` (and one
+        dialog) when it is still there."""
+        try:
+            self._services.scheduler.unregister()
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            log.warning("rimozione dell'attività pianificata non riuscita: %s", exc)
+            QMessageBox.information(
+                self,
+                strings.WIZARD_UNREGISTER_FAILED_TITLE,
+                strings.WIZARD_UNREGISTER_FAILED.format(error=exc),
+            )
+            return False
+        return True
+
+    def _remove_legacy(self) -> None:
+        try:
+            self._services.scheduler.remove_legacy_task()
+        except Exception as exc:  # noqa: BLE001 - tidying, never fatal
+            log.warning("rimozione del vecchio task NginxLogSync non riuscita: %s", exc)
 
 
 def run_first_run_wizard(services: CoreServices, runner: JobRunner,

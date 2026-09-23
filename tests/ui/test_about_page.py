@@ -18,9 +18,11 @@ from qtrequestory.ui import strings
 from qtrequestory.ui.pages.about_page import (
     AboutPage,
     MAX_LOG_LINES,
+    filter_records,
     line_level,
     tail_lines,
 )
+from qtrequestory.ui.pages.settings_widgets import ElidedLabel
 
 LOG_LINES = [
     "[2026-09-22 09:00:00] INFO avvio dell'applicazione",
@@ -35,9 +37,17 @@ LEGACY_LINE = "[2026-09-21 18:00:00] riga di una versione precedente"
 class StubWindow:
     def __init__(self) -> None:
         self.status: list[str] = []
+        self.shown: list[str] = []
+        self.pages: dict[str, object] = {}
 
     def set_status(self, text: str, ms: int = 4000) -> None:
         self.status.append(text)
+
+    def show_page(self, key: str) -> None:
+        self.shown.append(key)
+
+    def page(self, key: str):
+        return self.pages.get(key)
 
 
 @pytest.fixture
@@ -88,17 +98,51 @@ def page(qtbot, fake_core, runner, window, app_log):
 
 # -- identity and paths ------------------------------------------------------
 
-def test_the_page_shows_the_application_name_and_version(page, fake_core):
-    assert strings.APP_NAME in page.title_label.text()
+def test_the_page_has_a_title_and_a_version_card(page, fake_core):
+    assert page.title_label.text() == strings.ABOUT_TITLE == "Info"
+    assert page.title_label.property("role") == "pageTitle"
+    assert strings.APP_NAME in page.name_label.text()
     assert fake_core.version() in page.version_label.text()
 
 
-def test_the_four_paths_are_shown(page, fake_core):
-    shown = {key: label.text() for key, label in page.path_labels.items()}
-    assert str(fake_core.config.config_path()) in shown["config"]
-    assert str(fake_core.index_db_path()) in shown["index"]
-    assert str(fake_core.app_log_path()) in shown["app_log"]
-    assert str(fake_core.sync_log_path()) in shown["sync_log"]
+def test_the_page_is_inset_like_the_other_pages(page):
+    margins = page.layout().contentsMargins()
+    assert (margins.left(), margins.top()) == (16, 16)
+
+
+def test_the_four_paths_are_shown_elided_with_the_full_path_as_tooltip(page, fake_core):
+    expected = {
+        "config": fake_core.config.config_path(),
+        "index": fake_core.index_db_path(),
+        "app_log": fake_core.app_log_path(),
+        "sync_log": fake_core.sync_log_path(),
+    }
+    for key, path in expected.items():
+        label = page.path_labels[key]
+        assert isinstance(label, ElidedLabel), "no mid-word wrapping: one elided line"
+        assert label.full_text() == str(path)
+        assert label.toolTip() == str(path)
+        assert not label.wordWrap()
+        assert label.font().families()[0] == "Cascadia Mono"
+
+
+def test_copia_puts_the_path_on_the_clipboard(page, fake_core, window):
+    from PySide6.QtGui import QGuiApplication
+
+    page.copy_buttons["sync_log"].click()
+
+    assert QGuiApplication.clipboard().text() == str(fake_core.sync_log_path())
+    assert strings.ABOUT_PATH_COPIED in window.status
+
+
+def test_every_path_row_has_its_buttons_in_the_same_columns(page):
+    """The binary index has no [Apri]; its other buttons must not slide left."""
+    grid = page.paths_grid
+    for key in ("config", "index", "app_log", "sync_log"):
+        row = grid.getItemPosition(grid.indexOf(page.path_labels[key]))[0]
+        assert grid.getItemPosition(grid.indexOf(page.copy_buttons[key]))[:2] == (row, 2)
+        assert grid.getItemPosition(grid.indexOf(page.folder_buttons[key]))[:2] == (row, 4)
+    assert "index" not in page.open_buttons
 
 
 def test_each_path_can_reveal_its_folder(page, fake_core):
@@ -109,6 +153,40 @@ def test_each_path_can_reveal_its_folder(page, fake_core):
 def test_a_log_file_can_be_opened_in_the_editor(page, fake_core):
     page.open_buttons["app_log"].click()
     assert fake_core.extract.opened[-1] == [fake_core.app_log_path()]
+
+
+# -- the index card ----------------------------------------------------------
+
+def test_the_index_card_shows_each_enabled_environment(page, fake_core):
+    for env in fake_core.config.load().enabled_environments():
+        coverage = fake_core.index.coverage(env.name)
+        text = page.index_labels[env.name].text()
+        if coverage is None:
+            assert text == strings.ABOUT_INDEX_NONE
+        else:
+            assert f"{coverage.n_files} file" in text
+            assert coverage.last_day.strftime("%d/%m/%Y") in text
+
+
+def test_the_index_card_follows_a_finished_job(page, fake_core):
+    fake_core.index.hits.clear()
+    page.on_data_changed()
+    for label in page.index_labels.values():
+        assert label.text() == strings.ABOUT_INDEX_NONE
+
+
+def test_gestisci_indice_opens_the_archivio_section(page, window):
+    sections: list[str] = []
+
+    class Settings:
+        def show_section(self, key: str) -> None:
+            sections.append(key)
+
+    window.pages["settings"] = Settings()
+    page.index_settings_button.click()
+
+    assert window.shown == ["settings"]
+    assert sections == ["archive"]
 
 
 # -- the log viewer ----------------------------------------------------------
@@ -224,6 +302,42 @@ def test_the_filter_matches_what_configure_logging_really_writes(
 
     widget.set_filter(AboutPage.FILTER_ALL)
     assert len(widget.log_view.toPlainText().splitlines()) == 3
+
+
+TRACEBACK = [
+    "[2026-09-22 09:00:04] ERROR sincronizzazione interrotta",
+    "Traceback (most recent call last):",
+    '  File "sync.py", line 12, in run',
+    "OSError: disco pieno",
+    "[2026-09-22 09:00:05] INFO ripresa",
+]
+
+
+def test_the_errors_filter_keeps_the_traceback_of_an_error(qtbot, fake_core, runner, window, app_log):
+    """A line that does not start with a timestamp belongs to the record above:
+    the traceback IS the error, filtering it away hides the one useful part."""
+    app_log.write_text("\n".join([*LOG_LINES, *TRACEBACK]), encoding="utf-8")
+    widget = AboutPage(fake_core, runner, window)
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget.log_loaded, timeout=3000)
+
+    widget.set_filter(AboutPage.FILTER_ERRORS)
+
+    shown = widget.log_view.toPlainText().splitlines()
+    assert shown == [LOG_LINES[3], *TRACEBACK[:4]]
+
+
+def test_filter_records_drops_a_continuation_cut_from_its_record():
+    """The tail may start in the middle of a traceback: those lines have no
+    level of their own, so only Tutti shows them."""
+    lines = ["OSError: resto di un record tagliato", *LOG_LINES]
+    assert filter_records(lines, None) == lines
+    assert filter_records(lines, frozenset({"ERROR"})) == [LOG_LINES[3]]
+
+
+def test_a_json_line_is_a_continuation_not_a_record():
+    lines = [LOG_LINES[3], '["non", "un", "timestamp"]']
+    assert filter_records(lines, frozenset({"ERROR"})) == lines
 
 
 # -- the tail helper ---------------------------------------------------------

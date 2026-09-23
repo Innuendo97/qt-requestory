@@ -29,6 +29,7 @@ class ScannedEntry:
     seq: int
     name: EntryName
     header_offset: int
+    header_len: int  # raw bytes of the header line, terminator excluded (trailing blanks included)
     body_offset: int
     body_len: int  # bytes of the body line, terminator excluded
     request_date: str | None
@@ -113,7 +114,7 @@ def scan_daily_file(
     extract = _json_body_info if parse_json else _regex_body_info
     entries: list[ScannedEntry] = []
     stats = ScanStats()
-    pending: tuple[bytes, int] | None = None  # (name, header_offset)
+    pending: tuple[bytes, int, int] | None = None  # (name, header_offset, header_len)
 
     if cancel is not None:
         cancel.check()
@@ -127,19 +128,22 @@ def scan_daily_file(
             if m:
                 if pending is not None:
                     stats.n_orphans += 1
-                pending = (m.group("name"), pos)
+                pending = (m.group("name"), pos, len(line.rstrip(b"\r\n")))
                 continue
             if pending is None:
                 stats.n_orphans += 1
                 continue
-            raw_name, header_offset = pending
+            raw_name, header_offset, header_len = pending
             pending = None
             body = line.rstrip(b"\r\n")
             info = extract(body)
             entries.append(ScannedEntry(
                 seq=len(entries),
-                name=parse_entry_name(raw_name.decode("utf-8", "replace")),
+                # surrogateescape, not "replace": read_body re-encodes the name
+                # and must get the header's exact bytes back.
+                name=parse_entry_name(raw_name.decode("utf-8", "surrogateescape")),
                 header_offset=header_offset,
+                header_len=header_len,
                 body_offset=pos,
                 body_len=len(body),
                 request_date=info.request_date,
