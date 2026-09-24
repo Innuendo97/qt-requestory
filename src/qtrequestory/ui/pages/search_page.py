@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QLabel, QMenu, QSplitter, QStackedLayout, QVBoxLay
 from qtrequestory.ui import actions, prefs, strings, theme
 from qtrequestory.ui.contracts import CoreServices, SearchHit, SearchQuery
 from qtrequestory.ui.pages import search_actions
+from qtrequestory.ui.pages.import_banner import ImportBanner
 from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
 from qtrequestory.ui.pages.preview_pane import PreviewPane
 from qtrequestory.ui.pages.search_form import SearchForm
@@ -82,6 +83,7 @@ class SearchPage(QWidget):
         self.meta = MetaLine()
         self.gap_banner = GapBanner()
         self.mirror_banner = MirrorRootBanner(services, window)
+        self.import_banner = ImportBanner(services, runner, window)
         self.stale_banner = QLabel()
         self.model = ResultsModel(self)
         self.view = ResultsView(self.model)
@@ -125,8 +127,8 @@ class SearchPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 12, 16, 12)
         outer.setSpacing(8)
-        for widget in (self.mirror_banner, self.form, self.meta, self.gap_banner,
-                       self.stale_banner):
+        for widget in (self.mirror_banner, self.import_banner, self.form, self.meta,
+                       self.gap_banner, self.stale_banner):
             outer.addWidget(widget)
         outer.addWidget(self.splitter, 1)
 

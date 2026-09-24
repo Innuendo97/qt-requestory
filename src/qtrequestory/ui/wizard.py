@@ -14,7 +14,8 @@ DESIGN-ui §"First-run wizard" lists, in that order:
 3. the legacy ``NginxLogSync`` task: removed only when the user ticked "Rimuovi
    il vecchio task NginxLogSync" (off by default — the two coexist safely), and
    never when ours was asked for but could not be registered;
-4. hand the caller a :class:`WizardResult` saying what to do next.
+4. hand the caller a :class:`WizardResult` saying what to do next — including
+   the folders to import (page 1's "li importerò alla fine").
 
 Only step 1 can stop the wizard from closing, and then it says why: a scheduler
 call that fails is reported and forgotten (the Sincronizzazione page can retry
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from pathlib import Path
 
 from PySide6.QtWidgets import QDialog, QMessageBox, QWidget, QWizard
 
@@ -54,6 +56,9 @@ class WizardResult:
     config: Config
     start_sync: bool
     autosync: bool
+    #: Folders to import once the window is up (``None``: the log folder's
+    #: own logs outside the structure); see ``wizard_import.ImportOffer``.
+    import_sources: tuple[Path | None, ...] = ()
 
 
 class FirstRunWizard(QWizard):
@@ -122,6 +127,7 @@ class FirstRunWizard(QWizard):
             config=cfg,
             start_sync=self.automation_page.start_sync_requested(),
             autosync=autosync,
+            import_sources=self.folder_page.import_offer.sources(),
         )
         super().accept()
 

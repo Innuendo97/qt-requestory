@@ -132,3 +132,25 @@ def test_fake_matches_real_on_the_same_tree(tmp_path, mocked_bin):
     assert [p for p, _ in fake.recycle([VerifiedOriginal(inside, st.st_size, st.st_mtime_ns, inside)])] == [inside]
     assert [p for p, _ in fake.recycle([inside])] == [inside]  # a bare path is never accepted
     assert inside.exists()
+
+
+@pytest.mark.parametrize("which", ["real", "fake"])
+def test_report_accepts_another_canonical_root(tmp_path, which):
+    """The wizard counts a folder that is not the configured mirror YET: the
+    files already at their canonical place under it are not "to import"."""
+    cfg = _cfg(tmp_path)
+    new_mirror = tmp_path / "nuovo"
+    put(new_mirror, "svil/2026/09/20260921.txt", LOG)      # canonical under the new folder
+    put(new_mirror, "vecchi/svil_20260922.txt", LOG)       # stray under it
+    if which == "real":
+        svc = facade.ArchiveService(lambda: cfg)
+    else:
+        core = build_fake_core(tmp_path / "fake")
+        core.config.save(cfg)
+        svc = core.archive
+    default = svc.report(new_mirror)
+    assert sorted(f.rel_path for f in default.items) == [
+        "svil/2026/09/20260921.txt", "vecchi/svil_20260922.txt"]
+    other = svc.report(new_mirror, canonical_root=new_mirror)
+    assert [f.rel_path for f in other.items] == ["vecchi/svil_20260922.txt"]
+    assert other.canonical_root == new_mirror

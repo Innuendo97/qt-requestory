@@ -39,6 +39,8 @@ Optional hooks a page may expose (all duck-typed, all optional):
                         for the quit question
 ``can_leave()``         asked before switching away from the page; False keeps
                         it on screen (Impostazioni with unsaved changes)
+
+Pages open the import dialog with ``window.open_import(sources)``.
 """
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ import importlib
 import logging
 from collections.abc import Callable, Sequence
 from functools import partial
+from pathlib import Path
 from typing import Literal, NamedTuple
 
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
@@ -61,6 +64,7 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import actions, icons, strings
 from qtrequestory.ui.app_bar import AppBar
 from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.import_state import ArchiveWatch
 from qtrequestory.ui.quit_dialog import (  # noqa: F401 - JOB_LABELS/build_quit_dialog re-exported
     JOB_LABELS,
     build_quit_dialog,
@@ -80,7 +84,7 @@ PAGE_SHORTCUTS = {"search": "Ctrl+1", "sync": "Ctrl+2", "settings": "Ctrl+,", "a
 SYNC_NOW_SHORTCUT = "Ctrl+Shift+S"
 #: Jobs after which every page's ``on_data_changed`` runs — and which closing
 #: the window would interrupt, so it asks first.
-DATA_JOBS = ("sync", "index")
+DATA_JOBS = ("sync", "index", "import")
 #: How often the pages' ``refresh_sync_state`` runs (the app-bar chip would
 #: otherwise stay stale after a scheduled sync until the user opened
 #: Sincronizzazione). Slow on purpose: it only re-reads a state file.
@@ -247,6 +251,25 @@ class MainWindow(QMainWindow):
         if callable(starter):
             starter()
 
+    def open_import(self, sources: Sequence[Path | None] | None = None,
+                    on_closed: Callable[[], None] | None = None) -> QWidget | None:
+        """The import dialog on ``sources`` (None: the mirror's own strays).
+
+        The banners' [Importa], Impostazioni › Archivio and the wizard's offer
+        all come here. Refused, with the reason in the status bar, while the
+        log folder is not usable; ``on_closed`` then runs straight away.
+        """
+        from qtrequestory.ui.import_dialog import open_import_dialog
+
+        dialog = open_import_dialog(self._services, self._runner, self,
+                                    list(sources) if sources else [None], on_closed)
+        if dialog is None:
+            problems = self._services.config.mirror_root_errors(self._services.config.load())
+            self.set_status(strings.IMPORT_REFUSED.format(problem=problems[0] if problems else ""))
+            if on_closed is not None:
+                on_closed()
+        return dialog
+
     def refresh_sync_state(self) -> None:
         """Every page's ``refresh_sync_state`` hook (the chip follows)."""
         for page in self._pages.values():
@@ -280,8 +303,12 @@ class MainWindow(QMainWindow):
             return None
         cfg = getattr(result, "config", None) or self._services.config.load()
         self._broadcast_config(None, cfg)
-        if getattr(result, "start_sync", False):
-            self.start_sync()
+        then = self.start_sync if getattr(result, "start_sync", False) else None
+        sources = getattr(result, "import_sources", ())
+        if sources:
+            self.open_import(sources, on_closed=then)  # the sync would hold the lock
+        elif then is not None:
+            then()
         return result
 
     # -- construction ------------------------------------------------------
@@ -395,6 +422,9 @@ class MainWindow(QMainWindow):
             handler = getattr(page, "on_config_changed", None)
             if callable(handler):
                 handler(cfg)
+        watch = ArchiveWatch.existing(self._runner)
+        if watch is not None:  # new env names or a new folder: other strays
+            watch.refresh()
 
     # -- window state ------------------------------------------------------
 

@@ -822,6 +822,8 @@ class FakeArchiveApi:
         self.busy = False
         self.recycled: list[Path] = []
         self.imports: list[ArchiveReport] = []
+        #: The ``path`` of every ``report()`` call (None = the mirror).
+        self.reports: list[Path | None] = []
 
     def set_report(self, report: ArchiveReport | None) -> None:
         """Every ``report()`` returns this until ``None`` clears it."""
@@ -838,13 +840,16 @@ class FakeArchiveApi:
             raise ValueError(problems[0])
         return cfg
 
-    def report(self, path: Path | None = None) -> ArchiveReport:
+    def report(self, path: Path | None = None, *,
+               canonical_root: Path | None = None) -> ArchiveReport:
         cfg = self._cfg()
+        self.reports.append(path)
         if self.scripted is not None:
             return self.scripted
         root = Path(path) if path is not None else cfg.mirror_root
+        canonical = Path(canonical_root) if canonical_root is not None else cfg.mirror_root
         return archive_mod.discover(root, [e.name for e in cfg.environments], cfg.folder_envs,
-                                    canonical_root=cfg.mirror_root)
+                                    canonical_root=canonical)
 
     def import_(self, report: ArchiveReport, *, cancel=None, progress=None) -> importer_mod.ImportResult:
         cfg = self._cfg()

@@ -185,19 +185,27 @@ def run_gui(services: CoreServices, argv: list[str] | None = None, *,
     runner = JobRunner()
     try:
         start_sync = False
+        import_sources: tuple = ()
         if services.config.is_first_run():
             if wizard_available():
                 result = show_first_run_wizard(services, runner)
                 if result is None:  # the user cancelled: nothing is configured
                     return 0
                 start_sync = bool(getattr(result, "start_sync", False))
+                import_sources = tuple(getattr(result, "import_sources", ()))
             else:
                 log.warning("%s", strings.WIZARD_UNAVAILABLE)
 
         window = MainWindow(services, runner)
         guard.activated.connect(lambda: _raise(window))
         window.show()
-        if start_sync:
+        then = (window.start_sync if start_sync
+                else window.startup_tasks if run_startup_tasks else None)
+        if import_sources:
+            # The wizard's "li importerò alla fine": first the import, then the
+            # sync (which would otherwise hold the lock the copy needs).
+            window.open_import(import_sources, on_closed=then)
+        elif start_sync:
             window.start_sync()
         elif run_startup_tasks:
             # The window is the timer's context: a window already gone by the

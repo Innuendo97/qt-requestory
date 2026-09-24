@@ -77,6 +77,7 @@ from qtrequestory.core.events import (
     SyncStarted,
 )
 from qtrequestory.core.facade import ArchiveBusy, EnvStatus
+from qtrequestory.core.fsutil import real_is_within
 from qtrequestory.core.index.builder import IndexPlan, IndexStats
 from qtrequestory.core.importer import ImportResult, VerifiedOriginal
 from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery, pick_best
@@ -102,6 +103,8 @@ __all__ = [
     # the limits config.validate enforces on a schedule (the Impostazioni spin boxes)
     "REPEAT_EVERY_RANGE", "REPEAT_FOR_RANGE",
     "pick_best",
+    # "inside the archive" as the Recycle Bin guard decides it (junctions resolved)
+    "real_is_within",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",
@@ -369,10 +372,13 @@ class ExtractApi(Protocol):
 class ArchiveApi(Protocol):
     """Logs outside ``<mirror>/<env>/YYYY/MM/YYYYMMDD.txt``: find, import, recycle."""
 
-    def report(self, path: Path | None = None) -> ArchiveReport:
+    def report(self, path: Path | None = None, *,
+               canonical_root: Path | None = None) -> ArchiveReport:
         """Classify every file under ``path`` (None: the mirror folder itself)
         as importable / duplicate_same / needs_env / conflict / ignored, using
-        the configured env names and ``Config.folder_envs``. Read-only; reads
+        the configured env names and ``Config.folder_envs``. ``canonical_root``
+        (None: the mirror) is the tree whose canonical files are skipped; the
+        wizard passes the folder about to become the mirror. Read-only; reads
         every candidate, so call it from a worker. ``ValueError`` while the
         mirror folder is not usable (``mirror_root_errors``)."""
         ...
