@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from qtrequestory import cli
+from qtrequestory.core import facade as facade_mod
 from qtrequestory.core import importer
 from qtrequestory.core.config import load_config
 from qtrequestory.core.daily import local_path
@@ -189,3 +190,42 @@ def test_the_new_modes_attach_the_console(monkeypatch):
     cli._attach_parent_console(["--archivio"])
     cli._attach_parent_console(["--import", "x"])
     assert len(calls) == (2 if sys.platform == "win32" else 0)
+
+
+# ------------------------------------------------------------ fix round 1 ---
+
+@pytest.mark.parametrize("argv", [["--import", ""], ["--import", "manca"], ["--archivio", "manca"]])
+def test_a_missing_or_empty_folder_is_a_config_error_never_the_gui(home, tmp_path, monkeypatch, capsys, argv):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_start_gui", lambda paths: pytest.fail("the GUI must not start"))
+    assert cli.main(argv) == cli.EXIT_CONFIG_ERROR
+    assert "cartella" in capsys.readouterr().out
+
+
+def test_a_file_instead_of_a_folder_is_a_config_error(home, old):
+    f = put(old, "coll/20260922.txt")
+    assert cli.main(["--import", str(f)]) == cli.EXIT_CONFIG_ERROR
+    assert cli.main(["--archivio", str(f)]) == cli.EXIT_CONFIG_ERROR
+
+
+def test_import_resolves_a_relative_path(home, mirror, old, monkeypatch):
+    put(old, "coll/20260922.txt")
+    monkeypatch.chdir(old.parent)
+    assert cli.main(["--import", old.name]) == 0
+    assert local_path(mirror, "coll", D).exists()
+
+
+def test_a_cancelled_import_never_recycles(home, mirror, old, bin_calls, monkeypatch):
+    put(old, "coll/20260921.txt")
+    put(old, "coll/20260922.txt")
+    real = importer.run_import
+
+    def cancel_after_first(report, root, *, cancel=None, progress=None):
+        def prog(done, total, rel):
+            if done == 1:
+                cancel.cancel()
+        return real(report, root, cancel=cancel, progress=prog)
+
+    monkeypatch.setattr(facade_mod, "run_import", cancel_after_first)
+    assert cli.main(["--import", str(old), "--delete-originals"]) == cli.EXIT_CANCELLED
+    assert bin_calls == []

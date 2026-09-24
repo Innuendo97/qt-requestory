@@ -78,7 +78,7 @@ from qtrequestory.core.events import (
 )
 from qtrequestory.core.facade import ArchiveBusy, EnvStatus
 from qtrequestory.core.index.builder import IndexPlan, IndexStats
-from qtrequestory.core.importer import ImportResult
+from qtrequestory.core.importer import ImportResult, VerifiedOriginal
 from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery, pick_best
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
@@ -89,7 +89,7 @@ __all__ = [
     # protocols + bundle
     "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "ArchiveApi", "CoreServices",
     # archive import (core/archive.py, core/importer.py)
-    "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "IGNORE_FOLDER",
+    "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
     # re-exported core types
     "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "CoverageDays", "EntryName",
@@ -381,10 +381,12 @@ class ArchiveApi(Protocol):
         Does not index: run ``index.update(result.envs)`` afterwards."""
         ...
 
-    def recycle(self, paths: Sequence[Path]) -> list[tuple[Path, str]]:
-        """Send ``paths`` (use ``ImportResult.verified``) to the Recycle Bin;
-        returns the ones refused or failed, with an Italian reason. Never
-        touches anything inside the mirror folder."""
+    def recycle(self, originals: Sequence[VerifiedOriginal]) -> list[tuple[Path, str]]:
+        """Send ``ImportResult.verified`` records (nothing else is accepted)
+        to the Recycle Bin, each re-checked right before: unchanged since the
+        verification and still contained in its canonical copy. Returns the
+        refused or failed ones with an Italian reason. Never touches anything
+        inside the mirror folder, under any spelling."""
         ...
 
 

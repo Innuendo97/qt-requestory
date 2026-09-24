@@ -61,7 +61,9 @@ from qtrequestory.core.index.search import (
     read_body as core_read_body,
     search as core_search,
 )
-from qtrequestory.core.importer import CancelLike, ImportResult, Progress, run_import, send_to_recycle_bin
+from qtrequestory.core.importer import (
+    CancelLike, ImportResult, Progress, VerifiedOriginal, run_import, send_to_recycle_bin,
+)
 from qtrequestory.core.jobs import JobReport, run_index_job, run_sync_job
 from qtrequestory.core.lock import ProcessLock, peek_holder
 from qtrequestory.core.paths import AppPaths, app_paths, executable_dir
@@ -568,11 +570,12 @@ class ArchiveService:
         finally:
             lock.release()
 
-    def recycle(self, paths: Sequence[Path]) -> list[tuple[Path, str]]:
-        """Send ``paths`` to the Recycle Bin; returns the refused/failed ones.
-        Nothing inside the mirror folder is ever touched."""
+    def recycle(self, originals: Sequence[VerifiedOriginal]) -> list[tuple[Path, str]]:
+        """Send ``ImportResult.verified`` records to the Recycle Bin, each
+        re-checked against its canonical copy first; returns the refused or
+        failed ones. Nothing inside the mirror folder is ever touched."""
         cfg = self._usable_config()
-        return send_to_recycle_bin([Path(p) for p in paths], canonical_root=cfg.mirror_root)
+        return send_to_recycle_bin(list(originals), canonical_root=cfg.mirror_root)
 
 
 # ------------------------------------------------------------------ helpers ---

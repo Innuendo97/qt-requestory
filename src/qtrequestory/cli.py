@@ -175,7 +175,7 @@ def _check_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) 
                 parser.error(f"{name} si usa solo con --find")
         if args.no_open:  # a flag: "not given" really is False
             parser.error("--no-open si usa solo con --find")
-    if not args.import_path:
+    if args.import_path is None:
         if args.env_for:
             parser.error("--env-for si usa solo con --import")
         if args.delete_originals:
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = _resolve_paths(args.config)
     config = load_config(paths.config_file)
-    archive_mode = args.archivio is not None or bool(args.import_path)
+    archive_mode = args.archivio is not None or args.import_path is not None
     gui = not (args.sync or args.index or args.find or args.task or archive_mode)
     configure_logging(paths, headless=not gui, level=config.log_level)
 
@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         return _run_task(args.task, config)
     if args.archivio is not None:
         return cli_archive.run_archivio(config, args.archivio)
-    if args.import_path:
+    if args.import_path is not None:
         return _run_import(args, config)
     return _start_gui(paths)
 

@@ -177,7 +177,7 @@ def test_the_scanned_root_name_is_the_last_hint(tmp_path, canon):
     ("coll/20260922.txt", b"\x00\x01binary", "non è un log di chiamate"),
     ("coll/notes.txt", LOG, "nessuna data nel nome"),
     ("coll/20260921_20260922.txt", LOG, "data ambigua"),
-    ("coll/20190101.txt", LOG, "nessuna data nel nome"),
+    ("coll/20190101.txt", LOG, "data ambigua"),           # a long digit run, not a date
 ])
 def test_ignored_with_a_reason(src, rel, data, reason):
     put(src, rel, data)

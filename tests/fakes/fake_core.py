@@ -836,18 +836,23 @@ class FakeArchiveApi:
         self.imports.append(report)
         return importer_mod.run_import(report, cfg.mirror_root, cancel=cancel, progress=progress)
 
-    def recycle(self, paths: Sequence[Path]) -> list[tuple[Path, str]]:
+    def recycle(self, originals: Sequence[importer_mod.VerifiedOriginal]) -> list[tuple[Path, str]]:
+        """The real re-checks (``importer.check_original``), minus the shell:
+        a file under the fake root is unlinked and recorded."""
         cfg = self._cfg()
         failures: list[tuple[Path, str]] = []
-        for raw in paths:
-            path = Path(raw)
-            if is_within(path, cfg.mirror_root):
-                failures.append((path, "si trova nell'archivio: non viene mai cancellato"))
-            elif not is_within(path, self._root) or path.is_symlink() or not path.is_file():
-                failures.append((path, "non è un file"))
+        for rec in originals:
+            if not isinstance(rec, importer_mod.VerifiedOriginal):
+                failures.append((Path(rec), "non verificato da un'importazione: non viene cancellato"))
+                continue
+            why = importer_mod.check_original(rec, cfg.mirror_root)
+            if why is None and not is_within(rec.path, self._root):
+                why = "fuori dalla cartella del fake"
+            if why is not None:
+                failures.append((rec.path, why))
             else:
-                path.unlink()
-                self.recycled.append(path)
+                rec.path.unlink()
+                self.recycled.append(rec.path)
         return failures
 
 

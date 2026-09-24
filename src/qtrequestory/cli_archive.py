@@ -21,7 +21,7 @@ from qtrequestory.core import facade
 from qtrequestory.core.archive import CONFLICT, DUPLICATE, IGNORED, IMPORTABLE, NEEDS_ENV, ArchiveReport
 from qtrequestory.core.config import IGNORE_FOLDER, Config
 from qtrequestory.core.events import CancelToken, EventSink, format_size
-from qtrequestory.core.fsutil import is_within
+from qtrequestory.core.fsutil import real_is_within
 from qtrequestory.core.jobs import EXIT_CANCELLED, EXIT_ERRORS, JobReport, run_index_job
 
 EXIT_CONFIG_ERROR = 2
@@ -59,8 +59,23 @@ def print_report(report: ArchiveReport) -> None:
               + ", ".join(d or "." for d in report.needs_env_dirs()))
 
 
+def folder_error(path: str) -> str | None:
+    """Why ``path`` is not a folder to scan, or ``None``."""
+    if not path.strip():
+        return "cartella non indicata"
+    if not Path(path).is_dir():
+        return f"la cartella '{path}' non esiste o non è una cartella"
+    return None
+
+
 def run_archivio(config: Config, path: str) -> int:
-    report = facade.ArchiveService(lambda: config).report(Path(path) if path else None)
+    """``path == ""``: the mirror itself (``--archivio`` with no value)."""
+    if path:
+        problem = folder_error(path)
+        if problem:
+            print(f"Errore: {problem}")
+            return EXIT_CONFIG_ERROR
+    report = facade.ArchiveService(lambda: config).report(Path(path).resolve() if path else None)
     print_report(report)
     counts = report.counts()
     return EXIT_ERRORS if counts[NEEDS_ENV] or counts[CONFLICT] else 0
@@ -84,13 +99,17 @@ def _folder_envs(config: Config, pairs: Sequence[tuple[str, str]]) -> dict[str, 
 def run_import(config: Config, path: str, env_for: Sequence[tuple[str, str]], *,
                delete_originals: bool, run_job: RunJob, cancel: CancelToken) -> int:
     """``cancel`` is the Ctrl+C token (``cli._sigint_cancels``)."""
+    problem = folder_error(path)
+    if problem:
+        print(f"Errore: {problem}")
+        return EXIT_CONFIG_ERROR
     folder_envs = _folder_envs(config, env_for)
     if isinstance(folder_envs, str):
         print(f"Errore: {folder_envs}")
         return EXIT_CONFIG_ERROR
     run_config = dataclasses.replace(config, folder_envs=folder_envs)  # this run only, never saved
     service = facade.ArchiveService(lambda: run_config)
-    report = service.report(Path(path))
+    report = service.report(Path(path).resolve())
     print_report(report)
     try:
         result = service.import_(report, cancel=cancel)
@@ -107,7 +126,10 @@ def run_import(config: Config, path: str, env_for: Sequence[tuple[str, str]], *,
         code = run_job(lambda sink, token: run_index_job(
             run_config, envs=sorted(result.envs), full_rebuild=False, sink=sink, cancel=token))
 
-    originals = [p for p in result.verified if not is_within(p, config.mirror_root)]
+    if result.cancelled:
+        print("importazione annullata: nessun originale è stato cancellato")
+        return EXIT_CANCELLED
+    originals = [v for v in result.verified if not real_is_within(v.path, config.mirror_root)]
     if delete_originals and originals:
         failures = service.recycle(originals)
         print(f"Cestino: {len(originals) - len(failures)} file")
@@ -119,8 +141,6 @@ def run_import(config: Config, path: str, env_for: Sequence[tuple[str, str]], *,
         print(f"{len(originals)} originali verificati: aggiungi --delete-originals "
               "per spostarli nel Cestino")
 
-    if result.cancelled:
-        return EXIT_CANCELLED
     if result.errors or result.conflicts or report.counts()[NEEDS_ENV]:
         return code or EXIT_ERRORS
     return code

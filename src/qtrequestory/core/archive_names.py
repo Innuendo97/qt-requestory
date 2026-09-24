@@ -37,6 +37,10 @@ _EIGHT = re.compile(r"(?<!\d)(\d{8})(?!\d)")
 _DAY_FILE = re.compile(r"^(\d{1,2})(\.[^.]*)?$")
 _MONTH_DIR = re.compile(r"^\d{1,2}$")
 _YEAR_DIR = re.compile(r"^\d{4}$")
+#: In a FILE name, a digit run this long that is not a valid date (an epoch,
+#: a 7-digit typo, a date out of range) makes the day ambiguous: falling back
+#: to a folder's date would guess.
+_LONG_DIGITS = re.compile(r"\d{6,}")
 
 
 def _real(year: int, month: int, day: int, today: date) -> date | None:
@@ -84,7 +88,8 @@ def day_from_parts(parts: Sequence[str], *, today: date) -> tuple[date | None, s
     (file name, parent folder, ...).
 
     The first element holding a date decides; two different dates in it make
-    the file ambiguous. The ``YYYY/MM/DD.txt`` layout is tried when the file
+    the file ambiguous, and so does a file name with a long digit run (6+)
+    that is no valid date. The ``YYYY/MM/DD.txt`` layout is tried when the file
     name itself has no date token.
     """
     for i, part in enumerate(parts):
@@ -97,6 +102,8 @@ def day_from_parts(parts: Sequence[str], *, today: date) -> tuple[date | None, s
             d = _year_month_day(parts, today)
             if d is not None:
                 return d, None
+            if _LONG_DIGITS.search(part):
+                return None, AMBIGUOUS
     return None, NO_DATE
 
 

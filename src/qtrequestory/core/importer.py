@@ -10,13 +10,19 @@ The archive is precious, so the rules are narrow:
 * An existing canonical file is replaced ONLY when it is a strict prefix of
   the source — re-checked at copy time, not trusted from the scan, and once
   more right before the rename. Anything else is left exactly as it is.
-* ``verified`` lists the sources whose whole content is, right now, in the
-  archive: every copy that passed the check, plus the ``duplicate_same``
-  files re-checked against the canonical file at import time (a copy that
-  depended on a twin whose import failed is therefore NOT verified).
-* :func:`send_to_recycle_bin` refuses every path inside the canonical tree,
-  folders, missing files and drives without a Recycle Bin (network,
-  removable), where ``FOF_ALLOWUNDO`` would silently delete for good.
+* ``verified`` holds a :class:`VerifiedOriginal` (path, size, mtime, dest)
+  per source whose whole content is, right now, in the archive: every copy
+  that passed the check, plus the ``duplicate_same`` files re-checked
+  against the canonical file at import time (a copy that depended on a twin
+  whose import failed is therefore NOT verified). A source that IS the
+  canonical file under another spelling (junction, subst drive, short name)
+  is skipped silently and never verified.
+* :func:`send_to_recycle_bin` takes only those records, and re-checks each
+  one right before the shell call: unchanged size and mtime, and the
+  canonical copy still holding all of its bytes. It refuses everything that
+  resolves inside the canonical tree, folders, missing files and drives
+  without a Recycle Bin (network, removable), where ``FOF_ALLOWUNDO`` would
+  silently delete for good.
 
 The caller holds the sync lock while importing (see ``facade.ArchiveService``
 and ``cli``): the sync writes the same ``.part`` names.
@@ -35,7 +41,7 @@ from typing import Protocol
 
 from qtrequestory.core.archive import CONFLICT, DUPLICATE, IMPORTABLE, ArchiveReport, FoundLog, compare_files
 from qtrequestory.core.daily import local_path
-from qtrequestory.core.fsutil import is_within, remove_quietly, replace_with_retry
+from qtrequestory.core.fsutil import real_is_within, remove_quietly, replace_with_retry, same_file
 
 log = logging.getLogger(__name__)
 
@@ -50,15 +56,30 @@ class CancelLike(Protocol):
     def is_set(self) -> bool: ...
 
 
+@dataclass(frozen=True)
+class VerifiedOriginal:
+    """An original whose content was found in ``dest`` when it was verified.
+    The only thing :func:`send_to_recycle_bin` accepts."""
+
+    path: Path
+    size: int
+    mtime_ns: int
+    dest: Path
+
+
 @dataclass
 class ImportResult:
     copied: int = 0
     skipped: int = 0       # already in the archive ("già presenti")
     conflicts: int = 0
     errors: list[tuple[Path, str]] = field(default_factory=list)
-    verified: list[Path] = field(default_factory=list)
+    verified: list[VerifiedOriginal] = field(default_factory=list)
     envs: set[str] = field(default_factory=set)  # envs that received a copy: index them
     cancelled: bool = False
+
+    @property
+    def verified_paths(self) -> list[Path]:
+        return [v.path for v in self.verified]
 
 
 class _Cancelled(Exception):
@@ -109,16 +130,26 @@ def _dest_allows(src: Path, dest: Path) -> str:
     return "have" if verdict in ("same", "a_prefix") else "conflict"
 
 
+def _unchanged(src: Path, item: FoundLog) -> bool:
+    st = src.stat()
+    return st.st_size == item.size and st.st_mtime_ns == item.mtime_ns
+
+
+def _record(item: FoundLog, dest: Path) -> VerifiedOriginal:
+    return VerifiedOriginal(item.path, item.size, item.mtime_ns, dest)
+
+
 def _import_one(item: FoundLog, dest: Path, cancel: CancelLike | None, result: ImportResult) -> None:
     src = item.path
-    st = src.stat()
-    if st.st_size != item.size or st.st_mtime_ns != item.mtime_ns:
+    if same_file(src, dest):
+        return  # the canonical file itself, reached by another path: nothing to do, ever
+    if not _unchanged(src, item):
         result.errors.append((src, "il file è cambiato dopo l'analisi: ripeti la ricerca"))
         return
     state = _dest_allows(src, dest)
     if state == "have":
         result.skipped += 1
-        result.verified.append(src)
+        result.verified.append(_record(item, dest))
         return
     if state == "conflict":
         result.conflicts += 1
@@ -129,12 +160,15 @@ def _import_one(item: FoundLog, dest: Path, cancel: CancelLike | None, result: I
         if size != item.size or part.stat().st_size != size or _hash_file(part) != digest:
             result.errors.append((src, "verifica della copia fallita"))
             return
+        if not _unchanged(src, item):
+            result.errors.append((src, "il file è cambiato durante la copia: ripeti la ricerca"))
+            return
         # Once more, right before the rename: nothing may be overwritten.
         state = _dest_allows(src, dest)
         if state != "copy":
             if state == "have":
                 result.skipped += 1
-                result.verified.append(src)
+                result.verified.append(_record(item, dest))
             else:
                 result.conflicts += 1
             return
@@ -142,15 +176,21 @@ def _import_one(item: FoundLog, dest: Path, cancel: CancelLike | None, result: I
     finally:
         remove_quietly(part)  # gone after the rename; a leftover after any failure
     result.copied += 1
-    result.verified.append(src)
+    result.verified.append(_record(item, dest))
     result.envs.add(item.env)  # type: ignore[arg-type]
     log.info("importato %s -> %s", src, dest)
 
 
 def _check_duplicate(item: FoundLog, dest: Path, result: ImportResult) -> None:
-    if os.path.lexists(dest) and dest.is_file() and compare_files(item.path, dest) in ("same", "a_prefix"):
+    if same_file(item.path, dest):
+        return  # the canonical file itself, reached by another path: never "verified"
+    if not _unchanged(item.path, item):
+        result.errors.append((item.path, "il file è cambiato dopo l'analisi: ripeti la ricerca"))
+        return
+    if (os.path.lexists(dest) and dest.is_file()
+            and compare_files(item.path, dest) in ("same", "a_prefix") and _unchanged(item.path, item)):
         result.skipped += 1
-        result.verified.append(item.path)
+        result.verified.append(_record(item, dest))
     else:
         result.errors.append((item.path, "la copia in archivio non contiene questo file"))
 
@@ -230,17 +270,23 @@ def _drive_type(path: Path) -> int:  # pragma: no cover - real API, mocked in te
     return ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(anchor))
 
 
-def send_to_recycle_bin(paths: Sequence[Path], *, canonical_root: Path) -> list[tuple[Path, str]]:
-    """Recycle each path; return the ones that were not recycled, with why.
+def send_to_recycle_bin(originals: Sequence[VerifiedOriginal], *, canonical_root: Path) -> list[tuple[Path, str]]:
+    """Recycle each verified original; return the ones not recycled, with why.
 
-    Never touches a path inside ``canonical_root`` (the whole archive), a
-    folder, a symlink, a missing file, or a file on a drive that has no
-    Recycle Bin. Windows only: elsewhere every path fails.
+    Accepts only :class:`VerifiedOriginal` records from an import, and
+    re-checks each against its canonical copy right before the shell call
+    (see :func:`check_original`). Never touches anything that resolves inside
+    ``canonical_root`` (the whole archive), a folder, a symlink, a missing
+    file, or a file on a drive that has no Recycle Bin. Windows only:
+    elsewhere every path fails.
     """
     failures: list[tuple[Path, str]] = []
-    for raw in paths:
-        path = Path(raw)
-        why = _refusal(path, Path(canonical_root))
+    for rec in originals:
+        if not isinstance(rec, VerifiedOriginal):
+            failures.append((Path(rec), "non verificato da un'importazione: non viene cancellato"))
+            continue
+        path = rec.path
+        why = _refusal(rec, Path(canonical_root))
         if why is None:
             try:
                 rc, aborted = _shell_delete(str(path))
@@ -256,15 +302,39 @@ def send_to_recycle_bin(paths: Sequence[Path], *, canonical_root: Path) -> list[
     return failures
 
 
-def _refusal(path: Path, canonical_root: Path) -> str | None:
+def check_original(rec: VerifiedOriginal, canonical_root: Path) -> str | None:
+    """Why ``rec`` may NOT be deleted now, or ``None``: platform-independent,
+    so the fake core applies the very same rules."""
+    path, dest = rec.path, rec.dest
     if not path.is_absolute():
         return "percorso non assoluto"
-    if is_within(path, canonical_root):
+    if real_is_within(path, canonical_root):
         return "si trova nell'archivio: non viene mai cancellato"
-    if sys.platform != "win32":
-        return "il Cestino è disponibile solo su Windows"
+    if not real_is_within(dest, canonical_root):
+        return "la copia indicata non è nell'archivio"
     if path.is_symlink() or not path.is_file():
         return "non è un file"
-    if _drive_type(path) != DRIVE_FIXED:
+    if same_file(path, dest):
+        return "è la copia in archivio: non viene mai cancellata"
+    st = path.stat()
+    if st.st_size != rec.size or st.st_mtime_ns != rec.mtime_ns:
+        return "modificato dopo la verifica: non viene cancellato"
+    if not dest.is_file():
+        return "la copia in archivio non c'è più"
+    if compare_files(path, dest) not in ("same", "a_prefix"):
+        return "non coincide più con la copia in archivio"
+    return None
+
+
+def _refusal(rec: VerifiedOriginal, canonical_root: Path) -> str | None:
+    if sys.platform != "win32":
+        return "il Cestino è disponibile solo su Windows"
+    try:
+        why = check_original(rec, canonical_root)
+    except OSError as e:
+        return f"impossibile verificarlo: {e.strerror or e}"
+    if why is not None:
+        return why
+    if _drive_type(rec.path) != DRIVE_FIXED:
         return "unità senza Cestino (di rete o rimovibile): cancellalo a mano se vuoi"
     return None

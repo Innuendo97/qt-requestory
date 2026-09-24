@@ -11,7 +11,7 @@ from qtrequestory.core import facade, importer
 from qtrequestory.core.archive import CONFLICT, DUPLICATE, IMPORTABLE, NEEDS_ENV, ArchiveReport
 from qtrequestory.core.config import Environment, default_config
 from qtrequestory.core.daily import local_path
-from qtrequestory.core.importer import ImportResult
+from qtrequestory.core.importer import ImportResult, VerifiedOriginal
 from qtrequestory.core.lock import ProcessLock
 from tests.fakes.fake_core import FakeArchiveApi, build_fake_core
 from tests.test_archive import LOG, LOG2, OTHER, put
@@ -80,9 +80,10 @@ def test_import_copies_and_recycle_refuses_the_archive(tmp_path, mocked_bin):
     assert (result.copied, result.skipped, result.conflicts) == (1, 1, 1)
     assert local_path(cfg.mirror_root, "coll", D).read_bytes() == LOG
     inside = local_path(cfg.mirror_root, "coll", D)
-    failures = svc.recycle(result.verified + [inside])
+    st = inside.stat()
+    failures = svc.recycle(result.verified + [VerifiedOriginal(inside, st.st_size, st.st_mtime_ns, inside)])
     assert [p for p, _ in failures] == [inside]
-    assert sorted(Path(c) for c in mocked_bin) == sorted(result.verified)
+    assert sorted(Path(c) for c in mocked_bin) == sorted(result.verified_paths)
 
 
 def test_import_refuses_while_a_sync_holds_the_lock(tmp_path):
@@ -123,9 +124,11 @@ def test_fake_matches_real_on_the_same_tree(tmp_path, mocked_bin):
     r, f = real.import_(real_report), fake.import_(fake_report)
     assert (r.copied, r.skipped, r.conflicts, len(r.errors), r.envs) == \
            (f.copied, f.skipped, f.conflicts, len(f.errors), f.envs)
-    assert [p.name for p in r.verified] == [p.name for p in f.verified]
+    assert [p.name for p in r.verified_paths] == [p.name for p in f.verified_paths]
     assert real.recycle(r.verified) == [] and fake.recycle(f.verified) == []
-    assert fake.recycled == f.verified
+    assert fake.recycled == f.verified_paths
     inside = local_path(fake_core.config.config.mirror_root, "coll", D)
-    assert [p for p, _ in fake.recycle([inside])] == [inside]
+    st = inside.stat()
+    assert [p for p, _ in fake.recycle([VerifiedOriginal(inside, st.st_size, st.st_mtime_ns, inside)])] == [inside]
+    assert [p for p, _ in fake.recycle([inside])] == [inside]  # a bare path is never accepted
     assert inside.exists()

@@ -36,10 +36,12 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from qtrequestory.core.archive_names import day_from_parts, env_from_parts
+from qtrequestory.core.archive_names import (  # AMBIGUOUS/NO_DATE re-exported: the reasons
+    AMBIGUOUS, NO_DATE, day_from_parts, element_dates, env_from_parts,
+)
 from qtrequestory.core.config import IGNORE_FOLDER
 from qtrequestory.core.daily import day_from_name, local_path
-from qtrequestory.core.fsutil import is_within
+from qtrequestory.core.fsutil import real_is_within
 from qtrequestory.core.index.scanner import BLANKS, BOM, HEADER_RE
 
 log = logging.getLogger(__name__)
@@ -63,6 +65,8 @@ R_COMPRESSED = "archivio compresso: estrailo nella cartella"
 R_NOT_A_LOG = "non è un log di chiamate"
 R_IGNORED_FOLDER = "cartella da ignorare"
 R_UNREADABLE = "illeggibile"
+R_EMPTY_UNNAMED = "file vuoto: vale come giorno senza chiamate solo se è un .txt con la data nel nome"
+EMPTY_DAY_SUFFIXES = frozenset({"", ".txt"})
 
 COMPRESSED_SUFFIXES = frozenset({".zip", ".gz", ".7z", ".rar", ".tgz"})
 SKIPPED_DIRS = frozenset({"$recycle.bin", "system volume information"})
@@ -178,10 +182,11 @@ def _walk(root: Path) -> list[tuple[Path, list[str], os.stat_result]]:
 
 
 def _is_canonical(path: Path, canonical_root: Path | None) -> bool:
-    """``path`` is ``<canonical_root>/<env>/YYYY/MM/YYYYMMDD.txt``."""
-    if canonical_root is None or not is_within(path, canonical_root):
+    """``path`` is ``<canonical_root>/<env>/YYYY/MM/YYYYMMDD.txt``, whatever
+    spelling reaches it (junction, subst drive, short name): compared resolved."""
+    if canonical_root is None or not real_is_within(path, canonical_root):
         return False
-    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(canonical_root))
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(canonical_root))
     parts = Path(rel).parts
     if len(parts) != 4:
         return False
@@ -273,6 +278,10 @@ def _classify(item: FoundLog, root: Path, rel_parts: list[str], env_names: Seque
     day, why = day_from_parts(parts, today=today)
     if day is None:
         return replace(item, reason=why or "")
+    if item.size == 0 and (item.path.suffix.lower() not in EMPTY_DAY_SUFFIXES
+                           or not element_dates(rel_parts[-1], today=today)):
+        # An empty file is an empty DAY only when it is unmistakably one.
+        return replace(item, day=day, reason=R_EMPTY_UNNAMED)
     env = choice or env_from_parts(parts, env_names)
     if env is None and len(env_names) == 1:
         env = env_names[0]

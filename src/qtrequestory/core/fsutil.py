@@ -79,3 +79,19 @@ def is_within(child: Path, parent: Path) -> bool:
 def paths_overlap(a: Path, b: Path) -> bool:
     """``a`` and ``b`` are the same folder or one contains the other."""
     return is_within(a, b) or is_within(b, a)
+
+
+def real_is_within(child: Path, parent: Path) -> bool:
+    """:func:`is_within` after resolving both paths (``os.path.realpath``):
+    a junction, a symlink, a ``subst`` drive or an 8.3 short name leading
+    into ``parent`` still counts as inside it. Use it wherever "inside the
+    archive" protects data."""
+    return is_within(Path(os.path.realpath(child)), Path(os.path.realpath(parent)))
+
+
+def same_file(a: Path, b: Path) -> bool:
+    """``os.path.samefile`` that answers False when either side is missing."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
