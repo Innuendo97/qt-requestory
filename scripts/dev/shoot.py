@@ -282,6 +282,129 @@ def main(argv: list[str] | None = None) -> int:
         ("ricerca-cartella-non-valida", search_no_folder),
         ("sync-cartella-non-valida", sync_no_folder),
     ]
+
+    # -- import (1.1.0): strays in the mirror, a colleague's folder, the dialog --
+    import threading
+
+    from qtrequestory.ui.import_dialog import STEP_COPY, STEP_REPORT, STEP_RESULT, ImportDialog
+    from qtrequestory.ui.import_state import ArchiveWatch
+    from tests.test_archive import LOG, LOG2, OTHER, put
+
+    core_root = tmp / "core"
+    colleague = core_root / "log di Mario"
+
+    def import_tree() -> None:
+        """Every verdict once, rebuilt for each mode (the import consumes it)."""
+        import shutil
+
+        shutil.rmtree(colleague, ignore_errors=True)
+        m = services.config.load().mirror_root
+        for env, days in (("coll", (2, 3, 11, 12)), ("svil", (3, 4))):
+            for d in days:  # what the previous mode imported
+                (m / env / "2026" / "09" / f"202609{d:02d}.txt").unlink(missing_ok=True)
+        for rel in ("coll/2026/9/20260911.txt", "coll/2026/9/20260912.txt", "vari/20260908.txt"):
+            put(m, rel, LOG)
+        put(colleague, "coll/20260902.txt", LOG)
+        put(colleague, "coll/2026-09-03.txt", LOG2)
+        put(colleague, "svil/03092026.txt", LOG)
+        put(colleague, "svil/2026_09_04.txt", LOG)
+        put(colleague, "da smistare/20260905.txt", LOG)
+        put(colleague, "da smistare/20260906.txt", LOG)
+        put(colleague, "settembre.zip", b"PK")
+        put(colleague, "note.txt", b"appunti")
+        put(m, "coll/2026/09/20260901.txt", LOG)
+        put(colleague, "coll/20260901.txt", LOG)                 # already in the archive
+        put(m, "svil/2026/09/20260907.txt", OTHER)
+        put(colleague, "svil/20260907.txt", LOG)                 # conflict
+        watch = ArchiveWatch.existing(runner)
+        if watch is not None:
+            watch.refresh()
+        pump(600)
+
+    def stray_banner(page: str):
+        def prepare() -> None:
+            import_tree()
+            window.show_page(page)
+            pump(300)
+        return prepare
+
+    dialogs: dict[str, ImportDialog] = {}
+
+    def dialog_report():
+        import_tree()
+        dialog = ImportDialog(services, runner, [colleague], window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.show()
+        pump(900)
+        assert dialog.step() == STEP_REPORT
+        dialogs["d"] = dialog
+        return dialog
+
+    gate = threading.Event()
+
+    def dialog_copy():
+        dialog = dialog_report()
+        real = services.archive.import_
+
+        def slow(report, *, cancel=None, progress=None):
+            def step(done, total, rel):
+                progress(done, total, rel)
+                if done == 2:
+                    gate.wait(10)
+            return real(report, cancel=cancel, progress=step)
+
+        services.archive.import_ = slow
+        gate.clear()
+        dialog.primary_button.click()
+        pump(900)
+        assert dialog.step() == STEP_COPY
+        return _Kept(dialog)
+
+    def dialog_result():
+        dialog = dialogs["d"]
+        gate.set()
+        pump(900)
+        del services.archive.import_
+        assert dialog.step() == STEP_RESULT
+        return _Kept(dialog)
+
+    def dialog_deleted():
+        dialog = dialogs["d"]
+        dialog.result_view.delete_button.click()
+        pump(900)
+        return dialog
+
+    class _Kept:
+        """A target the loop must not close: the next scene continues it."""
+
+        def __init__(self, widget) -> None:
+            self.widget = widget
+
+        def grab(self):
+            return self.widget.grab()
+
+        def close(self) -> None:
+            pass
+
+        def deleteLater(self) -> None:
+            pass
+
+    def settings_import() -> None:
+        import_tree()
+        settings.reload()
+        window.show_page("settings")
+        settings.show_section("archive")
+        pump(300)
+
+    scenes += [
+        ("ricerca-log-fuori-struttura", stray_banner("search")),
+        ("sync-log-fuori-struttura", stray_banner("sync")),
+        ("impostazioni-archivio-importa", settings_import),
+        ("importa-1-elenco", dialog_report),
+        ("importa-2-copia", dialog_copy),
+        ("importa-3-risultato", dialog_result),
+        ("importa-4-cestino", dialog_deleted),
+    ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]
     if args.only:

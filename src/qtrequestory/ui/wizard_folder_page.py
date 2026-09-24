@@ -1,5 +1,8 @@
 """Page 1 of the first-run wizard: where the mirror goes, and the editor.
 
+Under the folder, :class:`~qtrequestory.ui.wizard_import.ImportOffer`: the
+logs found outside the archive structure, imported after [Fine].
+
 The editor (Notepad++) is asked here rather than on Automazione: both are
 "where things live on this PC", and neither has anything to do with the
 scheduled task.
@@ -14,6 +17,7 @@ from PySide6.QtWidgets import QFileDialog, QGridLayout, QLabel, QLineEdit, QPush
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.wizard_import import ImportOffer
 from qtrequestory.ui.wizard_step import WizardStepPage, error_line, muted
 from qtrequestory.ui.workers import Job, JobRunner
 
@@ -49,6 +53,7 @@ class LogFolderPage(WizardStepPage):
         self.editor_browse_button = QPushButton(strings.BTN_BROWSE)
         self.editor_browse_button.clicked.connect(self.browse_editor)
         self.editor_hint = muted()
+        self.import_offer = ImportOffer(services, runner)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(theme.SPACE[1])
@@ -58,11 +63,12 @@ class LogFolderPage(WizardStepPage):
         grid.addWidget(self.browse_button, 0, 2)
         grid.addWidget(self.info_label, 1, 1, 1, 2)
         grid.addWidget(self.error_label, 2, 1, 1, 2)
-        grid.setRowMinimumHeight(3, theme.SPACE[2])
-        grid.addWidget(QLabel(strings.WIZARD_P1_EDITOR_LABEL), 4, 0)
-        grid.addWidget(self.editor_edit, 4, 1)
-        grid.addWidget(self.editor_browse_button, 4, 2)
-        grid.addWidget(self.editor_hint, 5, 1, 1, 2)
+        grid.addWidget(self.import_offer, 3, 1, 1, 2)
+        grid.setRowMinimumHeight(4, theme.SPACE[2])
+        grid.addWidget(QLabel(strings.WIZARD_P1_EDITOR_LABEL), 5, 0)
+        grid.addWidget(self.editor_edit, 5, 1)
+        grid.addWidget(self.editor_browse_button, 5, 2)
+        grid.addWidget(self.editor_hint, 6, 1, 1, 2)
         grid.setColumnStretch(1, 1)
 
         self.body.addWidget(self.intro_label)
@@ -135,6 +141,7 @@ class LogFolderPage(WizardStepPage):
         """The wizard is closing: stop walking the folder."""
         if self._count_job is not None:
             self._count_job.cancel()
+        self.import_offer.cancel_jobs()
 
     # -- buttons ------------------------------------------------------------
 
@@ -177,6 +184,7 @@ class LogFolderPage(WizardStepPage):
         supersedes the previous one, so only the folder in the field answers.
         """
         folder = self.folder()
+        self.import_offer.set_folder(folder)
         job = None
         if folder is not None and self._runner is not None:
             job = self._runner.submit(COUNT_JOB, self._services.index.count_local_files, folder)

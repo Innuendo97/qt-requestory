@@ -67,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
             services.config.editor = Path(r"C:\Program Files\Notepad++\notepad++.exe")
             services.scheduler.set_legacy(True)
             services.index.set_local_file_count(services.config.load().mirror_root, 7)
+            # Logs outside the structure in the folder, and a colleague's folder.
+            from tests.test_archive import LOG, put
+            mirror = services.config.load().mirror_root
+            for day in ("20260915", "20260916", "20260917"):
+                put(mirror, f"vecchi/coll_{day}.txt", LOG)
+            elsewhere = tmp / f"core-{mode}" / "log di Mario"
+            for day in ("2026-09-10", "2026-09-11"):
+                put(elsewhere, f"svil/{day}.txt", LOG)
 
             wizard = FirstRunWizard(services, runner)
             wizard.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -82,6 +90,11 @@ def main(argv: list[str] | None = None) -> int:
                 print("saved", path)
 
             shot(1, "archivio")
+            offer = wizard.folder_page.import_offer
+            offer.set_extra(elsewhere)
+            pump(600)
+            shot(5, "archivio-altrove")
+            offer.set_extra(None)
             wizard.next()
             wizard.environments_page.add_environment()
             shot(2, "ambienti")

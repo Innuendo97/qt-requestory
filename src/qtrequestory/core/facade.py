@@ -548,13 +548,17 @@ class ArchiveService:
             raise ValueError(problems[0])
         return cfg
 
-    def report(self, path: Path | None = None) -> ArchiveReport:
+    def report(self, path: Path | None = None, *,
+               canonical_root: Path | None = None) -> ArchiveReport:
         """Classify every file under ``path`` (default: the mirror itself).
-        Read-only. ``ValueError`` while the mirror folder is not usable."""
+        ``canonical_root`` (default: the mirror) is the tree whose canonical
+        files are skipped: the wizard passes the folder about to become the
+        mirror. Read-only. ``ValueError`` while the mirror folder is not usable."""
         cfg = self._usable_config()
         root = Path(path) if path is not None else cfg.mirror_root
+        canonical = Path(canonical_root) if canonical_root is not None else cfg.mirror_root
         return archive.discover(root, [e.name for e in cfg.environments], cfg.folder_envs,
-                                canonical_root=cfg.mirror_root)
+                                canonical_root=canonical)
 
     def import_(
         self,

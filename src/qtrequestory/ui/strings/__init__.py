@@ -15,6 +15,7 @@ others. One module per page means each task owns a file:
 ``settings.py``      Impostazioni page
 ``wizard.py``        first-run wizard
 ``about.py``         Info page
+``imports.py``       importing logs from other folders (dialog, banner, wizard)
 ===================  ==================================================
 
 Usage — always through the package, never the submodule::
@@ -33,3 +34,4 @@ from .sync import *  # noqa: F401,F403
 from .settings import *  # noqa: F401,F403
 from .wizard import *  # noqa: F401,F403
 from .about import *  # noqa: F401,F403
+from .imports import *  # noqa: F401,F403

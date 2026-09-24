@@ -51,6 +51,7 @@ from qtrequestory.ui.pages import sync_format as fmt
 from qtrequestory.ui.pages.coverage_strip import CoverageLegend
 from qtrequestory.ui.pages.env_card import CARD_MIN_WIDTH, EnvCard
 from qtrequestory.ui.pages.sync_cards import EnvCardsGrid
+from qtrequestory.ui.pages.import_banner import ImportBanner
 from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
 from qtrequestory.ui.pages.sync_banners import CoverageBanners
 from qtrequestory.ui.pages.sync_auto_card import AutoSyncCard
@@ -137,6 +138,7 @@ class SyncPage(QWidget):
         title = QLabel(strings.SYNC_TITLE)
         theme.set_role(title, "pageTitle")
         self.mirror_banner = MirrorRootBanner(self._services, self._window)
+        self.import_banner = ImportBanner(self._services, self._runner, self._window)
         self.auto_card = AutoSyncCard(self._services, self._runner, self._window)
         self.lock_label = QLabel(strings.SYNC_LOCK_HELD)
         theme.set_role(self.lock_label, "muted")
@@ -153,8 +155,8 @@ class SyncPage(QWidget):
         self.run_label.hide()
         self.log_panel = SyncLogPanel()
 
-        for widget in (title, self.mirror_banner, self.auto_card, self.lock_label,
-                       self.banners):
+        for widget in (title, self.mirror_banner, self.import_banner, self.auto_card,
+                       self.lock_label, self.banners):
             layout.addWidget(widget)
         layout.addLayout(self.cards_grid)
         layout.addWidget(self.legend)

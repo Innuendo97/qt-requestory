@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import REPEAT_EVERY_RANGE, REPEAT_FOR_RANGE
 from qtrequestory.ui.env_table import EnvTable
+from qtrequestory.ui.pages.archive_summary import ArchiveSummary
 from qtrequestory.ui.pages.settings_widgets import (
     ElidedLabel,
     PathField,
@@ -130,6 +131,8 @@ def archive(page: SettingsPage) -> QWidget:
     layout.addWidget(page.index_label, 1)
     layout.addWidget(page.rebuild_button)
     form.addRow(form_label(strings.SETTINGS_INDEX_LABEL), index_row)
+    page.archive_summary = ArchiveSummary(page._services, page._runner, page._window)
+    form.addRow(form_label(strings.ARCHIVE_SUMMARY_LABEL), page.archive_summary)
     for path in (page.mirror_path, page.output_path):
         path.changed.connect(page.on_edited)
     return _section(card)

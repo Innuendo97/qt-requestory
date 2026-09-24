@@ -2,7 +2,7 @@
 
 ``JobRunner`` job names are identifiers chosen by the pages; :func:`job_label`
 is how they are ever shown. The quit question names whichever long job — a
-sync or an index — closing the window would interrupt.
+sync, an index or an import — closing the window would interrupt.
 """
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from qtrequestory.ui import strings
 __all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_job", "job_label"]
 
 #: What the quit question adds under the main text, per job.
-QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO}
+QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO,
+             "import": strings.QUIT_IMPORT_INFO, "recycle": strings.QUIT_RECYCLE_INFO}
 
 #: ``JobRunner`` name -> what to call that operation in front of the user. The
 #: names are identifiers chosen by the pages ("check-envs", "search_plan",
@@ -35,6 +36,11 @@ JOB_LABELS = {
     "wizard-reachability": strings.JOB_WIZARD_REACHABILITY,
     "wizard-task-status": strings.JOB_WIZARD_TASK_STATUS,
     "wizard-count-files": strings.JOB_WIZARD_COUNT_FILES,
+    "wizard-archive-report": strings.JOB_WIZARD_ARCHIVE,
+    "archive-report": strings.JOB_ARCHIVE_REPORT,
+    "import-scan": strings.JOB_IMPORT_SCAN,
+    "import": strings.JOB_IMPORT,
+    "recycle": strings.JOB_RECYCLE,
 }
 
 
