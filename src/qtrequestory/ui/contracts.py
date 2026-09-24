@@ -1,4 +1,4 @@
-"""The boundary the UI is written against: five Protocols plus the core dataclasses.
+"""The boundary the UI is written against: six Protocols plus the core dataclasses.
 
 Every widget, presenter and worker in ``qtrequestory.ui`` takes its core
 functionality from a ``CoreServices`` bundle and never imports a core module
@@ -31,7 +31,17 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from qtrequestory import __version__
+from qtrequestory.core.archive import (
+    CONFLICT,
+    DUPLICATE,
+    IGNORED,
+    IMPORTABLE,
+    NEEDS_ENV,
+    ArchiveReport,
+    FoundLog,
+)
 from qtrequestory.core.config import (
+    IGNORE_FOLDER,
     REPEAT_EVERY_RANGE,
     REPEAT_FOR_RANGE,
     Config,
@@ -66,8 +76,9 @@ from qtrequestory.core.events import (
     SyncFinished,
     SyncStarted,
 )
-from qtrequestory.core.facade import EnvStatus
+from qtrequestory.core.facade import ArchiveBusy, EnvStatus
 from qtrequestory.core.index.builder import IndexPlan, IndexStats
+from qtrequestory.core.importer import ImportResult
 from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery, pick_best
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
@@ -76,7 +87,10 @@ from qtrequestory.core.sync import EnvResult, SyncReport
 
 __all__ = [
     # protocols + bundle
-    "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "CoreServices",
+    "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "ArchiveApi", "CoreServices",
+    # archive import (core/archive.py, core/importer.py)
+    "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "IGNORE_FOLDER",
+    "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
     # re-exported core types
     "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "CoverageDays", "EntryName",
     "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "IndexPlan", "IndexSettings",
@@ -346,6 +360,34 @@ class ExtractApi(Protocol):
         ...
 
 
+# ------------------------------------------------------------------ archive ---
+
+@runtime_checkable
+class ArchiveApi(Protocol):
+    """Logs outside ``<mirror>/<env>/YYYY/MM/YYYYMMDD.txt``: find, import, recycle."""
+
+    def report(self, path: Path | None = None) -> ArchiveReport:
+        """Classify every file under ``path`` (None: the mirror folder itself)
+        as importable / duplicate_same / needs_env / conflict / ignored, using
+        the configured env names and ``Config.folder_envs``. Read-only; reads
+        every candidate, so call it from a worker. ``ValueError`` while the
+        mirror folder is not usable (``mirror_root_errors``)."""
+        ...
+
+    def import_(self, report: ArchiveReport, *, cancel=None, progress=None) -> ImportResult:
+        """Copy + verify the importable files into the mirror. ``cancel`` has
+        ``is_set()`` (a ``CancelToken``); ``progress(done, total, rel_path)``
+        runs on the worker thread. ``ArchiveBusy`` while a sync holds the lock.
+        Does not index: run ``index.update(result.envs)`` afterwards."""
+        ...
+
+    def recycle(self, paths: Sequence[Path]) -> list[tuple[Path, str]]:
+        """Send ``paths`` (use ``ImportResult.verified``) to the Recycle Bin;
+        returns the ones refused or failed, with an Italian reason. Never
+        touches anything inside the mirror folder."""
+        ...
+
+
 # ----------------------------------------------------------- service bundle ---
 
 @dataclass(frozen=True)
@@ -361,6 +403,7 @@ class CoreServices:
     scheduler: SchedulerApi
     index: IndexApi
     extract: ExtractApi
+    archive: ArchiveApi
     paths: AppPaths
     app_version: str = __version__
 
@@ -382,6 +425,7 @@ class CoreServices:
             scheduler=facade.SchedulerService(config_source=config.current),
             index=facade.IndexService(config.current),
             extract=facade.ExtractService(config.current),
+            archive=facade.ArchiveService(config.current),
             paths=resolved,
         )
 

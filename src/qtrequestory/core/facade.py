@@ -1,4 +1,4 @@
-"""The five service objects the UI talks to — the ONLY adapter layer.
+"""The six service objects the UI talks to — the ONLY adapter layer.
 
 The core is a set of modules with functions (``search(conn, root, q)``,
 ``scheduler.status(exe, runner=...)``, ...). The UI wants objects with short,
@@ -20,6 +20,8 @@ What the adapters actually do beyond binding arguments:
   info file alone is not a liveness signal (a crashed holder may leave text
   behind), so the PID written in it is checked, and the lock itself is never
   taken — a probe that took it could make a scheduled run skip an hour.
+* ``ArchiveService.import_`` holds the sync lock while it copies: a sync
+  writing the same day's ``.part`` at the same time would race it.
 * Every service reads the configuration through a callable, so saving new
   settings in Impostazioni is picked up without rebuilding anything.
 
@@ -39,7 +41,8 @@ from pathlib import Path
 from typing import Iterator
 
 from qtrequestory.core import config as config_mod
-from qtrequestory.core import daily, extract, opener, scheduler
+from qtrequestory.core import archive, daily, extract, opener, scheduler
+from qtrequestory.core.archive import ArchiveReport
 from qtrequestory.core.autoindex import parse_autoindex
 from qtrequestory.core.config import Config, Environment
 from qtrequestory.core.events import CancelToken, EventSink
@@ -58,8 +61,9 @@ from qtrequestory.core.index.search import (
     read_body as core_read_body,
     search as core_search,
 )
+from qtrequestory.core.importer import CancelLike, ImportResult, Progress, run_import, send_to_recycle_bin
 from qtrequestory.core.jobs import JobReport, run_index_job, run_sync_job
-from qtrequestory.core.lock import peek_holder
+from qtrequestory.core.lock import ProcessLock, peek_holder
 from qtrequestory.core.paths import AppPaths, app_paths, executable_dir
 from qtrequestory.core.scheduler import CommandRunner, SchedulerError, TaskStatus
 from qtrequestory.core.state import SyncState
@@ -513,6 +517,62 @@ class ExtractService:
 
     def output_dir(self) -> Path:
         return self._config_source().resolved_output_dir
+
+
+# ----------------------------------------------------------- archive service ---
+
+class ArchiveBusy(RuntimeError):
+    """A sync (UI or scheduled task) holds the lock: import after it ends."""
+
+
+class ArchiveService:
+    """Logs outside the canonical layout: find them, import them, recycle the
+    verified originals. See ``core/archive.py`` and ``core/importer.py``."""
+
+    def __init__(self, config_source: ConfigSource) -> None:
+        self._config_source = config_source
+
+    def _usable_config(self) -> Config:
+        cfg = self._config_source()
+        problems = config_mod.mirror_root_errors(cfg)
+        if problems:
+            raise ValueError(problems[0])
+        return cfg
+
+    def report(self, path: Path | None = None) -> ArchiveReport:
+        """Classify every file under ``path`` (default: the mirror itself).
+        Read-only. ``ValueError`` while the mirror folder is not usable."""
+        cfg = self._usable_config()
+        root = Path(path) if path is not None else cfg.mirror_root
+        return archive.discover(root, [e.name for e in cfg.environments], cfg.folder_envs,
+                                canonical_root=cfg.mirror_root)
+
+    def import_(
+        self,
+        report: ArchiveReport,
+        *,
+        cancel: CancelLike | None = None,
+        progress: Progress | None = None,
+    ) -> ImportResult:
+        """Copy + verify the importable files; ``ArchiveBusy`` while a sync runs.
+        The index is NOT updated here: the caller runs an index update of
+        ``result.envs`` afterwards."""
+        cfg = self._usable_config()
+        lock = ProcessLock(cfg.lock_path)
+        if not lock.acquire():
+            holder = peek_holder(cfg.lock_path)
+            raise ArchiveBusy("sincronizzazione in corso" + (f" ({holder})" if holder else "")
+                              + ": importa al termine")
+        try:
+            return run_import(report, cfg.mirror_root, cancel=cancel, progress=progress)
+        finally:
+            lock.release()
+
+    def recycle(self, paths: Sequence[Path]) -> list[tuple[Path, str]]:
+        """Send ``paths`` to the Recycle Bin; returns the refused/failed ones.
+        Nothing inside the mirror folder is ever touched."""
+        cfg = self._usable_config()
+        return send_to_recycle_bin([Path(p) for p in paths], canonical_root=cfg.mirror_root)
 
 
 # ------------------------------------------------------------------ helpers ---

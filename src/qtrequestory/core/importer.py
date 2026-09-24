@@ -28,10 +28,10 @@ import hashlib
 import logging
 import os
 import sys
-import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from qtrequestory.core.archive import CONFLICT, DUPLICATE, IMPORTABLE, ArchiveReport, FoundLog, compare_files
 from qtrequestory.core.daily import local_path
@@ -42,6 +42,12 @@ log = logging.getLogger(__name__)
 CHUNK = 1024 * 1024
 
 Progress = Callable[[int, int, str], None]
+
+
+class CancelLike(Protocol):
+    """``threading.Event`` or ``events.CancelToken``: anything with ``is_set``."""
+
+    def is_set(self) -> bool: ...
 
 
 @dataclass
@@ -73,7 +79,7 @@ def _write_chunk(f, data: bytes) -> None:
     f.write(data)
 
 
-def _copy_to_part(src: Path, part: Path, cancel: threading.Event | None) -> tuple[int, str]:
+def _copy_to_part(src: Path, part: Path, cancel: CancelLike | None) -> tuple[int, str]:
     """Stream ``src`` into ``part`` (fsynced); return the size and sha256 read."""
     part.parent.mkdir(parents=True, exist_ok=True)
     h = hashlib.sha256()
@@ -103,7 +109,7 @@ def _dest_allows(src: Path, dest: Path) -> str:
     return "have" if verdict in ("same", "a_prefix") else "conflict"
 
 
-def _import_one(item: FoundLog, dest: Path, cancel: threading.Event | None, result: ImportResult) -> None:
+def _import_one(item: FoundLog, dest: Path, cancel: CancelLike | None, result: ImportResult) -> None:
     src = item.path
     st = src.stat()
     if st.st_size != item.size or st.st_mtime_ns != item.mtime_ns:
@@ -153,7 +159,7 @@ def run_import(
     report: ArchiveReport,
     canonical_root: Path,
     *,
-    cancel: threading.Event | None = None,
+    cancel: CancelLike | None = None,
     progress: Progress | None = None,
 ) -> ImportResult:
     """Copy every ``importable`` item, then re-verify every ``duplicate_same``."""
