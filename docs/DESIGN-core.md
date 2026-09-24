@@ -188,7 +188,8 @@ def classify_days(local_sizes: Mapping[date,int], listed_nonempty, seen_nonempty
 ```
 `classify_days` looks at the window `[today - days + 1, today - 1]` (today is excluded:
 its file is complete only after the evening compaction). `present`/`empty` are every
-local file (size > 0 / 0 bytes). A window day without a local file is `pending` when the
+local file (size > 0 / 0 bytes; a 0-byte file the server lists or listed non-empty is not
+`empty`). A window day without a non-empty local file is `pending` when the
 last listing still shows it non-empty, `lost` when an earlier listing showed it non-empty
 and the last one no longer does (purged before it was downloaded), `unknown` when it is a
 weekday on or after `first_local` that no listing ever showed non-empty. Weekends are
@@ -245,18 +246,18 @@ class SyncState(path):
         #     last_compaction_moment = today@compaction_time if now >= that else yesterday@compaction_time
         #  3. newest_day is not None and newest_day >= last_compaction_moment.date()
         #     newest_day = the newest daily day seen in the *listing that produced this state* which is
-        #     now mirrored locally (present, shrunk, a successful download, or a COMPACTED 0-byte day whose
-        #     0-byte local file exists) — so a run whose listing was read before the server compacted is NOT
-        #     fresh even if last_success is already past compaction_time; the next hourly run retries
-        #     instead of leaving the day behind until a manual purge deletes it. Today's 0-byte file before
-        #     compaction never counts; a compacted quiet day (a weekend) does.
+        #     now mirrored locally (present, shrunk, a successful download, or a 0-byte day listed on a
+        #     later calendar day whose 0-byte local file exists) — so a run whose listing was read before the
+        #     server compacted is NOT fresh even if last_success is already past compaction_time; the next
+        #     hourly run retries instead of leaving the day behind until a manual purge deletes it. Today's
+        #     0-byte file never counts, even after compaction_time (late compaction); Sunday does on Monday.
         #  4. a state loaded from a file written before newest_day existed (rule 3's key missing) -> not fresh
 class ProcessLock(path): acquire(blocking=False) -> bool; release(); holder_info(); context manager   # msvcrt.locking
 def peek_holder(path) -> str | None     # "<pid> <ISO time>" of a LIVE holder, else None; never takes the lock
 ```
 **Freshness** is the rule above, not "synced recently": `mark_success` receives the clock
 reading taken right before the listing GET and the newest listed day that ended up
-mirrored (present, downloaded, shrunk, or a compacted 0-byte day — see below). A listing read at 18:29, before the
+mirrored (present, downloaded, shrunk, or a 0-byte day listed on a later day — see below). A listing read at 18:29, before the
 server compacted, therefore never makes the env fresh for the next day, and a timestamp in
 the future is distrusted (`log.warning` "…nel futuro…"). State files from before
 `newest_day` existed cost exactly one extra sync.
@@ -310,8 +311,8 @@ Per env:
    `local - count(b"\r\n") == remote` (a copy imported with CRLF line endings) → `present`
    plus one `LogMessage(INFO)`, no sidecar; **otherwise local larger than remote →
    `shrunk`**; missing or smaller locally → `download`.
-   `empty` (real run only): once the day is compacted (`listing_at >= day@compaction_time`)
-   a missing local file is created as 0 bytes (exclusive create, never over an existing
+   `empty` (real run only): only when listed on a later calendar day (`day < listing_at.date()`;
+   on the day itself a late compaction may still be pending) a missing local file is created as 0 bytes (exclusive create, never over an existing
    file) and the day counts as mirrored; an existing local file of any size also counts.
    A creation failure is a `LogMessage(WARNING)` and confirms nothing. If the server later
    lists that day non-empty, the normal `download` replaces the 0-byte file.

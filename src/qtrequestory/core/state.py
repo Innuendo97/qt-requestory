@@ -48,8 +48,8 @@ class EnvSyncState:
     last_downloaded: int = 0
     #: The newest daily day, from the last listing read, that is now
     #: mirrored locally: present, shrunk, a successful download, or a
-    #: COMPACTED 0-byte day whose local 0-byte file exists (created by the
-    #: sync or already there). ``None`` when never synced or when read from a
+    #: 0-byte day listed on a later calendar day whose local 0-byte file
+    #: exists (created by the sync or already there). ``None`` when never synced or when read from a
     #: state file written before this field existed. See ``is_fresh``.
     newest_day: date | None = None
     #: The oldest day of the last listing read (the server's current horizon).
@@ -140,10 +140,11 @@ class SyncState:
            late/slow compaction on the server retried on the next hourly run
            instead of silently skipped (a day left behind for long could be
            deleted by a manual purge on the server before it is mirrored). A
-           0-byte day counts once it is compacted (listing time >= that day
-           at ``compaction_time``) and its 0-byte local file exists: it is a
-           day without traffic, so a quiet weekend is fresh like any other
-           day. Today's 0-byte file before compaction never counts.
+           0-byte day counts when it was listed on a later calendar day and
+           its 0-byte local file exists: it is a day without traffic, so a
+           quiet weekend is fresh on Monday morning. Today's 0-byte file
+           never counts, even after ``compaction_time`` (a late compaction
+           would otherwise confirm a placeholder and skip the next day).
         4. A state loaded from a file written before ``newest_day`` existed
            (no such key) has ``newest_day is None`` and so is also not fresh —
            one extra sync after the upgrade is the safe direction.

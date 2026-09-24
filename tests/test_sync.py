@@ -726,9 +726,24 @@ def test_todays_0_byte_file_before_compaction_is_not_written(cfg, state, events,
     assert SyncState(cfg.state_path).load().get("svil").newest_day == date(2026, 9, 21)
 
 
-def test_a_0_byte_day_is_written_from_the_moment_of_its_compaction(cfg, state, events, stub_server):
+def test_a_0_byte_day_listed_the_same_evening_is_left_for_the_next_day(cfg, state, events, stub_server):
+    """Review fix 1: a late compaction can leave D.txt at 0 bytes after
+    compaction_time on D. Writing it then (and confirming D) would make the
+    env fresh and skip the whole of D+1, when the real D arrives."""
     _serve_env(stub_server, "svil", {"20260922.txt": b"", "20260921.txt": _payload(700)})
-    clock = FakeClock(datetime(2026, 9, 22, 18, 30))
+    clock = FakeClock(datetime(2026, 9, 22, 18, 31))
+
+    _engine(cfg, state, events, clock).run(["svil"])
+
+    assert not _local(cfg, "svil", "20260922.txt").exists()
+    st = SyncState(cfg.state_path).load()
+    assert st.get("svil").newest_day == date(2026, 9, 21)
+    assert not st.is_fresh("svil", clock.now, cfg.compaction_time)
+
+
+def test_a_0_byte_day_is_written_when_listed_on_a_later_day(cfg, state, events, stub_server):
+    _serve_env(stub_server, "svil", {"20260922.txt": b"", "20260921.txt": _payload(700)})
+    clock = FakeClock(datetime(2026, 9, 23, 0, 5))
 
     _engine(cfg, state, events, clock).run(["svil"])
 
@@ -879,6 +894,20 @@ def test_a_local_copy_with_crlf_line_endings_is_present_not_shrunk(cfg, state, e
     assert "20260921.txt" in logs[0].text
     assert report.results[0].present == 1
     assert SyncState(cfg.state_path).load().get("svil").newest_day == date(2026, 9, 21)
+
+
+def test_crlf_plus_extra_bytes_is_shrunk_never_present(cfg, state, events, fake_clock, stub_server):
+    """Review fix 3: the CRLF count must explain the WHOLE difference."""
+    _serve_env(stub_server, "svil", {"20260921.txt": LF_BODY})
+    local = _local(cfg, "svil", "20260921.txt")
+    local.parent.mkdir(parents=True)
+    local.write_bytes(LF_BODY.replace(b"\n", b"\r\n") + b"extra")
+
+    _engine(cfg, state, events, fake_clock).run(["svil"])
+
+    assert {(e.name, e.reason) for e in events.of(FileSkipped)} == {("20260921.txt", "shrunk")}
+    assert local.with_name(f"20260921.txt.remote-{len(LF_BODY)}").exists()
+    assert not [e for e in events.of(LogMessage) if e.level == logging.INFO]
 
 
 def test_crlf_that_does_not_account_for_the_difference_is_still_shrunk(cfg, state, events, fake_clock, stub_server):

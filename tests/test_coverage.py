@@ -66,10 +66,11 @@ def test_days_before_the_archive_began_are_only_flagged_when_the_server_saw_them
     assert cov.unknown == (_d(21), _d(22))
 
 
-def test_local_files_win_over_every_server_list():
-    cov = classify_days({_d(21): 10, _d(22): 0}, listed_nonempty=(_d(21), _d(22)),
-                        seen_nonempty=(_d(21), _d(22)), days=30, today=TODAY)
-    assert cov.pending == () and cov.lost == () and cov.unknown == ()
+def test_non_empty_local_files_win_over_every_server_list():
+    cov = classify_days({_d(21): 10, _d(20): 10}, listed_nonempty=(_d(21),),
+                        seen_nonempty=(_d(21), _d(20)), days=30, today=TODAY)
+    assert cov.pending == () and cov.lost == ()
+    assert cov.present == frozenset({_d(21), _d(20)})
 
 
 def test_the_window_excludes_today_and_days_older_than_it():
@@ -102,3 +103,14 @@ def test_coverage_days_is_frozen():
     cov = classify_days({}, listed_nonempty=(), seen_nonempty=(), days=1, today=TODAY)
     with pytest.raises(AttributeError):
         cov.first_local = _d(1)  # type: ignore[misc]
+
+
+def test_a_local_0_byte_day_the_server_lists_non_empty_is_pending():
+    """Review fix 2: the placeholder must not hide traffic still on the server."""
+    cov = classify_days({_d(21): 0, _d(20): 0, _d(19): 0, _d(18): 10}, listed_nonempty=(_d(21),),
+                        seen_nonempty=(_d(20),), days=30, today=TODAY)
+    assert cov.pending == (_d(21),)
+    assert cov.lost == (_d(20),)
+    assert cov.empty == frozenset({_d(19)})
+    assert cov.first_local == _d(18)
+    assert cov.missing == (_d(20), _d(21))

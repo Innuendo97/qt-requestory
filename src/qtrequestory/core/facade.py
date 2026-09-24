@@ -398,6 +398,7 @@ class IndexService:
         index/DB involved), so it is right even before an index update."""
         cfg = self._config_source()
         sizes = {f.day: f.size for f in daily.list_local_daily_files(cfg.mirror_root, env)}
+        # load() may write sync-state.json once, when only a legacy .last-sync.json exists.
         st = SyncState(cfg.state_path).load().get(env)
         return daily.classify_days(sizes, st.listed_nonempty, st.seen_nonempty, days,
                                    today if today is not None else date.today())

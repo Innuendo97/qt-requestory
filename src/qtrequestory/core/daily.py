@@ -114,11 +114,13 @@ class CoverageDays:
     """What each day of one environment's coverage window is, as consumed by
     the search coverage warning and the sync-page coverage calendar.
 
-    ``present`` and ``empty`` are every local daily file (unfiltered): size
-    > 0, and 0 bytes (a compacted day the server published without traffic).
-    The three tuples only cover the window and days WITHOUT a local file:
+    ``present`` is every local daily file with size > 0 (unfiltered);
+    ``empty`` every local 0-byte file (a day the server published without
+    traffic) that the server never listed non-empty. The three tuples only
+    cover the window and days without a local file, or with a 0-byte one:
 
-    * ``pending``: still listed non-empty by the server (can be downloaded);
+    * ``pending``: still listed non-empty by the server (can be downloaded,
+      also over a 0-byte placeholder);
     * ``lost``: listed non-empty once, no longer listed (purged by the server
       before it was downloaded);
     * ``unknown``: a weekday on or after ``first_local`` that no listing ever
@@ -153,25 +155,30 @@ def classify_days(
     window is ``[today - days + 1, today - 1]``: today's file is only
     complete after the evening compaction, so it is never judged. Weekends
     are classified like any other day: a weekend with traffic that is not
-    local is ``pending`` or ``lost``. A day before ``first_local`` is only
-    reported when the server listed it non-empty.
+    local is ``pending`` or ``lost``. A local 0-byte day the server lists
+    non-empty is ``pending`` (``lost`` once no longer listed). A day before
+    ``first_local`` is only reported when the server listed it non-empty.
     """
     present = frozenset(d for d, size in local_sizes.items() if size > 0)
-    empty = frozenset(d for d, size in local_sizes.items() if size == 0)
     first_local = min(local_sizes) if local_sizes else None
     listed = set(listed_nonempty)
     seen = set(seen_nonempty) | listed
+    # A 0-byte placeholder the server lists (or listed) non-empty is not a
+    # quiet day: it is pending (or lost), never "empty".
+    empty = frozenset(d for d, size in local_sizes.items() if size == 0 and d not in seen)
     pending: list[date] = []
     lost: list[date] = []
     unknown: list[date] = []
     day = today - timedelta(days=days - 1)
     end = today - timedelta(days=1)
     while day <= end:
-        if day not in local_sizes:
+        if day not in present:
             if day in listed:
                 pending.append(day)
             elif day in seen:
                 lost.append(day)
+            elif day in empty:
+                pass
             elif first_local is not None and day >= first_local and day.weekday() < 5:
                 unknown.append(day)
         day += timedelta(days=1)

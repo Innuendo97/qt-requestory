@@ -5,8 +5,8 @@ server-side compaction; read the autoindex; download, newest first, every
 non-empty daily file that is missing locally or has a different size. A file
 is streamed to ``<name>.part`` and renamed only once its size matches the
 index, so an interrupted run never leaves a half file that looks complete.
-A compacted 0-byte day (a day without traffic) is mirrored as a 0-byte local
-file, never over an existing one. Nothing local is ever deleted or shrunk:
+A 0-byte day listed on a later calendar day (a day without traffic) is
+mirrored as a 0-byte local file, never over an existing one. Nothing local is ever deleted or shrunk:
 the server keeps its daily files until a manual purge deletes them, so the
 mirror is the archive.
 
@@ -252,12 +252,13 @@ class SyncEngine:
             bytes_to_download=sum(p.remote.size for p in to_download),
         ))
         # Days confirmed mirrored locally among what THIS listing showed —
-        # present, shrunk, a successful download, or a COMPACTED 0-byte day
-        # whose 0-byte local file now exists. The basis for
-        # EnvSyncState.newest_day, so is_fresh can require the compacted day
-        # to actually be here, not just "we ran recently". A 0-byte day not
-        # compacted yet (today, before compaction_time) never counts: the
-        # server lists one before it has compacted too (final review #2).
+        # present, shrunk, a successful download, or a 0-byte day listed on a
+        # later calendar day whose 0-byte local file now exists. The basis
+        # for EnvSyncState.newest_day, so is_fresh can require the compacted
+        # day to actually be here, not just "we ran recently". Today's 0-byte
+        # file never counts, even after compaction_time: the server lists one
+        # before it has compacted too, and a late compaction would otherwise
+        # confirm an empty placeholder and skip the whole next day.
         mirrored: set[date] = set()
         for plan in plans:
             if plan.action == "empty":
@@ -373,14 +374,16 @@ class SyncEngine:
     def _mirror_empty_day(self, env: Environment, plan: _Plan, listing_at: datetime) -> bool:
         """Mirror a listed 0-byte day as a 0-byte local file (F1).
 
-        Only once the day is compacted (``listing_at`` at or after that day
-        at ``compaction_time``): before that, the 0-byte file only means "not
-        compacted yet". Never overwrites: any existing local file (0 bytes or
-        not) is kept and confirms the day. Returns whether the day is now
-        mirrored; a creation failure is a warning, not a file failure (there
-        was nothing to download), and confirms nothing.
+        Only when the listing was read on a LATER calendar day than the day
+        itself (``day < listing_at.date()``): on the day itself the 0-byte
+        file may just mean "not compacted yet", also after
+        ``compaction_time`` when the compaction runs late; an evening run
+        leaves it to the next day's listing. Never overwrites: any existing
+        local file (0 bytes or not) is kept and confirms the day. Returns
+        whether the day is now mirrored; a creation failure is a warning, not
+        a file failure (there was nothing to download), and confirms nothing.
         """
-        if listing_at < datetime.combine(plan.remote.day, self._config.compaction_time):
+        if plan.remote.day >= listing_at.date():
             return False
         if plan.dest.exists():
             return True
