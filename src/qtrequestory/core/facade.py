@@ -82,7 +82,9 @@ class EnvStatus:
     Computed on demand from the sync state, the local mirror and the index —
     nothing here is persisted, so it is always in step with the disk. It says
     nothing about reachability: that costs a network round trip and is asked
-    for separately with ``SyncService.check_reachable``.
+    for separately with ``SyncService.check_reachable``. ``n_local_files``,
+    ``local_bytes`` and ``latest_day`` count only the days with calls: a
+    0-byte daily file is a day without traffic.
     """
 
     env: str
@@ -181,7 +183,9 @@ class SyncService:
     def env_status(self, env_name: str) -> EnvStatus:
         cfg = self._config_source()
         st = SyncState(cfg.state_path).load().get(env_name)
-        local = daily.list_local_daily_files(cfg.mirror_root, env_name)  # newest first
+        # Newest first. A 0-byte file is a day the server published without
+        # traffic: "no calls", not archive content, so it is not counted.
+        local = [f for f in daily.list_local_daily_files(cfg.mirror_root, env_name) if f.size > 0]
         return EnvStatus(
             env=env_name,
             last_success=st.last_success,

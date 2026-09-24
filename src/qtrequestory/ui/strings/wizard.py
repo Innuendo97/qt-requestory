@@ -109,6 +109,11 @@ WIZARD_P3_LEGACY_NOTE = (
     "non si danneggiano a vicenda"
 )
 WIZARD_P3_START_SYNC = "Avvia la prima sincronizzazione al termine"
+#: Under the checkbox above (F9): the first run is not "yesterday's file".
+WIZARD_P3_FIRST_SYNC_NOTE = (
+    "La prima sincronizzazione scarica tutto lo storico ancora presente sul server, "
+    "fino all'ultima pulizia: possono essere diversi GB e richiedere parecchio tempo."
+)
 
 # -- fine --------------------------------------------------------------------
 

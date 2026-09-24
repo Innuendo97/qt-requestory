@@ -39,7 +39,6 @@ from qtrequestory.ui.pages.search_meta import (
     GapBanner,
     MetaLine,
     TitleContext,
-    coverage_gap,
     summary_text,
 )
 from qtrequestory.ui.pages.search_presenter import SearchPresenter
@@ -395,7 +394,7 @@ class SearchPage(QWidget):
         coverage = self.presenter.coverage(env)
         days = self.presenter.coverage_days(env)
         self.meta.set_coverage(env, coverage)
-        self.gap_banner.set_gap(env, coverage_gap(days, date.today()) if days else ())
+        self.gap_banner.set_gap(env, days.pending if days else (), days.lost if days else ())
         if coverage is None:
             self.states.describe_no_log(env, rebuilding=bool(days and days.present))
             self._set_state("no_log")

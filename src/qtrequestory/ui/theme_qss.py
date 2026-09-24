@@ -190,6 +190,8 @@ QToolButton[role="primary"]::menu-button {{ border: none; border-left: 1px solid
 QToolButton[role="primary"]:disabled::menu-button {{ border-left-color: {border}; }}
 QFrame[role="syncBanner"] {{ background: {warn_bg}; border: none; border-radius: 6px; }}
 QFrame[role="syncBanner"] QLabel {{ color: {warn}; background: transparent; }}
+QFrame[role="syncBannerBad"] {{ background: {bad_bg}; border: none; border-radius: 6px; }}
+QFrame[role="syncBannerBad"] QLabel {{ color: {bad}; background: transparent; }}
 QToolButton[role="syncDisclosure"] {{ background: transparent; border: none; color: {muted};
     font-weight: 600; padding: 4px 0; text-align: left; }}
 QToolButton[role="syncDisclosure"]:hover {{ color: {text}; }}
@@ -210,6 +212,8 @@ QFrame[chip="true"] QToolButton {{ background: transparent; border: none; paddin
 QFrame[chip="true"] QToolButton:hover {{ background: {neutral_bg}; }}
 QFrame[banner="warn"] {{ background: {warn_bg}; border: none; border-radius: 6px; }}
 QFrame[banner="warn"] QLabel {{ background: transparent; color: {warn}; }}
+QFrame[banner="bad"] {{ background: {bad_bg}; border: none; border-radius: 6px; }}
+QFrame[banner="bad"] QLabel {{ background: transparent; color: {bad}; }}
 QPushButton[role="row"] {{ background: transparent; border: 1px solid transparent;
     text-align: left; padding: 4px 8px; color: {text}; }}
 QPushButton[role="row"]:hover {{ background: {surface2}; border-color: {border}; }}

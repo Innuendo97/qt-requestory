@@ -9,13 +9,16 @@ Three rules shape it:
 
 * **What is happening beats what happened**, and what happened beats what the
   mirror looks like on disk: in corso > in attesa > non raggiungibile >
-  errori > giorni mancanti > aggiornato / da aggiornare / mai sincronizzato.
-* **A lost day beats a fresh mirror.** The server keeps about one day of logs,
-  so a missing weekday in the local archive is gone for good — it must not
-  hide behind a green "aggiornato".
-* **Never red.** An unreachable endpoint is the normal state of this tool
-  outside the office VPN; red would turn "you are not on the VPN" into
-  "something is broken". Tones are ``ok`` / ``warn`` / ``neutral``.
+  errori > giorni persi > da scaricare > aggiornato / da aggiornare / mai
+  sincronizzato.
+* **A hole beats a fresh mirror.** The server keeps its files until a manual
+  purge: a day with calls that is still listed but not local (``pending``)
+  is one sync away, a day purged before it was downloaded (``lost``) is gone.
+  Neither may hide behind a green "aggiornato".
+* **Red only for what is gone.** A lost day is the one ``bad`` badge. An
+  unreachable endpoint is the normal state of this tool outside the office
+  VPN; red there would turn "you are not on the VPN" into "something is
+  broken". Every other tone is ``ok`` / ``warn`` / ``neutral``.
 """
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import EnvStatus
 
 __all__ = [
-    "Badge", "ERRORS", "FRESH", "MISSING", "NEVER", "QUEUED", "RUNNING", "STALE",
+    "Badge", "ERRORS", "FRESH", "LOST", "NEVER", "PENDING", "QUEUED", "RUNNING", "STALE",
     "UNREACHABLE", "badge_for",
 ]
 
@@ -34,7 +37,8 @@ STALE = "stale"
 NEVER = "never"
 RUNNING = "running"
 QUEUED = "queued"
-MISSING = "missing"
+PENDING = "pending"
+LOST = "lost"
 UNREACHABLE = "unreachable"
 ERRORS = "errors"
 
@@ -44,7 +48,8 @@ _TONES = {
     NEVER: "neutral",
     RUNNING: "neutral",
     QUEUED: "neutral",
-    MISSING: "warn",
+    PENDING: "warn",
+    LOST: "bad",
     UNREACHABLE: "warn",
     ERRORS: "warn",
 }
@@ -76,26 +81,28 @@ def badge_for(
     queued: bool = False,
     reachable: bool | None = None,
     failed: int = 0,
-    missing: int = 0,
+    pending: int = 0,
+    lost: int = 0,
 ) -> Badge:
     """The single badge that describes an environment right now.
 
     ``reachable`` is None while nobody has asked (neither a probe nor a run);
-    ``failed`` counts the files the last run could not download; ``missing``
-    the weekdays absent from the local archive (``coverage_days().missing``).
+    ``failed`` counts the files the last run could not download; ``pending``
+    and ``lost`` the days of ``coverage_days()`` with those names.
     """
     kind = _kind(status, running=running, queued=queued, reachable=reachable,
-                 failed=failed, missing=missing)
-    if kind == MISSING:
-        text = (strings.SYNC_BADGE_MISSING_ONE if missing == 1
-                else strings.SYNC_BADGE_MISSING.format(n=missing))
+                 failed=failed, pending=pending, lost=lost)
+    if kind == LOST:
+        text = strings.SYNC_BADGE_LOST_ONE if lost == 1 else strings.SYNC_BADGE_LOST.format(n=lost)
+    elif kind == PENDING:
+        text = strings.SYNC_BADGE_PENDING.format(n=pending)
     else:
         text = _TEXTS[kind]
     return Badge(kind, _TONES[kind], text)
 
 
 def _kind(status: EnvStatus | None, *, running: bool, queued: bool, reachable: bool | None,
-          failed: int, missing: int) -> str:
+          failed: int, pending: int, lost: int) -> str:
     if running:
         return RUNNING
     if queued:
@@ -104,8 +111,10 @@ def _kind(status: EnvStatus | None, *, running: bool, queued: bool, reachable: b
         return UNREACHABLE
     if failed:
         return ERRORS
-    if missing:
-        return MISSING
+    if lost:
+        return LOST
+    if pending:
+        return PENDING
     if status is None:
         return NEVER
     if status.fresh:

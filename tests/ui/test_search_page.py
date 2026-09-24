@@ -29,7 +29,6 @@ from qtrequestory.ui.actions import user_settings
 from qtrequestory.ui.contracts import Coverage, pick_best
 from qtrequestory.ui.pages.preview_pane import PreviewPane
 from qtrequestory.ui.pages.search_actions import row_tsv
-from qtrequestory.ui.pages.search_meta import coverage_gap, last_expected_day
 from qtrequestory.ui.pages.search_page import SearchPage
 from qtrequestory.ui.pages.search_paste import parse_pasted_entry
 from qtrequestory.ui.pages.search_period import CUSTOM_ID
@@ -386,33 +385,33 @@ def test_the_meta_line_names_the_first_and_the_last_indexed_day(page, fake_core)
 
 def test_a_mirror_with_holes_raises_the_warning_with_a_way_to_sync(qtbot, fake_core, make_page,
                                                                    window):
-    expected = last_expected_day(date.today())
-    present = {expected - timedelta(days=d) for d in range(0, 20)}
-    hole = max(d for d in present if d.weekday() < 5 and d != expected)
+    yesterday = date.today() - timedelta(days=1)
+    present = {yesterday - timedelta(days=d) for d in range(0, 20)}
+    hole = max(d for d in present if d != yesterday)
     fake_core.index.set_local_days("coll", present - {hole})
     fake_core.index.set_server_days("coll", listed={hole})  # still on the server: pending
     page = make_page()
     assert page.gap_banner.isVisible()
-    assert page.gap_banner.label.text() == strings.SEARCH_GAP_ONE.format(env="coll")
+    assert page.gap_banner.label.text() == strings.SEARCH_GAP_PENDING_ONE.format(env="coll")
     page.gap_banner.button.click()
     assert window.shown == ["sync"]
 
 
 def test_a_complete_mirror_shows_no_warning(qtbot, fake_core, make_page):
-    expected = last_expected_day(date.today())
-    fake_core.index.set_local_days("coll", {expected - timedelta(days=d) for d in range(0, 40)})
+    yesterday = date.today() - timedelta(days=1)
+    fake_core.index.set_local_days("coll", {yesterday - timedelta(days=d) for d in range(0, 40)})
     page = make_page()
     assert not page.gap_banner.isVisible()
 
 
-def test_coverage_gap_counts_the_days_after_the_newest_file(fake_core):
-    """A mirror that stopped on Friday, seen the next Wednesday: Mon and Tue."""
-    wednesday = date(2026, 9, 23)
-    friday = date(2026, 9, 18)
-    fake_core.index.set_local_days("coll", {friday - timedelta(days=d) for d in range(0, 5)})
-    days = fake_core.index.coverage_days("coll", today=wednesday)
-    assert coverage_gap(days, wednesday) == (date(2026, 9, 21), date(2026, 9, 22))
-    assert last_expected_day(date(2026, 9, 21)) == friday, "Monday expects Friday's file"
+def test_a_stopped_mirror_with_no_server_knowledge_is_not_a_hole(qtbot, fake_core, make_page):
+    """Only pending and lost days count: an old archive the server never
+    listed raises no warning here (the Sincronizzazione badge says it is
+    stale)."""
+    last = date.today() - timedelta(days=10)
+    fake_core.index.set_local_days("coll", {last - timedelta(days=d) for d in range(0, 5)})
+    page = make_page()
+    assert not page.gap_banner.isVisible()
 
 
 def test_no_enabled_environment_disables_the_bar_and_says_why(qtbot, fake_core, make_page,

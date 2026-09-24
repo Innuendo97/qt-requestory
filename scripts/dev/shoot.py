@@ -146,19 +146,23 @@ def main(argv: list[str] | None = None) -> int:
         return menu
 
     def sync_archive() -> None:
-        """A realistic 60-day archive: coll complete, svil missing one weekday,
-        the scheduled task registered (all fake: no real task is touched)."""
+        """A realistic 60-day archive: quiet weekends as 0-byte days, coll
+        complete, svil with a day still on the server and one the server purged
+        before it was downloaded, the scheduled task registered (all fake: no
+        real task is touched)."""
         from datetime import date, datetime, timedelta
 
         today = date.today()
         days = [today - timedelta(days=i) for i in range(1, 61)]
         weekdays = {d for d in days if d.weekday() < 5}
-        gap = max(weekdays)
-        gap = max(d for d in weekdays if d < gap)  # two weekdays ago
-        services.index.set_local_days("coll", weekdays)
-        services.index.set_local_days("svil", weekdays - {gap})
+        weekends = {d for d in days if d.weekday() >= 5}
+        newest = sorted(weekdays, reverse=True)
+        pending, lost = newest[1], newest[7]  # two weekdays ago, and last week
+        services.index.set_local_days("coll", weekdays, empty=weekends)
+        services.index.set_local_days("svil", weekdays - {pending, lost}, empty=weekends)
+        services.index.set_server_days("svil", listed={pending}, seen={lost})
         yesterday = datetime.combine(today - timedelta(days=1), datetime.min.time())
-        services.sync.set_env_status("svil", n_local_files=len(weekdays) - 1,
+        services.sync.set_env_status("svil", n_local_files=len(weekdays) - 2,
                                      local_bytes=2_254_857_830,
                                      last_success=yesterday.replace(hour=18, minute=40))
         services.sync.set_env_status("coll", n_local_files=len(weekdays),
@@ -174,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
         sync_archive()
         window.show_page("sync")
         pump(600)
+
+    def search_gap() -> None:
+        """Ricerca on svil after sync_archive: one day to download, one lost."""
+        window.show_page("search")
+        search.form.set_env("svil")
+        pump(300)
 
     def sync_log_open() -> None:
         window.show_page("sync")
@@ -214,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         ("toast", toast),
         ("menu", context_menu),
         ("sync-riposo", sync_idle),
+        ("ricerca-giorni-mancanti", search_gap),
         ("sync-in-corso", sync_running),
         ("sync", sync_run),
         ("sync-registro", sync_log_open),

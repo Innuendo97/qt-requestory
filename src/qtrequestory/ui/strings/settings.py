@@ -105,8 +105,8 @@ SETTINGS_SCHEDULE_NO_REPEAT = "nessuna ripetizione"
 SETTINGS_SCHEDULE_LOGON_LABEL = "Al login"
 SETTINGS_SCHEDULE_LOGON = "Esegui anche al login"
 SETTINGS_SCHEDULE_LOGON_HINT = (
-    "Se il PC è spento all'ora di avvio, il login è ciò che recupera la giornata: "
-    "sul server i log restano disponibili per circa un giorno."
+    "Se il PC è spento all'ora di avvio, il login recupera la sincronizzazione mancata: "
+    "sul server i log restano solo fino alla prossima pulizia manuale."
 )
 #: {schedule} = the shared sentence, which carries no final full stop of its own.
 SETTINGS_SCHEDULE_SUMMARY = "{schedule}."

@@ -7,32 +7,30 @@ searched at all. Neither says anything about *today* any more ("le chiamate
 di oggi arrivano domani" is in the tooltip and in the no-results hints): the
 line is data only.
 
-The warning — ``mancano 3 giorni in coll · [Vai a Sincronizzazione]`` — is the
-honest part. It appears when the local mirror has holes in the last 30 days
-(:meth:`IndexApi.coverage_days`), or when its newest file is older than the
-last weekday before today — the day whose file should have arrived by now.
-Weekends are not expected: nobody generates documents on a Sunday.
+The warning — ``2 giorni da scaricare in coll · [Vai a Sincronizzazione]`` —
+is the honest part. It counts only the days the core knows had calls and are
+not local (:meth:`IndexApi.coverage_days`): ``pending`` ones, still on the
+server, and ``lost`` ones, purged before they were downloaded (the banner
+turns red when there are any). A 0-byte quiet day or a day nobody can vouch
+for is not a hole, and the freshness of the mirror is the Sincronizzazione
+page's business.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 
 import shiboken6
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from qtrequestory.ui import strings, theme
-from qtrequestory.ui.contracts import Coverage, CoverageDays, SearchHit
+from qtrequestory.ui.contracts import Coverage, SearchHit
 from qtrequestory.ui.pages.search_icons import ThemedIcons
 
 __all__ = [
-    "GapBanner", "MetaLine", "TitleContext", "coverage_gap", "last_expected_day", "summary_text",
+    "GapBanner", "MetaLine", "TitleContext", "summary_text",
 ]
-
-#: Saturday and Sunday, as ``date.weekday()`` numbers.
-WEEKEND = (5, 6)
-
 
 def summary_text(hits: Sequence[SearchHit], tail: str = strings.SEARCH_SUMMARY_TAIL) -> str:
     """"12 chiamate · 1 FDI · 4 giorni · ordinate dalla più recente"."""
@@ -48,35 +46,6 @@ def summary_text(hits: Sequence[SearchHit], tail: str = strings.SEARCH_SUMMARY_T
 
 def _count(n: int, one: str, many: str) -> str:
     return one if n == 1 else many.format(n=n)
-
-
-def last_expected_day(today: date) -> date:
-    """The newest day whose file should be local by now: the weekday before today."""
-    day = today - timedelta(days=1)
-    while day.weekday() in WEEKEND:
-        day -= timedelta(days=1)
-    return day
-
-
-def coverage_gap(days: CoverageDays, today: date) -> tuple[date, ...]:
-    """The weekdays the mirror should have and does not, oldest first.
-
-    ``days.missing`` already lists the holes of its window; a mirror that
-    simply stopped (nothing after its newest file) adds the weekdays from
-    there up to :func:`last_expected_day`. An empty mirror has no gap: that is
-    the "no log" state, not a warning.
-    """
-    if not days.present:
-        return ()
-    gap = set(days.missing)
-    newest = max(days.present)
-    day = newest + timedelta(days=1)
-    expected = last_expected_day(today)
-    while day <= expected:
-        if day.weekday() not in WEEKEND and day not in days.present:
-            gap.add(day)
-        day += timedelta(days=1)
-    return tuple(sorted(gap))
 
 
 class MetaLine(QWidget):
@@ -124,7 +93,11 @@ class MetaLine(QWidget):
 
 
 class GapBanner(QFrame):
-    """"mancano 3 giorni in coll · [Vai a Sincronizzazione]" — warn tone."""
+    """"2 giorni da scaricare in coll · [Vai a Sincronizzazione]".
+
+    Warn tone while every hole is still on the server, bad tone as soon as one
+    was purged before it was downloaded.
+    """
 
     go_sync = Signal()
 
@@ -141,15 +114,33 @@ class GapBanner(QFrame):
         layout.addWidget(self.button)
         self.setVisible(False)
 
-    def set_gap(self, env: str, missing: Sequence[date]) -> None:
-        n = len(missing)
-        self.setVisible(n > 0)
-        if not n:
+    def set_gap(self, env: str, pending: Sequence[date] = (),
+                lost: Sequence[date] = ()) -> None:
+        self.setVisible(bool(pending or lost))
+        if not (pending or lost):
             return
-        self.label.setText(strings.SEARCH_GAP_ONE.format(env=env) if n == 1
-                           else strings.SEARCH_GAP_MANY.format(n=n, env=env))
-        self.setToolTip(strings.SEARCH_GAP_TOOLTIP.format(
-            days=", ".join(f"{day:%d/%m}" for day in missing)))
+        parts, tips = [], []
+        if pending:
+            parts.append(strings.SEARCH_GAP_PENDING_ONE.format(env=env) if len(pending) == 1
+                         else strings.SEARCH_GAP_PENDING_MANY.format(n=len(pending), env=env))
+            tips.append(strings.SEARCH_GAP_TOOLTIP_PENDING.format(days=_days(pending)))
+        if lost:
+            if pending:
+                parts.append(strings.SEARCH_GAP_LOST_ONE if len(lost) == 1
+                             else strings.SEARCH_GAP_LOST_MANY.format(n=len(lost)))
+            else:
+                parts.append(strings.SEARCH_GAP_LOST_ONE_ALONE.format(env=env) if len(lost) == 1
+                             else strings.SEARCH_GAP_LOST_MANY_ALONE.format(n=len(lost), env=env))
+            tips.append(strings.SEARCH_GAP_TOOLTIP_LOST.format(days=_days(lost)))
+        self.label.setText(strings.SEARCH_GAP_SEP.join(parts))
+        self.setToolTip("\n".join(tips))
+        self.setProperty("banner", "bad" if lost else "warn")
+        for widget in (self, self.label):  # the label's colour hangs off the frame's
+            theme.repolish(widget)
+
+
+def _days(days: Sequence[date]) -> str:
+    return ", ".join(f"{day:%d/%m}" for day in sorted(days))
 
 
 class TitleContext(QObject):

@@ -93,7 +93,7 @@ def window() -> FakeWindow:
 
 @pytest.fixture
 def complete_mirror(fake_core):
-    """No gaps in either env, so no banner and no "giorni mancanti" by default."""
+    """No gaps in either env, so no banner and no "da scaricare" by default."""
     for env in ("coll", "svil"):
         fake_core.index.set_local_days(env, weekdays_back(40))
 
@@ -209,8 +209,8 @@ def test_the_cards_sit_in_two_columns_and_stack_when_narrow(qtbot, page):
 def test_a_badge_is_a_theme_pill_with_a_readable_text(qtbot):
     card = EnvCard("coll", "https://example.invalid/coll/")
     qtbot.addWidget(card)
-    card.set_badge(sb.badge_for(None, missing=2))
-    assert card.pill.text() == "2 giorni mancanti"
+    card.set_badge(sb.badge_for(None, pending=2))
+    assert card.pill.text() == "2 da scaricare"
     assert card.pill.property("pill") == "warn"
     assert card.pill.styleSheet() == "", "colours come from the theme stylesheet"
     card.set_badge(sb.badge_for(None))
@@ -230,10 +230,10 @@ def test_each_card_shows_thirty_days_of_coverage(page):
     kinds = strip.kinds()
     assert len(kinds) == 30
     assert kinds[-1] == (date.today(), cs.TODAY)
-    assert cs.MISSING not in {k for _d, k in kinds}
+    assert not {cs.PENDING, cs.LOST} & {k for _d, k in kinds}
     assert strip.tooltip_at(29) == f"{date.today():%d/%m/%Y}: oggi (arriva domani)"
-    assert [label.text() for label in page.legend.labels if not label.isHidden()] == [
-        "log presente", "giorno feriale mancante", "weekend", "oggi (arriva domani)"]
+    assert page.legend.shown() == [
+        "log presente", "weekend", "oggi (arriva domani)"], "only what a card draws"
 
 
 def test_the_legend_explains_the_outline_only_when_a_card_shows_it(page, fake_core):
@@ -241,31 +241,67 @@ def test_the_legend_explains_the_outline_only_when_a_card_shows_it(page, fake_co
     archive are empty outlines, and the legend must say what they mean."""
     fake_core.index.set_local_days("svil", weekdays_back(10))
     page.refresh_cards()
-    visible = [label.text() for label in page.legend.labels if not label.isHidden()]
+    visible = page.legend.shown()
     assert visible[-1] == strings.SYNC_LEGEND_BEFORE
     fake_core.index.set_local_days("svil", weekdays_back(40))
     page.refresh_cards()
-    assert strings.SYNC_LEGEND_BEFORE not in [
-        label.text() for label in page.legend.labels if not label.isHidden()]
+    assert strings.SYNC_LEGEND_BEFORE not in page.legend.shown()
 
 
-def test_a_missing_weekday_is_red_on_the_strip_named_in_a_banner_and_on_the_badge(
+def test_a_pending_day_is_amber_on_the_strip_named_in_a_banner_and_on_the_badge(
         qtbot, page, fake_core):
     gap = max(weekdays_back(10))  # the most recent weekday before today
     fake_core.index.set_local_days("svil", weekdays_back(40, skip=(gap,)))
     fake_core.index.set_server_days("svil", listed={gap})  # still on the server: pending
     fake_core.sync.set_env_status("svil", last_success=datetime.now(), n_local_files=28,
                                   local_bytes=MB)
-    assert page.missing_banner.isHidden()
+    assert page.banners.isHidden()
     page.refresh_cards()
 
     svil = page.card("svil")
-    assert dict(svil.strip.kinds())[gap] == cs.MISSING
-    assert svil.pill.text() == "1 giorno mancante" and svil.pill.property("pill") == "warn"
-    assert not page.missing_banner.isHidden()
-    text = page.missing_label.text()
-    assert "svil" in text and gap.strftime("%d/%m/%Y") in text and "circa un giorno" in text
+    assert dict(svil.strip.kinds())[gap] == cs.PENDING
+    assert svil.pill.text() == "1 da scaricare" and svil.pill.property("pill") == "warn"
+    assert not page.banners.pending_banner.isHidden() and page.banners.lost_banner.isHidden()
+    text = page.banners.pending_label.text()
+    assert "svil" in text and gap.strftime("%d/%m/%Y") in text and "ancora sul server" in text
     assert "coll" not in text
+    assert strings.SYNC_LEGEND_PENDING in page.legend.shown()
+
+
+def test_the_pending_banner_syncs_only_the_envs_concerned(qtbot, page, fake_core):
+    gap = max(weekdays_back(10))
+    fake_core.index.set_local_days("svil", weekdays_back(40, skip=(gap,)))
+    fake_core.index.set_server_days("svil", listed={gap})
+    page.refresh_cards()
+    page.banners.sync_button.click()
+    assert page.sync_job is not None
+    assert not page.banners.sync_button.isEnabled(), "one run at a time"
+    with qtbot.waitSignal(page.sync_job.signals.finished, timeout=TIMEOUT):
+        pass
+    assert fake_core.sync.runs[-1]["envs"] == ("svil",)
+
+
+def test_a_lost_day_is_red_everywhere_and_says_it_cannot_be_recovered(qtbot, page, fake_core):
+    gap = max(weekdays_back(10))
+    fake_core.index.set_local_days("svil", weekdays_back(40, skip=(gap,)))
+    fake_core.index.set_server_days("svil", listed=(), seen={gap})  # purged before download
+    page.refresh_cards()
+    svil = page.card("svil")
+    assert dict(svil.strip.kinds())[gap] == cs.LOST
+    assert (svil.pill.text(), svil.pill.property("pill")) == ("1 giorno perso", "bad")
+    assert page.banners.pending_banner.isHidden()
+    assert "non recuperabile" in page.banners.lost_label.text()
+    assert page.banners.lost_banner.property("role") == "syncBannerBad"
+    assert ("svil", "bad", "1 giorno perso") in page.presenter.state(), "the chip agrees"
+
+
+def test_a_quiet_day_is_grey_and_raises_nothing(qtbot, page, fake_core):
+    quiet = max(weekdays_back(10))
+    fake_core.index.set_local_days("svil", weekdays_back(40, skip=(quiet,)), empty={quiet})
+    page.refresh_cards()
+    assert dict(page.card("svil").strip.kinds())[quiet] == cs.EMPTY
+    assert page.banners.isHidden()
+    assert strings.SYNC_LEGEND_EMPTY in page.legend.shown()
 
 
 # ------------------------------------------------------------ during a run ---
@@ -337,6 +373,12 @@ def _gap_in_coll(page, fake_core):
     fake_core.index.set_server_days("coll", listed={gap})  # still on the server: pending
 
 
+def _lost_in_coll(page, fake_core):
+    gap = max(weekdays_back(10))
+    fake_core.index.set_local_days("coll", weekdays_back(40, skip=(gap,)))
+    fake_core.index.set_server_days("coll", listed=(), seen={gap})  # purged first
+
+
 BADGE_SETUPS = {
     sb.FRESH: lambda page, fc: fc.sync.set_env_status("coll", fresh=True),
     sb.STALE: lambda page, fc: fc.sync.set_env_status(
@@ -344,7 +386,8 @@ BADGE_SETUPS = {
     sb.NEVER: lambda page, fc: fc.sync.set_env_status("coll", fresh=False, last_success=None),
     sb.RUNNING: lambda page, fc: setattr(page.presenter, "running", "coll"),
     sb.QUEUED: lambda page, fc: page.presenter.queued.add("coll"),
-    sb.MISSING: _gap_in_coll,
+    sb.PENDING: _gap_in_coll,
+    sb.LOST: _lost_in_coll,
     sb.UNREACHABLE: lambda page, fc: page.presenter.reachable.__setitem__("coll", False),
     sb.ERRORS: lambda page, fc: (page.presenter.outcomes.__setitem__("coll", "errors"),
                                  page.presenter.failures.__setitem__("coll", 2)),
@@ -359,7 +402,7 @@ def test_the_chip_dot_agrees_with_the_card_badge_for_every_kind(page, fake_core,
     assert card.pill_kind == kind
     tones = dict((env, tone) for env, tone, _ in page.presenter.state())
     assert tones["coll"] == card.pill.property("pill")
-    assert tones["coll"] != "bad"
+    assert (tones["coll"] == "bad") == (kind == sb.LOST), "red only for a lost day"
 
 
 def test_the_chip_tone_always_agrees_with_the_card_badge(qtbot, page, fake_core):
