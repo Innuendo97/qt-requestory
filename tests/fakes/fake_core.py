@@ -23,6 +23,8 @@ Knobs the tests use (all plain attributes/setters, no magic):
 * ``FakeIndexApi.set_local_days(env, days, empty=())`` / ``set_server_days(env,
   listed=(), seen=())`` — what ``coverage_days`` classifies (local files, and
   the listing memory of the sync state)
+* ``FakeArchiveApi.set_report(report)`` / ``set_busy(flag)``; ``recycled`` lists
+  what "went to the Recycle Bin" (only files under the fake root are removed)
 """
 from __future__ import annotations
 
@@ -34,7 +36,11 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
+from qtrequestory.core import archive as archive_mod
 from qtrequestory.core import extract as extract_mod
+from qtrequestory.core import importer as importer_mod
+from qtrequestory.core.archive import ArchiveReport
+from qtrequestory.core.fsutil import is_within
 from qtrequestory.core.config import (
     Config,
     Environment,
@@ -64,7 +70,7 @@ from qtrequestory.core.events import (
 )
 from qtrequestory.core.daily import CoverageDays, LocalDailyFile
 from qtrequestory.core.daily import classify_days as core_classify_days
-from qtrequestory.core.facade import EnvStatus
+from qtrequestory.core.facade import ArchiveBusy, EnvStatus
 from qtrequestory.core.index.builder import IndexPlan
 from qtrequestory.core.index.search import (
     Coverage,
@@ -782,6 +788,7 @@ class FakeExtractApi:
         kw = {}
         if self._config_source is not None:
             kw["retention_hours"] = self._config_source().output_retention_hours
+            kw["protected"] = self._config_source().mirror_root
         return extract_mod.write_temp_file(
             self._out_dir, output_name_for(hit), text, alt_name=output_name_with_id(hit), **kw
         )
@@ -798,6 +805,72 @@ class FakeExtractApi:
 
     def output_dir(self) -> Path:
         return self._out_dir
+
+
+# ------------------------------------------------------------------ archive ---
+
+class FakeArchiveApi:
+    """The real discovery and copy on the fake's tmp tree (both are pure file
+    work, so faking them would only let the fake drift); the Recycle Bin is
+    simulated: a file under the fake root is removed and recorded, nothing
+    else is ever deleted."""
+
+    def __init__(self, root: Path, config_source: Callable[[], Config]) -> None:
+        self._root = Path(root)
+        self._config_source = config_source
+        self.scripted: ArchiveReport | None = None
+        self.busy = False
+        self.recycled: list[Path] = []
+        self.imports: list[ArchiveReport] = []
+
+    def set_report(self, report: ArchiveReport | None) -> None:
+        """Every ``report()`` returns this until ``None`` clears it."""
+        self.scripted = report
+
+    def set_busy(self, flag: bool) -> None:
+        """``import_`` raises ``ArchiveBusy`` (a sync holds the lock)."""
+        self.busy = flag
+
+    def _cfg(self) -> Config:
+        cfg = self._config_source()
+        problems = core_mirror_root_errors(cfg)
+        if problems:
+            raise ValueError(problems[0])
+        return cfg
+
+    def report(self, path: Path | None = None) -> ArchiveReport:
+        cfg = self._cfg()
+        if self.scripted is not None:
+            return self.scripted
+        root = Path(path) if path is not None else cfg.mirror_root
+        return archive_mod.discover(root, [e.name for e in cfg.environments], cfg.folder_envs,
+                                    canonical_root=cfg.mirror_root)
+
+    def import_(self, report: ArchiveReport, *, cancel=None, progress=None) -> importer_mod.ImportResult:
+        cfg = self._cfg()
+        if self.busy:
+            raise ArchiveBusy("sincronizzazione in corso: importa al termine")
+        self.imports.append(report)
+        return importer_mod.run_import(report, cfg.mirror_root, cancel=cancel, progress=progress)
+
+    def recycle(self, originals: Sequence[importer_mod.VerifiedOriginal]) -> list[tuple[Path, str]]:
+        """The real re-checks (``importer.check_original``), minus the shell:
+        a file under the fake root is unlinked and recorded."""
+        cfg = self._cfg()
+        failures: list[tuple[Path, str]] = []
+        for rec in originals:
+            if not isinstance(rec, importer_mod.VerifiedOriginal):
+                failures.append((Path(rec), "non verificato da un'importazione: non viene cancellato"))
+                continue
+            why = importer_mod.check_original(rec, cfg.mirror_root)
+            if why is None and not is_within(rec.path, self._root):
+                why = "fuori dalla cartella del fake"
+            if why is not None:
+                failures.append((rec.path, why))
+            else:
+                rec.path.unlink()
+                self.recycled.append(rec.path)
+        return failures
 
 
 # ------------------------------------------------------------------- bundle ---
@@ -817,5 +890,6 @@ def build_fake_core(root: Path) -> CoreServices:
         scheduler=FakeSchedulerApi(exe=root / "qtRequestory.exe"),
         index=FakeIndexApi(root),
         extract=FakeExtractApi(root / "out", lambda: config.config),
+        archive=FakeArchiveApi(root, lambda: config.config),
         paths=paths,
     )

@@ -21,12 +21,13 @@ import os
 import re
 import shutil
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any, TypeVar
 
 from qtrequestory.core import paths
+from qtrequestory.core.fsutil import is_within
 from qtrequestory.core.logsetup import resolve_level
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,8 @@ ENV_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 SIDECAR_NAME = "environments.json"
 HIDDEN_DIR_NAME = ".qtrequestory"
 TIME_FORMAT = "%H:%M"
+#: ``folder_envs`` value meaning "the logs in this folder are not to be imported".
+IGNORE_FOLDER = "__ignora__"
 
 #: Hours between two attempts of the scheduled task, and how long it keeps
 #: retrying. ``validate`` reports a value outside these; ``sanitised_schedule``
@@ -128,6 +131,11 @@ class Config:
     index: IndexSettings
     schedule: ScheduleSettings
     log_level: str
+    #: Import: the environment the user chose for a folder whose logs name no
+    #: configured env (``{folder: env name | IGNORE_FOLDER}``). A key is a
+    #: folder path, relative to the scanned root or absolute (see
+    #: ``core/archive.py``).
+    folder_envs: dict[str, str] = field(default_factory=dict)
 
     @property
     def _hidden_dir(self) -> Path:
@@ -201,6 +209,7 @@ def _to_raw(cfg: Config) -> dict[str, Any]:
         "index": dataclasses.asdict(cfg.index),
         "schedule": dataclasses.asdict(cfg.schedule),
         "log_level": cfg.log_level,
+        "folder_envs": dict(cfg.folder_envs),
     }
 
 
@@ -331,6 +340,20 @@ def _environment_from_item(item: Any, index: int) -> Environment:
     return Environment(name=name, url=url, enabled=enabled)
 
 
+def _folder_envs_from_raw(raw: Any) -> dict[str, str]:
+    """Lenient: a non-object is dropped, and so is every non-string pair."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("config: valore non valido per folder_envs (%r), atteso un oggetto", raw)
+        return {}
+    good = {k: v for k, v in raw.items() if isinstance(k, str) and k and isinstance(v, str) and v}
+    if len(good) != len(raw):
+        log.warning("config: folder_envs: voci non valide ignorate: %s",
+                    ", ".join(repr(k) for k in raw if k not in good))
+    return good
+
+
 def _from_raw(raw: dict[str, Any]) -> Config:
     d = default_config()
     _warn_unknown(raw, [f.name for f in dataclasses.fields(Config)], "config.json")
@@ -349,6 +372,7 @@ def _from_raw(raw: dict[str, Any]) -> Config:
         index=_settings_from_raw(IndexSettings, raw.get("index"), "index"),
         schedule=_settings_from_raw(ScheduleSettings, raw.get("schedule"), "schedule"),
         log_level=_coerce(raw.get("log_level"), d.log_level, "log_level"),
+        folder_envs=_folder_envs_from_raw(raw.get("folder_envs")),
     )
 
 
@@ -503,7 +527,23 @@ def validate(cfg: Config) -> list[str]:
     if bad_level is not None:
         errors.append(bad_level)
     errors.extend(_schedule_errors(cfg.schedule))
+    errors.extend(output_dir_errors(cfg))
     return errors
+
+
+def output_dir_errors(cfg: Config) -> list[str]:
+    """F7: the output folder is pruned by age (``extract.housekeeping``), so it
+    must never be the log folder, lie inside it, or contain it."""
+    if _mirror_root_errors(cfg.mirror_root):
+        return []  # already reported; a relative path would compare against the CWD
+    out = cfg.resolved_output_dir
+    if is_within(out, cfg.mirror_root) or is_within(cfg.mirror_root, out):
+        return [
+            f"La cartella dei file estratti ('{out}') non può coincidere con la cartella dei log, "
+            "stare dentro di essa o contenerla: i file estratti vecchi vengono cancellati "
+            "automaticamente"
+        ]
+    return []
 
 
 def _mirror_root_errors(mirror_root: Path) -> list[str]:

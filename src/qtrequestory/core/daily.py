@@ -72,9 +72,12 @@ class LocalDailyFile:
 def list_local_daily_files(root: Path, env: str) -> list[LocalDailyFile]:
     """All mirrored daily files of ``env``, newest first.
 
-    Only ``YYYY/MM/YYYYMMDD.txt`` at the expected depth count; ``.part``
-    leftovers and any other junk are ignored. A missing env (or root) folder
-    simply yields ``[]`` — the mirror may not have been synced yet.
+    Only a file whose path IS ``local_path(root, env, day)`` counts (F4): an
+    unpadded month (``2026/8/``) or a day filed under the wrong month is left
+    to the archive importer (``core/archive.py``), because the index keeps one
+    file per day and would otherwise flip between two copies forever.
+    ``.part`` leftovers and any other junk are ignored. A missing env (or
+    root) folder simply yields ``[]`` — the mirror may not have been synced yet.
     """
     env_dir = Path(root) / env
     if not env_dir.is_dir():
@@ -82,7 +85,9 @@ def list_local_daily_files(root: Path, env: str) -> list[LocalDailyFile]:
     found: list[LocalDailyFile] = []
     for path in env_dir.glob("*/*/*.txt"):
         day = day_from_name(path.name)
-        if day is None or not path.is_file():
+        if day is None or path.parent.name != f"{day:%m}" or path.parent.parent.name != f"{day:%Y}":
+            continue
+        if not path.is_file():
             continue
         st = path.stat()
         found.append(LocalDailyFile(env, day, path, st.st_size, st.st_mtime_ns))

@@ -2,8 +2,9 @@
 
 Everything this module does is argument handling and printing; the behaviour
 lives in ``core/jobs.py`` (sync/index), ``core/index/search.py`` (find),
-``core/extract.py`` (the extracted file, through ``facade.ExtractService``) and
-``core/scheduler.py`` (the Windows task).
+``core/extract.py`` (the extracted file, through ``facade.ExtractService``),
+``core/scheduler.py`` (the Windows task) and ``cli_archive.py`` (``--archivio``
+and ``--import``, the archive importer).
 
 Two rules shape the file:
 
@@ -30,7 +31,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator
 
-from qtrequestory import __version__
+from qtrequestory import __version__, cli_archive
 from qtrequestory.core import daily, facade, scheduler
 from qtrequestory.core.config import Config, UnknownEnvironment, load_config, mirror_root_errors
 from qtrequestory.core.events import CancelToken, EventSink, FileSkipped, LoggingSink, format_size
@@ -55,7 +56,7 @@ EXIT_CONFIG_ERROR = 2
 
 #: Modes that read/print — the ones a windowed build's headless invocation
 #: from an interactive terminal must not go silent for (Important #14).
-_HEADLESS_FLAGS = ("--sync", "--index", "--find", "--task", "--version")
+_HEADLESS_FLAGS = ("--sync", "--index", "--find", "--task", "--version", "--archivio", "--import")
 _ATTACH_PARENT_PROCESS = -1
 
 
@@ -121,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--find", action="store_true", help="estrai una chiamata dall'indice")
     mode.add_argument("--task", choices=TASK_ACTIONS, help="gestisci l'attività pianificata")
     mode.add_argument("--version", action="store_true", help="mostra la versione ed esci")
+    mode.add_argument("--archivio", nargs="?", const="", metavar="PERCORSO",
+                      help="elenca i log fuori dalla struttura dell'archivio (predefinito: la cartella "
+                           "dei log) e cosa farebbe l'importazione; non modifica nulla")
+    mode.add_argument("--import", dest="import_path", metavar="PERCORSO",
+                      help="copia nell'archivio, verificandoli, i log trovati in PERCORSO, poi indicizza")
 
     p.add_argument("--config", metavar="PERCORSO", help="usa questo file di configurazione")
     p.add_argument("-e", "--env", action="append", metavar="NOME",
@@ -137,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--to", dest="day_to", metavar="DATA", help="--find: data fine (YYYY-MM-DD)")
     p.add_argument("--out", metavar="PERCORSO", help="--find: scrivi qui invece che nella cartella temporanea")
     p.add_argument("--no-open", action="store_true", help="--find: non aprire il file nell'editor")
+    p.add_argument("--env-for", action="append", metavar="CARTELLA=AMBIENTE",
+                   help="--import: ambiente dei log di CARTELLA (relativa a PERCORSO, o assoluta); "
+                        "'ignora' la salta. Ripetibile, vale solo per questa esecuzione")
+    p.add_argument("--delete-originals", action="store_true",
+                   help="--import: sposta nel Cestino gli originali copiati e verificati")
     return p
 
 
@@ -164,6 +175,14 @@ def _check_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) 
                 parser.error(f"{name} si usa solo con --find")
         if args.no_open:  # a flag: "not given" really is False
             parser.error("--no-open si usa solo con --find")
+    if args.import_path is None:
+        if args.env_for:
+            parser.error("--env-for si usa solo con --import")
+        if args.delete_originals:
+            parser.error("--delete-originals si usa solo con --import")
+    for raw in args.env_for or []:
+        if cli_archive.parse_env_for(raw) is None:
+            parser.error(f"--env-for {raw!r}: atteso CARTELLA=AMBIENTE")
     if args.rebuild and not args.index:
         parser.error("--rebuild si usa solo con --index")
     if (args.force or args.dry_run) and not args.sync:
@@ -192,10 +211,11 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = _resolve_paths(args.config)
     config = load_config(paths.config_file)
-    gui = not (args.sync or args.index or args.find or args.task)
+    archive_mode = args.archivio is not None or args.import_path is not None
+    gui = not (args.sync or args.index or args.find or args.task or archive_mode)
     configure_logging(paths, headless=not gui, level=config.log_level)
 
-    if args.sync or args.index or args.find:
+    if args.sync or args.index or args.find or archive_mode:
         # ONLY mirror_root, not the full validate(): an emptied/relative
         # mirror_root (Minor M3) must stop things here — letting --sync run
         # against it once wrote into the live index instead of the mirror the
@@ -227,7 +247,22 @@ def main(argv: list[str] | None = None) -> int:
         return _run_find(parser, args, config)
     if args.task:
         return _run_task(args.task, config)
+    if args.archivio is not None:
+        return cli_archive.run_archivio(config, args.archivio)
+    if args.import_path is not None:
+        return _run_import(args, config)
     return _start_gui(paths)
+
+
+def _run_import(args: argparse.Namespace, config: Config) -> int:
+    pairs = [cli_archive.parse_env_for(raw) for raw in args.env_for or []]
+    cancel = CancelToken()
+    with _sigint_cancels(cancel):
+        return cli_archive.run_import(
+            config, args.import_path, [p for p in pairs if p is not None],
+            delete_originals=args.delete_originals, cancel=cancel,
+            run_job=lambda job: _run_job(job),
+        )
 
 
 def _resolve_paths(config_override: str | None) -> AppPaths:

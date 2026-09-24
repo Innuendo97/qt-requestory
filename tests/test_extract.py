@@ -7,6 +7,8 @@ import time
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from qtrequestory.core.extract import (
     housekeeping,
     output_name,
@@ -158,3 +160,29 @@ def test_save_as_creates_parents_and_writes_utf8_no_bom(tmp_path: Path):
     data = target.read_bytes()
     assert data == '{"n": "città"}\n'.encode("utf-8")
     assert data[:1] == b"{"
+
+
+@pytest.mark.parametrize("inside", [True, False])
+def test_housekeeping_refuses_to_run_where_it_overlaps_the_protected_mirror(tmp_path: Path, inside: bool):
+    """F7, defence in depth: validate() already refuses the configuration, but
+    a hand-edited config.json must never make housekeeping delete logs."""
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    out = mirror if inside else tmp_path
+    old = _touch(out / "20260101.txt", age_hours=300)
+    assert housekeeping(out, 24, protected=mirror) == 0
+    assert old.exists()
+
+
+def test_housekeeping_with_an_unrelated_protected_dir_still_runs(tmp_path: Path):
+    out = tmp_path / "out"
+    out.mkdir()
+    old = _touch(out / "old.json", age_hours=30)
+    assert housekeeping(out, 24, protected=tmp_path / "mirror") == 1
+    assert not old.exists()
+
+
+def test_write_temp_file_passes_the_protected_dir_to_housekeeping(tmp_path: Path):
+    old = _touch(tmp_path / "20260101.txt", age_hours=300)
+    write_temp_file(tmp_path, "a.json", "{}\n", retention_hours=1, protected=tmp_path)
+    assert old.exists()

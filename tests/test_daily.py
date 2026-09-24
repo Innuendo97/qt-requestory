@@ -95,6 +95,22 @@ def test_the_shrunk_sidecar_is_not_indexed(mirror):
     assert sidecar.name not in [f.path.name for f in files]
 
 
+def test_list_local_daily_files_keeps_only_the_canonical_path(mirror):
+    """F4: a file is the mirror's only at ``<env>/YYYY/MM/YYYYMMDD.txt``. An
+    unpadded month or a day filed under the wrong month is the archive
+    importer's business, never the index's: the builder keeps one file per
+    day and would flip between the two copies forever."""
+    base = mirror.root / "coll" / "2026"
+    (base / "8").mkdir()
+    (base / "8" / "20260803.txt").write_text("x")          # unpadded month, same day
+    (base / "09" / "20260801.txt").write_text("x")         # August day filed under 09
+    (base / "10").mkdir()
+    (base / "10" / "20260921.txt").write_text("x")         # a September day under 10
+    files = list_local_daily_files(mirror.root, "coll")
+    assert [f.day for f in files] == [date(2026, 9, 18), date(2026, 9, 15), date(2026, 8, 3)]
+    assert all(f.path == local_path(mirror.root, "coll", f.day) for f in files)
+
+
 def test_list_local_daily_files_unknown_env_or_root(mirror, tmp_path: Path):
     assert list_local_daily_files(mirror.root, "nope") == []
     assert list_local_daily_files(tmp_path / "missing-root", "coll") == []
