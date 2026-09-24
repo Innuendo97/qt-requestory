@@ -26,8 +26,9 @@ from qtrequestory.ui.contracts import (
 from qtrequestory.ui.workers import JobRunner
 
 __all__ = [
-    "ARCHIVE_REPORT_JOB", "IMPORT_JOB", "IMPORT_SCAN_JOB", "WIZARD_ARCHIVE_JOB",
-    "ArchiveSnapshot", "ArchiveWatch", "ImportProgress", "import_call", "stray_count",
+    "ARCHIVE_REPORT_JOB", "IMPORT_JOB", "IMPORT_SCAN_JOB", "INDEX_JOB", "RECYCLE_JOB",
+    "WIZARD_ARCHIVE_JOB", "ArchiveSnapshot", "ArchiveWatch", "ImportProgress", "import_call",
+    "index_after_import", "stray_count",
 ]
 
 log = logging.getLogger(__name__)
@@ -35,9 +36,11 @@ log = logging.getLogger(__name__)
 ARCHIVE_REPORT_JOB = "archive-report"
 IMPORT_SCAN_JOB = "import-scan"
 IMPORT_JOB = "import"
+RECYCLE_JOB = "recycle"
+INDEX_JOB = "index"
 WIZARD_ARCHIVE_JOB = "wizard-archive-report"
 #: The jobs after which the mirror may hold different files.
-RESCAN_AFTER = frozenset({"sync", "index", IMPORT_JOB})
+RESCAN_AFTER = frozenset({"sync", INDEX_JOB, IMPORT_JOB, RECYCLE_JOB})
 
 
 class ArchiveSnapshot(NamedTuple):
@@ -134,3 +137,48 @@ class ArchiveWatch(QObject):
     def _on_job_finished(self, name: str, _ok: bool) -> None:
         if name in RESCAN_AFTER:
             self.refresh()
+
+
+def index_after_import(services: CoreServices, runner: JobRunner, envs) -> bool:
+    """Index ``envs`` now (True), or as soon as the running index ends (False).
+
+    ``index`` is exclusive: while one runs (the startup index, a
+    [Ricostruisci indice]) the submit is refused, and that run may have
+    planned before the copy, so the imported days would stay unindexed. The
+    envs then wait on the runner, merged with any already waiting, and are
+    submitted when that index finishes, successfully or not. Owned by the
+    runner, not by the dialog, so closing the dialog changes nothing.
+    """
+    envs = sorted(envs)
+    if not envs:
+        return True
+    if runner.submit(INDEX_JOB, services.index.update, envs) is not None:
+        return True
+    if not runner.is_running(INDEX_JOB):
+        return False  # the application is closing: the next start indexes
+    waiting = getattr(runner, "_import_index_waiting", None)
+    if waiting is None:
+        waiting = _WaitingIndex(services, runner)
+        runner._import_index_waiting = waiting  # noqa: SLF001 - one per runner
+    waiting.envs.update(envs)
+    return False
+
+
+class _WaitingIndex(QObject):
+    """Envs to index once the running ``index`` job is over."""
+
+    def __init__(self, services: CoreServices, runner: JobRunner) -> None:
+        super().__init__(runner)
+        self._services = services
+        self._runner = runner
+        self.envs: set[str] = set()
+        runner.job_finished.connect(self._on_job_finished)
+
+    def _on_job_finished(self, name: str, _ok: bool) -> None:
+        if name != INDEX_JOB or self._runner.is_running(INDEX_JOB):
+            return
+        envs, self.envs = self.envs, set()
+        self._runner.job_finished.disconnect(self._on_job_finished)
+        self._runner._import_index_waiting = None  # noqa: SLF001
+        self.deleteLater()
+        index_after_import(self._services, self._runner, envs)

@@ -13,9 +13,10 @@ Three steps in one dialog, every slow call in the :class:`JobRunner`:
 3. **the result** (:mod:`~qtrequestory.ui.import_result`): the counts, then —
    only for verified originals outside the archive — "Vuoi cancellare gli
    originali?". A yes hands exactly those ``VerifiedOriginal`` records to
-   ``ArchiveApi.recycle`` (again an ``import`` job). The touched environments
-   are indexed right away (the ``index`` job), after which ``MainWindow``
-   refreshes every page through ``on_data_changed``.
+   ``ArchiveApi.recycle`` (the ``recycle`` job). The touched environments
+   are indexed right away (the ``index`` job), or as soon as a running index
+   ends (``import_state.index_after_import``); then ``MainWindow`` refreshes
+   every page through ``on_data_changed``.
 
 The dialog can be given several folders (the wizard queues the mirror's own
 strays and a folder "altrove"): each is scanned only when its turn comes, so
@@ -48,18 +49,18 @@ from qtrequestory.ui.import_result import ResultView, deletable
 from qtrequestory.ui.import_state import (
     IMPORT_JOB,
     IMPORT_SCAN_JOB,
+    RECYCLE_JOB,
     ArchiveWatch,
     ImportProgress,
     import_call,
+    index_after_import,
 )
 from qtrequestory.ui.workers import Job, JobRunner
 
-__all__ = ["INDEX_JOB", "ImportDialog", "open_import_dialog"]
+__all__ = ["ImportDialog", "open_import_dialog"]
 
 log = logging.getLogger(__name__)
 
-#: The index update after a copy: the same exclusive job as Impostazioni's.
-INDEX_JOB = "index"
 STEP_SCAN, STEP_REPORT, STEP_COPY, STEP_RESULT = range(4)
 
 
@@ -270,19 +271,22 @@ class ImportDialog(QDialog):
         """Index what was copied; the line the result shows about it."""
         if not result.envs:
             return ""
-        job = self._runner.submit(INDEX_JOB, self._services.index.update, sorted(result.envs))
-        return strings.IMPORT_INDEXING if job is not None else strings.IMPORT_INDEX_BUSY
+        started = index_after_import(self._services, self._runner, result.envs)
+        return strings.IMPORT_INDEXING if started else strings.IMPORT_INDEX_BUSY
 
     def delete_originals(self) -> None:
         offered = list(self.result_view.offered)
         if not offered:
             return
-        job = self._runner.submit(IMPORT_JOB, self._services.archive.recycle, offered)
+        job = self._runner.submit(RECYCLE_JOB, self._services.archive.recycle, offered)
         if job is None:
+            if self._runner.is_running(RECYCLE_JOB):
+                self.result_view.set_outcome(strings.STATUS_BUSY.format(name=strings.JOB_RECYCLE))
             return
         self.recycle_job = job
         self._recycling = offered
         self.result_view.set_busy(True)
+        self.primary_button.setEnabled(False)
         job.signals.result.connect(self._on_recycled)
         job.signals.error.connect(self._on_recycle_failed)
         job.signals.finished.connect(self._on_recycle_finished)
@@ -295,6 +299,7 @@ class ImportDialog(QDialog):
 
     def _on_recycle_finished(self) -> None:
         self.result_view.set_busy(False)
+        self.primary_button.setEnabled(True)
 
     # -- closing -----------------------------------------------------------
 

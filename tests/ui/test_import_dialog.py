@@ -253,3 +253,81 @@ def test_scan_failure_is_shown(qtbot, fake_core, runner, monkeypatch, old):
     qtbot.addWidget(dialog)
     qtbot.waitUntil(lambda: "accesso negato" in dialog.scanning_label.text(), timeout=5000)
     assert not dialog.primary_button.isEnabled()
+
+
+# ------------------------------------------------------------- fix round 1 ---
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_running_index_gets_the_imported_envs_as_soon_as_it_ends(
+        qtbot, fake_core, runner, old, fails):
+    """The promise of IMPORT_INDEX_BUSY: the index job is exclusive, the one
+    running may have planned before the copy, so the envs are indexed again
+    right after it — also when it ended in error — even with the dialog gone."""
+    import threading
+
+    gate = threading.Event()
+
+    def startup_index():
+        gate.wait(5)
+        if fails:
+            raise OSError("indice bloccato")
+
+    assert runner.submit("index", startup_index) is not None
+    qtbot.waitUntil(lambda: runner.is_running("index"), timeout=5000)
+    dialog = make(qtbot, fake_core, runner, [old])
+    run_import(qtbot, dialog)
+    assert strings.IMPORT_INDEX_BUSY in dialog.result_view.notes.text()
+    assert fake_core.index.updates == []
+    dialog.reject()
+    gate.set()
+    qtbot.waitUntil(lambda: bool(fake_core.index.updates), timeout=5000)
+    assert fake_core.index.updates == [{"envs": ["coll", "svil"], "full_rebuild": False}]
+    qtbot.waitUntil(lambda: not runner.is_running("index"), timeout=5000)
+    runner.job_finished.emit("index", True)  # a later index: nothing waits any more
+    qtbot.wait(50)
+    assert len(fake_core.index.updates) == 1
+
+
+def test_the_recycle_bin_runs_as_its_own_job_and_blocks_avanti(
+        qtbot, fake_core, runner, old, tmp_path, monkeypatch):
+    import threading
+
+    from qtrequestory.ui.import_state import RECYCLE_JOB
+
+    gate = threading.Event()
+    real = fake_core.archive.recycle
+
+    def slow(originals):
+        gate.wait(5)
+        return real(originals)
+
+    monkeypatch.setattr(fake_core.archive, "recycle", slow)
+    second = tmp_path / "core" / "secondo"
+    put(second, "coll/20260915.txt", LOG)
+    dialog = make(qtbot, fake_core, runner, [old, second])
+    run_import(qtbot, dialog)
+    assert dialog.primary_button.isEnabled()
+    dialog.result_view.delete_button.click()
+    qtbot.waitUntil(lambda: runner.is_running(RECYCLE_JOB), timeout=5000)
+    assert runner.job("import").name == "import" and not runner.is_running("import")
+    assert not dialog.primary_button.isEnabled()
+    dialog.delete_originals()  # a second click while it runs
+    assert dialog.result_view.outcome.text() == strings.STATUS_BUSY.format(
+        name=strings.JOB_RECYCLE)
+    gate.set()
+    qtbot.waitUntil(lambda: dialog.primary_button.isEnabled(), timeout=5000)
+    assert dialog.result_view.outcome.text().startswith(strings.IMPORT_DELETED.format(n=2))
+
+
+def test_status_colours_follow_a_theme_switch(qtbot, qapp, fake_core, runner, old):
+    from qtrequestory.ui import theme
+
+    dialog = make(qtbot, fake_core, runner, [old])
+    cell = dialog.view.table.item(0, 4)
+    try:
+        theme.apply(qapp, theme.Mode.LIGHT)
+        assert cell.foreground().color().name().lower() == theme.LIGHT.ok.lower()
+        theme.apply(qapp, theme.Mode.DARK)
+        assert cell.foreground().color().name().lower() == theme.DARK.ok.lower()
+    finally:
+        theme.apply(qapp, theme.Mode.LIGHT)

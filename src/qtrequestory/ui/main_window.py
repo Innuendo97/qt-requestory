@@ -84,7 +84,7 @@ PAGE_SHORTCUTS = {"search": "Ctrl+1", "sync": "Ctrl+2", "settings": "Ctrl+,", "a
 SYNC_NOW_SHORTCUT = "Ctrl+Shift+S"
 #: Jobs after which every page's ``on_data_changed`` runs — and which closing
 #: the window would interrupt, so it asks first.
-DATA_JOBS = ("sync", "index", "import")
+DATA_JOBS = ("sync", "index", "import", "recycle")
 #: How often the pages' ``refresh_sync_state`` runs (the app-bar chip would
 #: otherwise stay stale after a scheduled sync until the user opened
 #: Sincronizzazione). Slow on purpose: it only re-reads a state file.

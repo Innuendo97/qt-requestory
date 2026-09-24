@@ -17,6 +17,7 @@ from qtrequestory.ui.import_state import (
     ARCHIVE_REPORT_JOB,
     IMPORT_JOB,
     IMPORT_SCAN_JOB,
+    RECYCLE_JOB,
     WIZARD_ARCHIVE_JOB,
     ArchiveWatch,
 )
@@ -59,10 +60,11 @@ def settled(qtbot, watch: ArchiveWatch) -> None:
 # ----------------------------------------------------------------- jobs ---
 
 def test_the_new_job_names_are_declared_labelled_and_import_is_exclusive():
-    names = {ARCHIVE_REPORT_JOB, IMPORT_SCAN_JOB, IMPORT_JOB, WIZARD_ARCHIVE_JOB}
+    names = {ARCHIVE_REPORT_JOB, IMPORT_SCAN_JOB, IMPORT_JOB, RECYCLE_JOB, WIZARD_ARCHIVE_JOB}
     assert names <= set(JOB_NAMES)
-    assert IMPORT_JOB in JobRunner.EXCLUSIVE
-    assert "import" in DATA_JOBS and "import" in QUIT_INFO
+    assert {IMPORT_JOB, RECYCLE_JOB} <= JobRunner.EXCLUSIVE
+    assert {IMPORT_JOB, RECYCLE_JOB} <= set(DATA_JOBS) and {IMPORT_JOB, RECYCLE_JOB} <= set(QUIT_INFO)
+    assert QUIT_INFO[RECYCLE_JOB] != QUIT_INFO[IMPORT_JOB]
 
 
 # --------------------------------------------------------------- watch ---
@@ -168,6 +170,18 @@ def test_a_settings_save_keeps_the_folder_envs_the_dialog_saved(qtbot, fake_core
     assert page.save()
     assert fake_core.config.config.folder_envs == {"C:/vecchi/misti": "svil"}
     assert fake_core.config.config.default_window_days == 7
+
+
+def test_validating_the_form_does_not_read_the_config_file(qtbot, fake_core, runner, monkeypatch):
+    """Only save() re-reads folder_envs; to_config/errors use what was loaded."""
+    page = SettingsPage(fake_core, runner, StubWindow())
+    qtbot.addWidget(page)
+    loads: list[int] = []
+    real = fake_core.config.load
+    monkeypatch.setattr(fake_core.config, "load", lambda: (loads.append(1), real())[1])
+    page._presenter.errors(page.form_values())
+    page._presenter.to_config(page.form_values())
+    assert loads == []
 
 
 # ---------------------------------------------------------------- shell ---

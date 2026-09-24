@@ -83,7 +83,8 @@ JOB_NAMES = (
     "wizard-archive-report",  # first-run wizard, page 1: logs to import at the end
     "archive-report",       # banner + Impostazioni: logs outside the archive structure
     "import-scan",          # Importa log: the report of the chosen folder
-    "import",               # Importa log: copy + verify, then the Recycle Bin
+    "import",               # Importa log: copy + verify
+    "recycle",              # Importa log: the verified originals to the Recycle Bin
 )
 
 #: Extra threads for SUPERSEDED jobs. Superseding silences a job and sets its
@@ -338,7 +339,7 @@ class JobRunner(QObject):
     #: ``scheduler``, because ``schtasks`` ignores the cancel token, so two
     #: calls in flight could land in either order and leave the task in the
     #: state of the *first* one. Everything else supersedes instead.
-    EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import"})
+    EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import", "recycle"})
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)

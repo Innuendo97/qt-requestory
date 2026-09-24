@@ -9,6 +9,9 @@ they are.
 
 # -- job names (``quit_dialog.JOB_LABELS``) --------------------------------------
 JOB_IMPORT = "Importazione dei log"
+JOB_RECYCLE = "Spostamento degli originali nel Cestino"
+QUIT_RECYCLE_INFO = ("Gli originali già spostati sono nel Cestino e si possono ripristinare; "
+                     "gli altri restano dove sono.")
 JOB_IMPORT_SCAN = "Analisi della cartella"
 JOB_ARCHIVE_REPORT = "Controllo dell'archivio"
 JOB_WIZARD_ARCHIVE = "Ricerca dei log da importare"

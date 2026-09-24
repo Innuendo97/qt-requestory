@@ -14,7 +14,7 @@ __all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_
 
 #: What the quit question adds under the main text, per job.
 QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO,
-             "import": strings.QUIT_IMPORT_INFO}
+             "import": strings.QUIT_IMPORT_INFO, "recycle": strings.QUIT_RECYCLE_INFO}
 
 #: ``JobRunner`` name -> what to call that operation in front of the user. The
 #: names are identifiers chosen by the pages ("check-envs", "search_plan",
@@ -40,6 +40,7 @@ JOB_LABELS = {
     "archive-report": strings.JOB_ARCHIVE_REPORT,
     "import-scan": strings.JOB_IMPORT_SCAN,
     "import": strings.JOB_IMPORT,
+    "recycle": strings.JOB_RECYCLE,
 }
 
 

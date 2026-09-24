@@ -168,12 +168,10 @@ class SettingsPresenter(QObject):
 
         A copy, never a mutation: the fields this page does not show
         (``compaction_time``, ``sync``, ``index``, ``log_level``) must survive
-        a save untouched. ``folder_envs`` is re-read from disk: the import
-        dialog saves it while this page may hold an older ``loaded``.
+        a save untouched.
         """
         return dataclasses.replace(
             self.loaded,
-            folder_envs=dict(self._services.config.load().folder_envs),
             mirror_root=Path(form.mirror_root.strip()),
             environments=list(form.environments),
             editor_path=_optional_path(form.editor_path),
@@ -203,7 +201,10 @@ class SettingsPresenter(QObject):
         found = self.errors(form)
         if found:
             return found
-        cfg = self.to_config(form)
+        # ``folder_envs`` from disk: the import dialog writes it while this
+        # page may still hold an older ``loaded``.
+        cfg = dataclasses.replace(
+            self.to_config(form), folder_envs=dict(self._services.config.load().folder_envs))
         self._services.config.save(cfg)
         self.loaded = cfg
         self.config_changed.emit(cfg)

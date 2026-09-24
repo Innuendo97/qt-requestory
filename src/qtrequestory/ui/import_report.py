@@ -153,12 +153,12 @@ class ReportTable(QTableWidget):
         header.setSectionResizeMode(len(COLUMNS) - 1, QHeaderView.ResizeMode.Interactive)
         header.resizeSection(len(COLUMNS) - 1, 320)
         self.items_shown: list[FoundLog] = []
+        theme.signals.changed.connect(self.recolour)
 
     def set_report(self, report: ArchiveReport) -> None:
         found = sorted(report.items, key=lambda f: (STATUS_ORDER[f.status], f.rel_path.casefold()))
         self.items_shown = found
         self.setRowCount(len(found))
-        tones = theme.tokens()
         for row, item in enumerate(found):
             cells = (
                 item.rel_path,
@@ -173,9 +173,16 @@ class ReportTable(QTableWidget):
                 if column == 3:
                     cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.setItem(row, column, cell)
+        self.recolour()
+
+    def recolour(self) -> None:
+        """The status cells in the current theme's tones (also after a switch)."""
+        tones = theme.tokens()
+        for row, item in enumerate(self.items_shown):
             tone = STATUS_TONES.get(item.status)
-            if tone:
-                self.item(row, len(COLUMNS) - 1).setForeground(QColor(getattr(tones, tone)))
+            cell = self.item(row, len(COLUMNS) - 1)
+            if tone and cell is not None:
+                cell.setForeground(QColor(getattr(tones, tone)))
 
     def set_filter(self, status: str | None) -> None:
         for row, item in enumerate(self.items_shown):
