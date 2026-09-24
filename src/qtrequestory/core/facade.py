@@ -24,6 +24,13 @@ What the adapters actually do beyond binding arguments:
   writing the same day's ``.part`` at the same time would race it.
 * Every service reads the configuration through a callable, so saving new
   settings in Impostazioni is picked up without rebuilding anything.
+* An unusable ``mirror_root`` (``config.mirror_root_errors``: not set, or a
+  relative path) never reaches the disk. ``Path("")`` is ``Path(".")``, so the
+  index, the sync state, the lock and the ``<env>/`` listings would all
+  resolve against the process CWD — wherever the exe was started. The status
+  reads answer "nothing there" (``env_status`` empty, ``coverage`` None,
+  ``count_local_files()`` 0, ``is_fresh`` False, ``lock_holder`` None) and the
+  operations that need a mirror raise ``ValueError`` with the problem.
 
 SQLite connections are opened per operation: the UI calls search and preview
 from worker threads and ``sqlite3`` objects must not be shared across threads.
@@ -188,6 +195,8 @@ class SyncService:
 
     def env_status(self, env_name: str) -> EnvStatus:
         cfg = self._config_source()
+        if config_mod.mirror_root_errors(cfg):
+            return empty_env_status(env_name)
         st = SyncState(cfg.state_path).load().get(env_name)
         # Newest first. A 0-byte file is a day the server published without
         # traffic: "no calls", not archive content, so it is not counted.
@@ -243,7 +252,7 @@ class SyncService:
         cancel: CancelToken,
     ) -> JobReport:
         return run_sync_job(
-            self._config_source(),
+            _usable(self._config_source()),
             envs=list(envs) if envs is not None else None,
             force=force,
             dry_run=dry_run,
@@ -266,7 +275,10 @@ class SyncService:
         answers "nobody" rather than raising inside a timer callback.
         """
         try:
-            return peek_holder(self._config_source().lock_path)
+            cfg = self._config_source()
+            if config_mod.mirror_root_errors(cfg):
+                return None
+            return peek_holder(cfg.lock_path)
         except (OSError, ValueError):
             return None
 
@@ -278,6 +290,8 @@ class SyncService:
 
     def is_fresh(self, env_name: str) -> bool:
         cfg = self._config_source()
+        if config_mod.mirror_root_errors(cfg):
+            return False
         state = SyncState(cfg.state_path).load()
         return state.is_fresh(env_name, self._clock(), cfg.compaction_time)
 
@@ -378,7 +392,7 @@ class IndexService:
         self._config_source = config_source
 
     def plan(self, envs: Sequence[str]) -> IndexPlan:
-        cfg = self._config_source()
+        cfg = _usable(self._config_source())
         with self._connect() as conn:
             return IndexBuilder(conn, cfg.mirror_root, _drop).plan(list(envs))
 
@@ -391,7 +405,7 @@ class IndexService:
         cancel: CancelToken,
     ) -> JobReport:
         return run_index_job(
-            self._config_source(),
+            _usable(self._config_source()),
             envs=list(envs) if envs is not None else None,
             full_rebuild=full_rebuild,
             sink=sink,
@@ -399,14 +413,18 @@ class IndexService:
         )
 
     def coverage(self, env: str) -> Coverage | None:
+        """None when nothing of ``env`` is indexed — or no mirror is set."""
+        if config_mod.mirror_root_errors(self._config_source()):
+            return None
         with self._connect() as conn:
             return core_coverage(conn, env)
 
     def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> daily.CoverageDays:
         """Each day of the window classified (``daily.classify_days``) from
         the on-disk daily files and the listing memory of the sync state (no
-        index/DB involved), so it is right even before an index update."""
-        cfg = self._config_source()
+        index/DB involved), so it is right even before an index update.
+        ``ValueError`` while the mirror folder is not usable."""
+        cfg = _usable(self._config_source())
         sizes = {f.day: f.size for f in daily.list_local_daily_files(cfg.mirror_root, env)}
         # load() may write sync-state.json once, when only a legacy .last-sync.json exists.
         st = SyncState(cfg.state_path).load().get(env)
@@ -415,15 +433,19 @@ class IndexService:
 
     def count_local_files(self, root: Path | None = None) -> int:
         """``root`` defaults to the configured mirror; the wizard passes the
-        folder the user just picked, which is not in the config yet."""
-        return daily.count_local_files(Path(root) if root is not None else self._config_source().mirror_root)
+        folder the user just picked, which is not in the config yet. An
+        unusable configured mirror counts 0 (never the CWD)."""
+        if root is not None:
+            return daily.count_local_files(Path(root))
+        cfg = self._config_source()
+        return 0 if config_mod.mirror_root_errors(cfg) else daily.count_local_files(cfg.mirror_root)
 
     def list_template_keys(self, env: str, prefix: str = "") -> list[str]:
         with self._connect() as conn:
             return core_list_template_keys(conn, env, prefix)
 
     def search(self, query: SearchQuery) -> list[SearchHit]:
-        cfg = self._config_source()
+        cfg = _usable(self._config_source())
         with self._connect() as conn:
             return core_search(conn, cfg.mirror_root, query)
 
@@ -470,8 +492,10 @@ class IndexService:
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """One connection per operation: the UI queries from worker threads and
-        a ``sqlite3.Connection`` belongs to the thread that created it."""
-        conn = open_index(self._config_source().index_path)
+        a ``sqlite3.Connection`` belongs to the thread that created it.
+        ``ValueError`` while the mirror folder is not usable: opening creates
+        the database, which must never land under the CWD."""
+        conn = open_index(_usable(self._config_source()).index_path)
         try:
             yield conn
         finally:
@@ -542,11 +566,7 @@ class ArchiveService:
         self._config_source = config_source
 
     def _usable_config(self) -> Config:
-        cfg = self._config_source()
-        problems = config_mod.mirror_root_errors(cfg)
-        if problems:
-            raise ValueError(problems[0])
-        return cfg
+        return _usable(self._config_source())
 
     def report(self, path: Path | None = None, *,
                canonical_root: Path | None = None) -> ArchiveReport:
@@ -590,6 +610,21 @@ class ArchiveService:
 
 
 # ------------------------------------------------------------------ helpers ---
+
+def empty_env_status(env_name: str) -> EnvStatus:
+    """What ``env_status`` answers with no usable mirror: never synced,
+    nothing local, nothing pending — read from nowhere."""
+    return EnvStatus(env=env_name, last_success=None, fresh=False, n_local_files=0,
+                     local_bytes=0, latest_day=None, index_pending=0)
+
+
+def _usable(cfg: Config) -> Config:
+    """``cfg`` itself, or ``ValueError`` with the first ``mirror_root`` problem."""
+    problems = config_mod.mirror_root_errors(cfg)
+    if problems:
+        raise ValueError(problems[0])
+    return cfg
+
 
 def _drop(event: object) -> None:
     """Sink for the internal read-only operations (plan/rescan): the UI shows

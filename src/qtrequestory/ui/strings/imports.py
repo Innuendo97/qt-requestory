@@ -35,11 +35,12 @@ ARCHIVE_SUMMARY = ("{archived} log in archivio · {todo} da importare · {assign
 #: Appended to ARCHIVE_SUMMARY when there are conflicts; {n} = how many.
 ARCHIVE_SUMMARY_CONFLICTS = " · {n} in conflitto"
 ARCHIVE_SUMMARY_LOADING = "Controllo dell'archivio in corso…"
+#: {problem} = why the archive cannot be read, through ``lower_first``.
 ARCHIVE_SUMMARY_UNAVAILABLE = "Archivio non controllabile: {problem}"
 ARCHIVE_BTN_DETAILS = "Dettagli…"
 ARCHIVE_BTN_IMPORT_FOLDER = "Importa log da una cartella…"
 ARCHIVE_IMPORT_CAPTION = "Cartella con i log da importare"
-#: {problem} = the first ``mirror_root_errors`` line.
+#: {problem} = the first ``mirror_root_errors`` line, through ``lower_first``.
 IMPORT_REFUSED = "Importazione non possibile: {problem}"
 
 # -- the dialog ------------------------------------------------------------------

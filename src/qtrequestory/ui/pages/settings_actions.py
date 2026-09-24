@@ -59,7 +59,7 @@ class SettingsActions:
         """An empty or relative log folder: the index would land in the CWD."""
         problems = self._services.config.mirror_root_errors(self._presenter.loaded)
         if problems:
-            self._status(strings.SETTINGS_INDEX_REFUSED.format(problem=problems[0]))
+            self._status(strings.SETTINGS_INDEX_REFUSED.format(problem=strings.lower_first(problems[0])))
         return bool(problems)
 
     def _start_index(self, *, full_rebuild: bool) -> None:

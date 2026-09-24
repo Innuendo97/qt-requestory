@@ -326,6 +326,10 @@ class FakeSyncApi:
     # -- contract ----------------------------------------------------------
 
     def env_status(self, env_name: str) -> EnvStatus:
+        """Scripted per env; with no usable mirror the facade reads nothing
+        and answers the empty status, and so does the fake."""
+        if core_mirror_root_errors(self._config_source()):
+            return self._default_status(env_name)
         return self._status(env_name)
 
     def check_reachable(self, env: Environment, timeout: float = 5.0) -> bool:
@@ -372,9 +376,10 @@ class FakeSyncApi:
         run. An explicit name not in ``config.environments`` is
         ``UnknownEnvironment``, raised before anything starts (no event, no
         entry in ``self.runs``), same as ``Config.require_env`` used to build
-        ``SyncEngine.run``'s targets.
+        ``SyncEngine.run``'s targets. An unusable mirror folder is
+        ``ValueError`` first, like the facade.
         """
-        cfg = self._config_source()
+        cfg = _usable(self._config_source())
         if envs is None:
             names = tuple(e.name for e in cfg.environments if e.enabled)
         else:
@@ -436,7 +441,10 @@ class FakeSyncApi:
         return n
 
     def lock_holder(self) -> str | None:
-        """Read-only, like the real probe: asking never changes the answer."""
+        """Read-only, like the real probe: asking never changes the answer.
+        No usable mirror, no lock file to read: None, like the facade."""
+        if core_mirror_root_errors(self._config_source()):
+            return None
         return self.holder
 
     def sync_log_path(self) -> Path:
@@ -597,8 +605,12 @@ class FakeSchedulerApi:
 class FakeIndexApi:
     """12 synthetic hits, filtered the way the SQL query filters them."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, config_source: Callable[[], Config] | None = None) -> None:
         self._root = root
+        #: With a source, an unusable ``mirror_root`` answers like the facade
+        #: (empty reads, ``ValueError`` for what needs a mirror); without one
+        #: the mirror is always taken as usable.
+        self._config_source = config_source
         self.hits: list[SearchHit] = [_hit(i + 1, spec, root / "mirror") for i, spec in enumerate(HIT_SPECS)]
         self.bodies: dict[int, bytes] = {h.entry_id: _body(spec) for h, spec in zip(self.hits, HIT_SPECS)}
         self.missing: set[int] = set()
@@ -649,11 +661,20 @@ class FakeIndexApi:
             for i in range(n)
         ]
 
+    def _mirror_problems(self) -> list[str]:
+        return core_mirror_root_errors(self._config_source()) if self._config_source else []
+
+    def _require_mirror(self) -> None:
+        problems = self._mirror_problems()
+        if problems:
+            raise ValueError(problems[0])
+
     # -- contract ----------------------------------------------------------
 
     def plan(self, envs: Sequence[str]) -> IndexPlan:
         """Only the pending files of ``envs`` — the real ``IndexBuilder.plan``
         scopes its query to the requested environments the same way."""
+        self._require_mirror()
         names = set(envs)
         return IndexPlan(to_scan=[f for f in self.pending if f.env in names], to_remove=[])
 
@@ -665,6 +686,7 @@ class FakeIndexApi:
         sink: EventSink,
         cancel: CancelToken,
     ) -> JobReport:
+        self._require_mirror()
         self.updates.append({"envs": None if envs is None else list(envs), "full_rebuild": full_rebuild})
         paths = ([f.path for f in self.pending] if not full_rebuild
                  else sorted({h.file_path for h in self.hits}))
@@ -679,12 +701,15 @@ class FakeIndexApi:
         return JobReport(sync=None, indexed_files=n, exit_code=0)
 
     def coverage(self, env: str) -> Coverage | None:
+        if self._mirror_problems():
+            return None
         days = sorted({h.day for h in self.hits if h.env == env})
         if not days:
             return None
         return Coverage(days[0], days[-1], len(days), sum(1 for h in self.hits if h.env == env))
 
     def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> CoverageDays:
+        self._require_mirror()
         if self._local_days is not None and env in self._local_days:
             sizes = self._local_days[env]
         else:
@@ -701,7 +726,7 @@ class FakeIndexApi:
         map set with ``set_local_file_count`` (unknown folder -> 0, like an
         empty directory)."""
         if root is None:
-            return len({(h.env, h.day) for h in self.hits})
+            return 0 if self._mirror_problems() else len({(h.env, h.day) for h in self.hits})
         return self.local_file_counts.get(Path(root), 0)
 
     def list_template_keys(self, env: str, prefix: str = "") -> list[str]:
@@ -710,6 +735,7 @@ class FakeIndexApi:
         frequent, then alphabetical. Sorting on day alone (the previous
         version) left same-day ties in whatever order ``self.hits`` happened
         to hold them, which is not what a real index would ever produce."""
+        self._require_mirror()
         prefix = prefix.strip().lower()
         max_day: dict[str, date] = {}
         count: dict[str, int] = {}
@@ -725,6 +751,7 @@ class FakeIndexApi:
         """Same contract as the real query: FDI prefix or key required (blank
         counts as absent), most recent first, day window inclusive, ``limit``
         applied last."""
+        self._require_mirror()
         fdi = (query.fdi_prefix or "").strip().lower()
         key = (query.template_key or "").strip()
         if not fdi and not key:
@@ -749,6 +776,14 @@ class FakeIndexApi:
 
     def db_path(self) -> Path:
         return self._root / "mirror" / ".qtrequestory" / "index.sqlite"
+
+
+def _usable(cfg: Config) -> Config:
+    """``cfg``, or ``ValueError`` with its first ``mirror_root`` problem (the facade's rule)."""
+    problems = core_mirror_root_errors(cfg)
+    if problems:
+        raise ValueError(problems[0])
+    return cfg
 
 
 def _key_matches(value: str, key: str, mode: str) -> bool:
@@ -834,11 +869,7 @@ class FakeArchiveApi:
         self.busy = flag
 
     def _cfg(self) -> Config:
-        cfg = self._config_source()
-        problems = core_mirror_root_errors(cfg)
-        if problems:
-            raise ValueError(problems[0])
-        return cfg
+        return _usable(self._config_source())
 
     def report(self, path: Path | None = None, *,
                canonical_root: Path | None = None) -> ArchiveReport:
@@ -893,7 +924,7 @@ def build_fake_core(root: Path) -> CoreServices:
         # all" case (``SchedulerError``, see ``register``) is exercised with
         # an explicit ``FakeSchedulerApi(exe=None)`` where it matters.
         scheduler=FakeSchedulerApi(exe=root / "qtRequestory.exe"),
-        index=FakeIndexApi(root),
+        index=FakeIndexApi(root, lambda: config.config),
         extract=FakeExtractApi(root / "out", lambda: config.config),
         archive=FakeArchiveApi(root, lambda: config.config),
         paths=paths,

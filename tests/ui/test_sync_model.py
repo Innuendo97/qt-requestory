@@ -507,3 +507,9 @@ def test_a_run_the_core_skipped_for_a_held_lock_is_not_completata():
     skipped = fmt.run_outcome(0, {}, skipped=True)
     assert (skipped.text, skipped.tone) == (strings.SYNC_LOCK_HELD, "neutral")
     assert skipped.log == strings.SYNC_LOG_SKIPPED
+
+
+def test_a_run_skipped_for_our_own_import_names_the_import():
+    skipped = fmt.run_outcome(0, {}, skipped=True, importing=True)
+    assert (skipped.text, skipped.tone) == (strings.SYNC_SKIPPED_IMPORT, "neutral")
+    assert skipped.log == strings.SYNC_LOG_SKIPPED

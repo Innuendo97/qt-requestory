@@ -219,7 +219,7 @@ class ImportDialog(QDialog):
             return
         problems = self._services.config.mirror_root_errors(self._services.config.load())
         if problems:
-            self._show_error(strings.IMPORT_REFUSED.format(problem=problems[0]))
+            self._show_error(strings.IMPORT_REFUSED.format(problem=strings.lower_first(problems[0])))
             return
         job = self._runner.submit(IMPORT_JOB, import_call, self._services.archive, self.report)
         if job is None:

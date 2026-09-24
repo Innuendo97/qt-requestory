@@ -12,7 +12,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import CoreServices
 from qtrequestory.ui.import_state import ArchiveWatch, stray_count
 from qtrequestory.ui.workers import JobRunner
@@ -35,7 +35,7 @@ class ImportBanner(QFrame):
         self.button = QPushButton(strings.IMPORT_BANNER_BUTTON)
         self.button.clicked.connect(self.open_import)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 6, 4)
+        layout.setContentsMargins(theme.SPACE[2], theme.SPACE[0], theme.SPACE[1], theme.SPACE[0])
         layout.addWidget(self.label, 1)
         layout.addWidget(self.button)
         self.setVisible(False)

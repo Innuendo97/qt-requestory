@@ -265,7 +265,8 @@ class MainWindow(QMainWindow):
                                     list(sources) if sources else [None], on_closed)
         if dialog is None:
             problems = self._services.config.mirror_root_errors(self._services.config.load())
-            self.set_status(strings.IMPORT_REFUSED.format(problem=problems[0] if problems else ""))
+            self.set_status(strings.IMPORT_REFUSED.format(
+                problem=strings.lower_first(problems[0]) if problems else ""))
             if on_closed is not None:
                 on_closed()
         return dialog

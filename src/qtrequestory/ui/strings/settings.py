@@ -149,5 +149,5 @@ SETTINGS_INDEX_STARTED = "Indicizzazione avviata…"
 SETTINGS_INDEX_DONE = "Indicizzazione completata: {n} file."
 #: {message} = the error text of the failed job.
 SETTINGS_INDEX_FAILED = "Indicizzazione non riuscita: {message}"
-#: {problem} = the core's sentence about the log folder (config.mirror_root).
+#: {problem} = the core's sentence about the log folder (config.mirror_root), through ``lower_first``.
 SETTINGS_INDEX_REFUSED = "Indicizzazione non avviata: {problem}"

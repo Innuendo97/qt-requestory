@@ -69,8 +69,17 @@ class SearchPresenter(QObject):
             log.exception("periodo coperto di %s non disponibile", env)
             return None
 
+    def mirror_problem(self) -> str | None:
+        """Why the log folder is unusable, or None. With one, the page shows
+        the banner (``MirrorRootBanner``) and nothing is asked of the index:
+        the facade would only refuse it (``ValueError``) from a worker."""
+        problems = self._services.config.mirror_root_errors(self._services.config.load())
+        return problems[0] if problems else None
+
     def coverage_days(self, env: str, today: date | None = None) -> CoverageDays | None:
         """The mirror listing's holes (a directory listing: cheap too)."""
+        if self.mirror_problem() is not None:
+            return None
         try:
             return self._services.index.coverage_days(env, today=today)
         except Exception:  # noqa: BLE001 - a broken mirror must not break the page
@@ -83,6 +92,10 @@ class SearchPresenter(QObject):
     # -- jobs --------------------------------------------------------------
 
     def search(self, query: SearchQuery) -> None:
+        problem = self.mirror_problem()
+        if problem is not None:
+            self.status.emit(strings.SEARCH_FAILED.format(error=strings.lower_first(problem)))
+            return
         job = self._runner.submit("search", self._services.index.search, query)
         if job is None:  # shutting down
             return
@@ -91,12 +104,18 @@ class SearchPresenter(QObject):
         job.signals.error.connect(self._on_error)
 
     def reload_template_keys(self, env: str) -> None:
+        if self.mirror_problem() is not None:
+            self.template_keys_ready.emit([])
+            return
         job = self._runner.submit("search_keys", self._services.index.list_template_keys, env)
         if job is not None:
             job.signals.result.connect(lambda keys: self.template_keys_ready.emit(list(keys)))
 
     def refresh_index_state(self, env: str) -> None:
         """How many local files the index has not scanned yet (stale banner)."""
+        if self.mirror_problem() is not None:
+            self.index_pending.emit(0)
+            return
         job = self._runner.submit("search_plan", self._services.index.plan, [env])
         if job is not None:
             job.signals.result.connect(lambda plan: self.index_pending.emit(len(plan.to_scan)))

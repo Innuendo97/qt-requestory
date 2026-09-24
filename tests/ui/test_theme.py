@@ -348,3 +348,17 @@ def test_data_tables_get_the_flat_look(qtbot):
     theme.set_table_look(view)
     assert not view.showGrid()
     assert view.horizontalHeader().defaultAlignment() & Qt.AlignmentFlag.AlignLeft
+
+
+def test_the_stacked_banners_share_the_spacing_scale(qtbot, fake_core, runner):
+    """Final review M5: the three banners of Ricerca line up on theme.SPACE."""
+    from qtrequestory.ui import theme as theme_mod
+    from qtrequestory.ui.pages.import_banner import ImportBanner
+    from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
+    from qtrequestory.ui.pages.search_meta import GapBanner
+
+    expected = (theme_mod.SPACE[2], theme_mod.SPACE[0], theme_mod.SPACE[1], theme_mod.SPACE[0])
+    for banner in (ImportBanner(fake_core, runner, None), MirrorRootBanner(fake_core, None), GapBanner()):
+        qtbot.addWidget(banner)
+        m = banner.layout().contentsMargins()
+        assert (m.left(), m.top(), m.right(), m.bottom()) == expected, type(banner).__name__

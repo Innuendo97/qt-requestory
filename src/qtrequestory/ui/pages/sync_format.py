@@ -343,16 +343,20 @@ class RunOutcome:
 
 
 def run_outcome(exit_code: int, results: Mapping[str, tuple[str, int]], *,
-                dry_run: bool = False, skipped: bool = False) -> RunOutcome:
+                dry_run: bool = False, skipped: bool = False,
+                importing: bool = False) -> RunOutcome:
     """"Sincronizzazione completata" only when every environment is ok/fresh.
 
     ``results`` maps each environment of the run to ``(EnvResult.status,
     failed)``. Anything else is named: "Completata · svil non raggiungibile",
     in warn tone — the old "completata" next to an unreachable environment read
     as if everything had been fetched. ``skipped``: the core found the lock
-    held by the scheduled task and ran nothing (``JobReport.sync is None``).
+    held and ran nothing (``JobReport.sync is None``) — the scheduled task's,
+    or, with ``importing``, this window's own import (which copies under it).
     """
     if skipped:
+        if importing:
+            return RunOutcome(strings.SYNC_SKIPPED_IMPORT, "neutral", strings.SYNC_LOG_SKIPPED)
         return RunOutcome(strings.SYNC_LOCK_HELD, "neutral", strings.SYNC_LOG_SKIPPED)
     if exit_code == 3:
         return RunOutcome(strings.SYNC_CANCELLED, "neutral", strings.SYNC_LOG_CANCELLED)

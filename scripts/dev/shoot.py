@@ -266,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         # and without an event loop the old ones are never deleted (deleteLater).
         for name in ("search", "sync"):
             window.page(name).mirror_banner.refresh()
+        # The core now answers "nothing there" without a folder: re-read the
+        # Ricerca coverage line so the next scene does not keep the last one.
+        search.on_data_changed()
         window.page("sync").run_label.hide()  # the refusal line of the last mode
 
     def search_no_folder() -> None:
@@ -299,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
 
         shutil.rmtree(colleague, ignore_errors=True)
         m = services.config.load().mirror_root
+        # Path("") is the CWD: the synthetic logs would land in the worktree.
+        assert m.is_absolute(), f"import_tree needs the scene mirror, not {m!r}"
         for env, days in (("coll", (2, 3, 11, 12)), ("svil", (3, 4))):
             for d in days:  # what the previous mode imported
                 (m / env / "2026" / "09" / f"202609{d:02d}.txt").unlink(missing_ok=True)
@@ -417,6 +422,11 @@ def main(argv: list[str] | None = None) -> int:
             mirror_root(None)  # the previous mode's last scenes broke it on purpose
             pump(300)
             for number, (name, prepare) in enumerate(scenes, 1):
+                # Every scene starts from the scene mirror: the "-cartella-non-
+                # valida" ones empty it on purpose, and a later scene writing
+                # under Path("") would write into the CWD (final review I2).
+                if services.config.config.mirror_root != good_config.mirror_root:
+                    mirror_root(None)
                 target = prepare() or window  # a scene may name its own widget
                 pump(300)
                 path = args.out / f"{mode}-{number:02d}-{name}.png"

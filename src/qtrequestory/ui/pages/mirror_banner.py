@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from qtrequestory.ui import strings
+from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import CoreServices
 
 __all__ = ["MirrorRootBanner", "open_settings_section"]
@@ -47,7 +47,7 @@ class MirrorRootBanner(QFrame):
         self.button = QPushButton(strings.MIRROR_ROOT_BUTTON)
         self.button.clicked.connect(lambda: open_settings_section(self._window, ARCHIVE_SECTION))
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 6, 4)
+        layout.setContentsMargins(theme.SPACE[2], theme.SPACE[0], theme.SPACE[1], theme.SPACE[0])
         layout.addWidget(self.label, 1)
         layout.addWidget(self.button)
         self.setVisible(False)

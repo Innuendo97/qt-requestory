@@ -46,6 +46,7 @@ from qtrequestory.ui.contracts import (
     FileFailed,
     JobReport,
 )
+from qtrequestory.ui.import_state import IMPORT_JOB
 from qtrequestory.ui.pages import progress_model as pm
 from qtrequestory.ui.pages import sync_format as fmt
 from qtrequestory.ui.pages.coverage_strip import CoverageLegend
@@ -247,7 +248,7 @@ class SyncPage(QWidget):
         """
         problems = self.mirror_banner.refresh()
         if problems:
-            text = strings.SYNC_REFUSED_MIRROR_ROOT.format(problem=problems[0])
+            text = strings.SYNC_REFUSED_MIRROR_ROOT.format(problem=strings.lower_first(problems[0]))
             self._set_run_label(text, "warn")
             self._show_status(text)
             return
@@ -329,7 +330,8 @@ class SyncPage(QWidget):
 
     def _on_result(self, report: JobReport) -> None:
         self._outcome = fmt.run_outcome(report.exit_code, self.presenter.run_results(),
-                                        dry_run=self._dry_run, skipped=report.sync is None)
+                                        dry_run=self._dry_run, skipped=report.sync is None,
+                                        importing=self._runner.is_running(IMPORT_JOB))
 
     def _on_error(self, _kind: str, error: str) -> None:
         self._outcome = fmt.RunOutcome(strings.SYNC_ERROR.format(error=error), "warn",
@@ -380,13 +382,18 @@ class SyncPage(QWidget):
         """Polled every :data:`LOCK_POLL_MS` while visible; also around every run.
 
         The lock is ours while *we* are the ones syncing, so the warning only
-        appears when somebody else — the scheduled task — holds it.
+        appears when somebody else — the scheduled task — holds it. Our own
+        "Importa log" holds it too (it copies under the lock): that is named
+        as the import, never blamed on the scheduled task, and a sync waits.
         """
-        ours = self._runner.is_running("sync")
-        held = not ours and self._services.sync.lock_holder() is not None
-        self.lock_label.setVisible(held)
-        self.auto_card.set_sync_enabled(not held and not ours)
-        self.banners.set_sync_enabled(not held and not ours)
+        syncing = self._runner.is_running("sync")
+        importing = not syncing and self._runner.is_running(IMPORT_JOB)
+        held = not syncing and not importing and self._services.sync.lock_holder() is not None
+        self.lock_label.setText(strings.SYNC_LOCK_IMPORT if importing else strings.SYNC_LOCK_HELD)
+        self.lock_label.setVisible(held or importing)
+        enabled = not held and not syncing and not importing
+        self.auto_card.set_sync_enabled(enabled)
+        self.banners.set_sync_enabled(enabled)
 
     # -- Qt ----------------------------------------------------------------
 

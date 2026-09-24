@@ -109,7 +109,7 @@ class GapBanner(QFrame):
         self.button = QPushButton(strings.SEARCH_GAP_BTN)
         self.button.clicked.connect(self.go_sync)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 6, 4)
+        layout.setContentsMargins(theme.SPACE[2], theme.SPACE[0], theme.SPACE[1], theme.SPACE[0])
         layout.addWidget(self.label, 1)
         layout.addWidget(self.button)
         self.setVisible(False)

@@ -851,6 +851,34 @@ def test_a_held_lock_never_fights_the_gui_job(qtbot, page, fake_core):
         pass
 
 
+@pytest.fixture
+def importing(qtbot, runner):
+    """A GUI import in flight: it holds the sync lock (``ArchiveService.import_``)."""
+    gate = threading.Event()
+    job = runner.submit("import", lambda: gate.wait(TIMEOUT / 1000))
+    qtbot.waitUntil(lambda: runner.is_running("import"), timeout=TIMEOUT)
+    yield job
+    gate.set()
+    with qtbot.waitSignal(job.signals.finished, timeout=TIMEOUT):
+        pass
+
+
+def test_a_gui_import_is_not_blamed_on_the_scheduled_task(page, fake_core, importing):
+    """Final review M2: the lock is ours during an import, and says so."""
+    fake_core.sync.set_lock_holder("4242 importazione")
+    page.refresh_lock()
+    assert not page.lock_label.isHidden()
+    assert page.lock_label.text() == strings.SYNC_LOCK_IMPORT
+    assert not page.sync_button.isEnabled()
+
+
+def test_a_sync_refused_by_a_gui_import_says_importazione(qtbot, page, fake_core, window, importing):
+    fake_core.sync.set_lock_holder("4242 importazione")
+    run_to_completion(qtbot, page)
+    assert page.run_label.text() == strings.SYNC_SKIPPED_IMPORT
+    assert strings.SYNC_LOCK_HELD not in page.run_label.text()
+
+
 # ------------------------------------------------ GUI runs reach sync.log ---
 
 class _Records(logging.Handler):

@@ -35,3 +35,13 @@ from .settings import *  # noqa: F401,F403
 from .wizard import *  # noqa: F401,F403
 from .about import *  # noqa: F401,F403
 from .imports import *  # noqa: F401,F403
+
+
+def lower_first(sentence: str) -> str:
+    """``sentence`` with its first letter lowercased, for "<what failed>: {problem}".
+
+    The core's mirror-folder problems (``config.mirror_root_errors``) are whole
+    sentences — "La cartella dei log non è impostata" — because the banner
+    shows one on a line of its own. After a colon the capital reads wrong.
+    """
+    return sentence[:1].lower() + sentence[1:]

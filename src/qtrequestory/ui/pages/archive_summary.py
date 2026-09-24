@@ -24,7 +24,7 @@ __all__ = ["ArchiveSummary", "summary_text"]
 
 def summary_text(watch: ArchiveWatch) -> str:
     if watch.problem is not None:
-        return strings.ARCHIVE_SUMMARY_UNAVAILABLE.format(problem=watch.problem)
+        return strings.ARCHIVE_SUMMARY_UNAVAILABLE.format(problem=strings.lower_first(watch.problem))
     if watch.snapshot is None:
         return strings.ARCHIVE_SUMMARY_LOADING
     counts = watch.snapshot.report.counts()

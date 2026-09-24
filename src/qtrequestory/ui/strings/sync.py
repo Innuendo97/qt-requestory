@@ -223,12 +223,16 @@ SYNC_DONE_UNREACHABLE = "Nessun ambiente raggiungibile: riprova quando sei in VP
 SYNC_CANCELLED = "Sincronizzazione annullata"
 #: {error} = the message of the exception the core raised.
 SYNC_ERROR = "Sincronizzazione non riuscita: {error}"
-#: {problem} = the core's sentence about the log folder (config.mirror_root).
+#: {problem} = the core's sentence about the log folder (config.mirror_root), through ``lower_first``.
 SYNC_REFUSED_MIRROR_ROOT = "Sincronizzazione non avviata: {problem}"
 
 # -- lock held by the scheduled task -----------------------------------------
 
 SYNC_LOCK_HELD = "Sincronizzazione in corso dall'attività pianificata…"
+#: The lock is held by this window's own "Importa log" (it copies under the lock).
+SYNC_LOCK_IMPORT = "Importazione in corso…"
+#: A "Sincronizza ora" the core skipped because our own import held the lock.
+SYNC_SKIPPED_IMPORT = "Importazione in corso: sincronizza al termine"
 
 # -- the schedule in words ---------------------------------------------------
 #
