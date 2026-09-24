@@ -249,3 +249,44 @@ def test_non_utf8_header_bytes_survive_as_surrogates(tmp_path: Path):
     assert len(entries) == 1
     assert entries[0].name.raw.encode("utf-8", "surrogateescape") == raw
     assert entries[0].header_len == len(raw) + 9
+
+
+# ------------------------------------------------ F6: BOM and blank lines ---
+
+def test_a_utf8_bom_at_offset_0_does_not_lose_the_first_entry(tmp_path: Path):
+    """F6: a file saved by an editor with a BOM used to scan to 0 entries."""
+    body = synthetic_body(FDI_A, KEY_CTE)
+    header = b"### " + entry_name(FDI_A, KEY_CTE).encode() + b".json"
+    path = tmp_path / "d.txt"
+    path.write_bytes(b"\xef\xbb\xbf" + header + b"\r\n" + body + b"\r\n")
+    entries, stats = scan_daily_file(path)
+    assert stats == ScanStats(1, 0)
+    e = entries[0]
+    assert e.header_offset == 3
+    assert e.header_len == len(header)
+    assert _read_at(path, e.header_offset, e.header_len) == header
+    assert _read_at(path, e.body_offset, e.body_len) == body
+
+
+@pytest.mark.parametrize("gap", [b"\n", b"\r\n", b"  \t\r\n", b"\r\n\r\n \n"])
+def test_blank_lines_between_header_and_body_are_skipped(tmp_path: Path, gap: bytes):
+    """F6: a blank line after the header used to produce an empty body plus
+    an orphan; the real body must be found."""
+    body = synthetic_body(FDI_A, KEY_CTE)
+    head = b"### " + entry_name(FDI_A, KEY_CTE).encode() + b".json\r\n"
+    path = tmp_path / "d.txt"
+    path.write_bytes(head + gap + body + b"\r\n")
+    entries, stats = scan_daily_file(path)
+    assert stats == ScanStats(1, 0)
+    assert entries[0].body_offset == len(head) + len(gap)
+    assert _read_at(path, entries[0].body_offset, entries[0].body_len) == body
+
+
+def test_whitespace_lines_are_neither_bodies_nor_orphans(tmp_path: Path):
+    body = synthetic_body(FDI_A, KEY_CTE)
+    head = b"### " + entry_name(FDI_A, KEY_CTE).encode() + b".json\n"
+    path = tmp_path / "d.txt"
+    path.write_bytes(b"\n  \n" + head + body + b"\n\t\n\n")
+    entries, stats = scan_daily_file(path)
+    assert stats == ScanStats(1, 0)
+    assert _read_at(path, entries[0].body_offset, entries[0].body_len) == body

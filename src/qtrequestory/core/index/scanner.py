@@ -22,6 +22,10 @@ HEADER_RE = re.compile(rb"^### (?P<name>.+?)\.json[ \t]*\r?\n?$")
 REQDATE_RE = re.compile(rb'"requestDate":"([^"]*)"')
 
 CANCEL_EVERY = 50
+BOM = b"\xef\xbb\xbf"
+#: What counts as a blank line (F6): skipped, neither a body nor an orphan.
+#: ``read_body`` accepts exactly these bytes between a header and its body.
+BLANKS = b" \t\r\n"
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,10 @@ def scan_daily_file(
 ) -> tuple[list[ScannedEntry], ScanStats]:
     """Return every (header, body) pair in ``path`` plus orphan counts.
 
+    A UTF-8 BOM at offset 0 is skipped (the first header then starts at 3)
+    and blank lines (only spaces, tabs, CR, LF) are ignored everywhere, so a
+    blank line between a header and its body does not separate them.
+
     Orphan rules: a header immediately followed by another header is an orphan
     header; a non-header line with no pending header is an orphan body. Neither
     produces an entry, both bump ``n_orphans``. With ``parse_json=False`` only
@@ -124,6 +132,12 @@ def scan_daily_file(
             line = f.readline()
             if not line:
                 break
+            if pos == 0 and line.startswith(BOM):
+                # F6: an editor's BOM. The header starts after it, and the
+                # stored offsets say so: read_body seeks to 3, byte-exact.
+                pos, line = len(BOM), line[len(BOM):]
+            if not line.strip(BLANKS):
+                continue  # F6: a blank line is neither a body nor an orphan
             m = HEADER_RE.match(line)
             if m:
                 if pending is not None:

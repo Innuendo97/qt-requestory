@@ -516,3 +516,28 @@ def test_a_crlf_body_shrunk_by_one_byte_is_stale(tmp_path):
     path.write_bytes(head + body[:-1] + b"\r\n")
     with pytest.raises(IndexStale):
         read_body(hit)
+
+
+# ------------------------------------- F6: blank gap, BOM, still byte-exact ---
+
+@pytest.mark.parametrize("gap", [b"\r\n", b" \t\r\n\n"])
+def test_read_body_accepts_only_blanks_between_header_and_body(tmp_path, gap):
+    name = entry_name(FDI_A, KEY_CTE)
+    head = f"### {name}.json\r\n".encode()
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    conn, root, path = _index_one_file(tmp_path, head + gap + body + b"\r\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert read_body(hit) == body
+    # same length, but the gap now holds data: stale, never a guess
+    path.write_bytes(head + b"x" * (len(gap) - 1) + b"\n" + body + b"\r\n")
+    with pytest.raises(IndexStale):
+        read_body(hit)
+
+
+def test_read_body_after_a_bom_is_byte_exact(tmp_path):
+    name = entry_name(FDI_A, KEY_CTE)
+    body = synthetic_body(FDI_A, KEY_CTE, noise=False)
+    conn, root, _ = _index_one_file(tmp_path, b"\xef\xbb\xbf### " + name.encode() + b".json\n" + body + b"\n")
+    hit = search(conn, root, SearchQuery("coll", fdi_prefix=FDI_A))[0]
+    assert hit.header_offset == 3
+    assert read_body(hit) == body

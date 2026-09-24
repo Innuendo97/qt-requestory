@@ -189,7 +189,8 @@ def read_body(hit: SearchHit) -> bytes:
 
     Raises ``IndexStale`` if the file is gone, if the header line at
     ``header_offset`` is not ``### <name>.json`` (trailing blanks allowed, as
-    the scanner allows them) or does not end right where the body starts, if
+    the scanner allows them), if anything but blank lines (spaces, tabs, CR, LF)
+    sits between the end of the header line and the body, if
     the body slice spans a line break, or if the body does not END where
     ``body_len`` says it does (file changed since indexing).
 
@@ -213,7 +214,12 @@ def read_body(hit: SearchHit) -> bytes:
             f.seek(hit.header_offset)
             # Bounded: a stale offset may land inside a multi-MB body line.
             header = f.readline(max(hit.header_len, len(expected)) + 8)
-            if header.rstrip(_BLANKS) != expected or f.tell() != hit.body_offset:
+            if header.rstrip(_BLANKS) != expected or f.tell() > hit.body_offset:
+                raise IndexStale(hit.env, hit.day)
+            # The scanner skips blank lines between header and body (F6):
+            # only [ \t\r\n] may sit there, anything else means the file moved.
+            gap = f.read(hit.body_offset - f.tell())
+            if gap.strip(_BLANKS):
                 raise IndexStale(hit.env, hit.day)
             chunk = f.read(hit.body_len + 1)  # one byte past the body
     except FileNotFoundError:
