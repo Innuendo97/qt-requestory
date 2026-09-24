@@ -116,8 +116,14 @@ class SyncPresenter(QObject):
                 log.debug("coverage_days(%s) non disponibile: %s", env, exc)
                 self.coverage[env] = None
 
-    def missing(self) -> dict[str, tuple]:
-        return {env: (cov.missing if cov is not None else ())
+    def pending(self) -> dict[str, tuple]:
+        """env -> days with calls still on the server but not local."""
+        return {env: (cov.pending if cov is not None else ())
+                for env, cov in self.coverage.items()}
+
+    def lost(self) -> dict[str, tuple]:
+        """env -> days the server purged before they were downloaded."""
+        return {env: (cov.lost if cov is not None else ())
                 for env, cov in self.coverage.items()}
 
     # -- verdicts ----------------------------------------------------------
@@ -134,7 +140,8 @@ class SyncPresenter(QObject):
             queued=env in self.queued,
             reachable=self.reachable.get(env),
             failed=failed,
-            missing=len(cov.missing) if cov is not None else 0,
+            pending=len(cov.pending) if cov is not None else 0,
+            lost=len(cov.lost) if cov is not None else 0,
         )
 
     def summary(self) -> str:
@@ -153,7 +160,8 @@ class SyncPresenter(QObject):
 
         The tone is the badge's tone — the same function decides both — and
         the text is what fits in a chip: "in corso", "in attesa",
-        "non raggiungibile", or when the mirror was last filled.
+        "non raggiungibile", the badge's "2 da scaricare" / "1 giorno perso",
+        or when the mirror was last filled.
         """
         items = []
         for name in self.environments():
@@ -164,6 +172,8 @@ class SyncPresenter(QObject):
                 text = strings.SYNC_CHIP_QUEUED
             elif badge.kind == sb.UNREACHABLE:
                 text = strings.SYNC_WHEN_UNREACHABLE
+            elif badge.kind in (sb.PENDING, sb.LOST):
+                text = badge.text
             else:
                 text = fmt.format_when(self._services.sync.env_status(name).last_success)
             items.append((name, badge.tone, text))

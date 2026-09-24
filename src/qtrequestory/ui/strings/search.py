@@ -58,12 +58,21 @@ SEARCH_COVERAGE_TOOLTIP = (
 )
 #: {env}: nothing is indexed yet for that environment.
 SEARCH_COVERAGE_NONE = "nessun log locale per {env}"
-#: The coverage warning; {env} = environment.
-SEARCH_GAP_ONE = "manca 1 giorno in {env}"
-#: {n} = missing weekdays, {env} = environment.
-SEARCH_GAP_MANY = "mancano {n} giorni in {env}"
-#: Tooltip of the coverage warning; {days} = the missing days, dd/MM, comma separated.
-SEARCH_GAP_TOOLTIP = "Giorni feriali senza file locale: {days}"
+#: The coverage warning: days with calls that are not local. {env} = environment.
+SEARCH_GAP_PENDING_ONE = "1 giorno da scaricare in {env}"
+#: {n} = days still on the server (2 or more), {env} = environment.
+SEARCH_GAP_PENDING_MANY = "{n} giorni da scaricare in {env}"
+SEARCH_GAP_LOST_ONE_ALONE = "1 giorno non recuperabile in {env}"
+#: {n} = days purged before they were downloaded (2 or more), {env} = environment.
+SEARCH_GAP_LOST_MANY_ALONE = "{n} giorni non recuperabili in {env}"
+#: After a SEARCH_GAP_PENDING_* on the same line.
+SEARCH_GAP_LOST_ONE = "1 giorno non recuperabile"
+#: {n} = days purged before they were downloaded (2 or more).
+SEARCH_GAP_LOST_MANY = "{n} giorni non recuperabili"
+SEARCH_GAP_SEP = " · "
+#: Tooltip parts; {days} = the days, dd/MM, comma separated.
+SEARCH_GAP_TOOLTIP_PENDING = "Ancora sul server, da scaricare: {days}"
+SEARCH_GAP_TOOLTIP_LOST = "Ripuliti dal server prima di essere scaricati: {days}"
 SEARCH_GAP_BTN = "Vai a Sincronizzazione"
 SEARCH_SUMMARY_TAIL = "ordinate dalla più recente"
 #: {column} = the header label of the sort column.

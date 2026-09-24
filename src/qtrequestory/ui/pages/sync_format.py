@@ -20,7 +20,7 @@ but produce str"*); nothing else from ``core`` is touched here.
 comma, and rounded the way DESIGN-ui shows them ("41 MB", "1,5 GB",
 "8,2 MB/s", "circa 2 min rimanenti").
 
-**The page's sentences.** The auto-sync line, the missing-days banner, the
+**The page's sentences.** The auto-sync line, the pending/lost banners, the
 final message of a run and the registro header: small rules ("completata"
 only when every environment is fine) that deserve tests without a widget.
 """
@@ -43,7 +43,8 @@ from qtrequestory.ui.pages.schedule_text import schedule_sentence
 __all__ = [
     "RunOutcome", "StripTexts", "auto_title", "format_days", "format_eta", "format_rate",
     "format_size", "format_task_status", "format_when", "last_log_time", "log_header",
-    "log_line", "message", "missing_days_text", "run_outcome", "status_text", "strip_texts",
+    "log_line", "lost_days_text", "message", "pending_days_text", "run_outcome", "status_text",
+    "strip_texts",
 ]
 
 KB = 1024
@@ -290,31 +291,36 @@ def _rate_text(snap: ProgressSnapshot) -> str:
 
 # ------------------------------------------------------- page sentences ---
 
-#: Dates listed by name in the missing-days banner before "e altri N".
+#: Dates listed by name in a coverage banner before "e altri N".
 MISSING_LISTED = 5
 
 
-def missing_days_text(missing: Mapping[str, Sequence[date]]) -> str:
-    """The warn banner above the cards, or "" when nothing is missing.
+def pending_days_text(pending: Mapping[str, Sequence[date]]) -> str:
+    """The warn banner: days with calls still on the server but not local.
 
-    One sentence per environment with gaps, naming the dates, then why it
-    matters: the server keeps about one day, so they cannot be fetched again.
+    One sentence per environment, naming the dates; "" when there is none.
+    The next sync downloads them (the banner carries the button).
     """
+    return _days_text(pending, strings.SYNC_PENDING_ONE, strings.SYNC_PENDING_MANY)
+
+
+def lost_days_text(lost: Mapping[str, Sequence[date]]) -> str:
+    """The bad banner: days the server purged before they were downloaded."""
+    return _days_text(lost, strings.SYNC_LOST_ONE, strings.SYNC_LOST_MANY)
+
+
+def _days_text(by_env: Mapping[str, Sequence[date]], one: str, many: str) -> str:
     lines = []
-    for env, days in missing.items():
+    for env, days in by_env.items():
         if not days:
             continue
         listed = [d.strftime("%d/%m/%Y") for d in sorted(days)[:MISSING_LISTED]]
         dates = strings.SYNC_MISSING_DATES_SEP.join(listed)
         if len(days) > MISSING_LISTED:
             dates += strings.SYNC_MISSING_MORE.format(n=len(days) - MISSING_LISTED)
-        if len(days) == 1:
-            lines.append(strings.SYNC_MISSING_ONE.format(env=env, dates=dates))
-        else:
-            lines.append(strings.SYNC_MISSING_MANY.format(env=env, n=len(days), dates=dates))
-    if not lines:
-        return ""
-    return " ".join([*lines, strings.SYNC_MISSING_TAIL])
+        lines.append(one.format(env=env, dates=dates) if len(days) == 1
+                     else many.format(env=env, n=len(days), dates=dates))
+    return " ".join(lines)
 
 
 @dataclass(frozen=True)

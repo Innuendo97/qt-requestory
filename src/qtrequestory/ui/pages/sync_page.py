@@ -1,7 +1,8 @@
 """The Sincronizzazione page: auto-sync card, env cards, coverage, registro.
 
 The page answers two questions before anything else — *is the automatic sync
-on?* and *is any day missing?* — then shows one card per environment and,
+on?* and *is any day with calls missing* (still on the server, or already
+purged)? — then shows one card per environment and,
 collapsed at the bottom, the registro. It keeps almost no state of its own:
 
 * :class:`~.sync_auto_card.AutoSyncCard` owns the scheduled task (read in a
@@ -26,11 +27,9 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
-    QHBoxLayout,
     QLabel,
     QScrollArea,
     QVBoxLayout,
@@ -49,10 +48,11 @@ from qtrequestory.ui.contracts import (
 )
 from qtrequestory.ui.pages import progress_model as pm
 from qtrequestory.ui.pages import sync_format as fmt
-from qtrequestory.ui.pages import coverage_strip as cs
 from qtrequestory.ui.pages.coverage_strip import CoverageLegend
 from qtrequestory.ui.pages.env_card import CARD_MIN_WIDTH, EnvCard
+from qtrequestory.ui.pages.sync_cards import EnvCardsGrid
 from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
+from qtrequestory.ui.pages.sync_banners import CoverageBanners
 from qtrequestory.ui.pages.sync_auto_card import AutoSyncCard
 from qtrequestory.ui.pages.sync_job import run_logged
 from qtrequestory.ui.pages.sync_log_panel import SyncLogPanel
@@ -86,8 +86,6 @@ class SyncPage(QWidget):
         self._services = services
         self._runner = runner
         self._window = window
-        self._cards: list[EnvCard] = []
-        self._columns = 2
         self.presenter = SyncPresenter(services, self)
         self.sync_job: Job | None = None
         self.probe = ReachabilityProbe(services, runner, clock, self)
@@ -144,18 +142,11 @@ class SyncPage(QWidget):
         theme.set_role(self.lock_label, "muted")
         self.lock_label.hide()
 
-        self.missing_banner = QFrame()
-        theme.set_role(self.missing_banner, "syncBanner")
-        banner = QHBoxLayout(self.missing_banner)
-        banner.setContentsMargins(theme.SPACE[2], theme.SPACE[1], theme.SPACE[2], theme.SPACE[1])
-        self.missing_label = QLabel()
-        self.missing_label.setWordWrap(True)
-        banner.addWidget(self.missing_label)
-        self.missing_banner.hide()
+        self.banners = CoverageBanners()
+        self.banners.hide()
+        self.banners.sync_requested.connect(lambda envs: self.start_sync(envs))
 
-        self.cards_grid = QGridLayout()
-        self.cards_grid.setHorizontalSpacing(theme.SPACE[2])
-        self.cards_grid.setVerticalSpacing(theme.SPACE[2])
+        self.cards_grid = EnvCardsGrid()
         self.legend = CoverageLegend()
         self.run_label = QLabel()
         self.run_label.setWordWrap(True)
@@ -163,7 +154,7 @@ class SyncPage(QWidget):
         self.log_panel = SyncLogPanel()
 
         for widget in (title, self.mirror_banner, self.auto_card, self.lock_label,
-                       self.missing_banner):
+                       self.banners):
             layout.addWidget(widget)
         layout.addLayout(self.cards_grid)
         layout.addWidget(self.legend)
@@ -179,48 +170,31 @@ class SyncPage(QWidget):
 
     def rebuild_cards(self) -> None:
         """One card per *enabled* environment."""
-        for card in self._cards:
-            self.cards_grid.removeWidget(card)
-            card.deleteLater()
-        self._cards = [EnvCard(env.name, env.url, self)
-                       for env in self._services.config.load().enabled_environments()]
-        self._place_cards()
+        self.cards_grid.rebuild(self._services.config.load().enabled_environments(), self)
         self.refresh_cards()
 
-    def _place_cards(self) -> None:
-        for card in self._cards:
-            self.cards_grid.removeWidget(card)
-        for i, card in enumerate(self._cards):
-            self.cards_grid.addWidget(card, i // self._columns, i % self._columns,
-                                      Qt.AlignmentFlag.AlignTop)
-        for column in range(2):
-            self.cards_grid.setColumnStretch(column, 1 if column < self._columns else 0)
-
     def columns(self) -> int:
-        return self._columns
+        return self.cards_grid.columns()
 
     def refresh_cards(self) -> None:
-        """Rows, calendar, badge and the missing-days banner, from the disk."""
+        """Rows, calendar, badge and the pending/lost banners, from the disk."""
         self.presenter.refresh_coverage()
-        for card in self._cards:
+        for card in self.cards():
             card.set_status(self._services.sync.env_status(card.env_name),
                             self.presenter.coverage.get(card.env_name))
         self._refresh_badges()
-        self.legend.set_before_visible(any(
-            kind == cs.BEFORE for card in self._cards for _day, kind in card.strip.kinds()))
-        text = fmt.missing_days_text(self.presenter.missing())
-        self.missing_label.setText(text)
-        self.missing_banner.setVisible(bool(text))
+        self.legend.set_kinds({kind for card in self.cards() for _day, kind in card.strip.kinds()})
+        self.banners.set_days(self.presenter.pending(), self.presenter.lost())
 
     def _refresh_badges(self) -> None:
-        for card in self._cards:
+        for card in self.cards():
             card.set_badge(self.presenter.badge(card.env_name))
 
     def cards(self) -> list[EnvCard]:
-        return list(self._cards)
+        return self.cards_grid.cards()
 
     def card(self, env_name: str) -> EnvCard | None:
-        return next((c for c in self._cards if c.env_name == env_name), None)
+        return self.cards_grid.card(env_name)
 
     def on_config_changed(self, cfg: Config | None = None) -> None:
         """Impostazioni saved: the environments — or the schedule — may have changed."""
@@ -361,7 +335,7 @@ class SyncPage(QWidget):
 
     def _on_finished(self) -> None:
         self.presenter.end_run()
-        for card in self._cards:
+        for card in self.cards():
             card.set_progress(None)
         self.auto_card.set_running(False)
         self.refresh_lock()
@@ -410,6 +384,7 @@ class SyncPage(QWidget):
         held = not ours and self._services.sync.lock_holder() is not None
         self.lock_label.setVisible(held)
         self.auto_card.set_sync_enabled(not held and not ours)
+        self.banners.set_sync_enabled(not held and not ours)
 
     # -- Qt ----------------------------------------------------------------
 
@@ -425,10 +400,7 @@ class SyncPage(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)
-        columns = 2 if self.width() >= self.TWO_COLUMNS_MIN_WIDTH else 1
-        if columns != self._columns:
-            self._columns = columns
-            self._place_cards()
+        self.cards_grid.set_columns(2 if self.width() >= self.TWO_COLUMNS_MIN_WIDTH else 1)
 
     # -- talking to the window ---------------------------------------------
 

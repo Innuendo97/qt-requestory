@@ -62,18 +62,30 @@ SYNC_MENU_ALL = "Tutti gli ambienti"
 SYNC_MENU_ONLY = "Solo {env}"
 SYNC_MENU_DRY_RUN = "Anteprima (senza scaricare)"
 
-# -- missing-days banner -----------------------------------------------------
+# -- coverage banners (days with calls that are not in the archive) ---------
+#
+# The server keeps its daily files until a manual purge: a day that is not
+# local is either still there (pending) or was purged first (lost).
 
 #: {env} = environment, {dates} = one dd/MM/yyyy.
-SYNC_MISSING_ONE = "{env}: manca il log del {dates}."
-#: {env} = environment, {n} = how many weekdays, {dates} = dd/MM/yyyy list.
-SYNC_MISSING_MANY = "{env}: mancano i log di {n} giorni feriali ({dates})."
+SYNC_PENDING_ONE = "{env}: 1 giorno ({dates}) è ancora sul server ma non è stato scaricato."
+#: {env} = environment, {n} = days (2 or more), {dates} = dd/MM/yyyy list.
+SYNC_PENDING_MANY = (
+    "{env}: {n} giorni ({dates}) sono ancora sul server ma non sono stati scaricati."
+)
+#: {env} = environment, {dates} = one dd/MM/yyyy.
+SYNC_LOST_ONE = (
+    "{env}: 1 giorno ({dates}) è stato ripulito dal server prima di essere scaricato: "
+    "non recuperabile."
+)
+#: {env} = environment, {n} = days (2 or more), {dates} = dd/MM/yyyy list.
+SYNC_LOST_MANY = (
+    "{env}: {n} giorni ({dates}) sono stati ripuliti dal server prima di essere scaricati: "
+    "non recuperabili."
+)
 #: {n} = dates not listed after the first few.
 SYNC_MISSING_MORE = " e altri {n}"
 SYNC_MISSING_DATES_SEP = ", "
-SYNC_MISSING_TAIL = (
-    "Il server conserva circa un giorno di log, quindi non sono più recuperabili da lì."
-)
 
 # -- env cards ---------------------------------------------------------------
 
@@ -81,9 +93,11 @@ SYNC_BADGE_FRESH = "aggiornato"
 SYNC_BADGE_STALE = "da aggiornare"
 SYNC_BADGE_QUEUED = "in attesa"
 SYNC_BADGE_RUNNING = "in corso"
-SYNC_BADGE_MISSING_ONE = "1 giorno mancante"
-#: {n} = missing weekdays (2 or more).
-SYNC_BADGE_MISSING = "{n} giorni mancanti"
+#: {n} = days still on the server that are not local (1 or more).
+SYNC_BADGE_PENDING = "{n} da scaricare"
+SYNC_BADGE_LOST_ONE = "1 giorno perso"
+#: {n} = days purged by the server before they were downloaded (2 or more).
+SYNC_BADGE_LOST = "{n} giorni persi"
 SYNC_BADGE_UNREACHABLE = "non raggiungibile"
 SYNC_BADGE_ERRORS = "errori"
 SYNC_BADGE_NEVER = "mai sincronizzato"
@@ -107,15 +121,21 @@ SYNC_CARD_INDEX_PENDING = "{n} file da indicizzare"
 
 # -- coverage calendar -------------------------------------------------------
 
-#: {day} = dd/MM/yyyy, {what} = one of the four below.
+#: {day} = dd/MM/yyyy, {what} = one of the SYNC_COVERAGE_* below.
 SYNC_COVERAGE_TIP = "{day}: {what}"
 SYNC_COVERAGE_PRESENT = "presente"
-SYNC_COVERAGE_MISSING = "mancante"
+SYNC_COVERAGE_EMPTY = "nessuna chiamata"
+SYNC_COVERAGE_PENDING = "sul server: da scaricare"
+SYNC_COVERAGE_LOST = "ripulito dal server prima di essere scaricato"
+SYNC_COVERAGE_UNKNOWN = "non verificabile"
 SYNC_COVERAGE_WEEKEND = "weekend"
 SYNC_COVERAGE_TODAY = "oggi (arriva domani)"
 SYNC_COVERAGE_BEFORE = "prima dell'inizio dell'archivio"
 SYNC_LEGEND_PRESENT = "log presente"
-SYNC_LEGEND_MISSING = "giorno feriale mancante"
+SYNC_LEGEND_EMPTY = "nessuna chiamata"
+SYNC_LEGEND_PENDING = "da scaricare"
+SYNC_LEGEND_LOST = "ripulito dal server"
+SYNC_LEGEND_UNKNOWN = "non verificabile"
 SYNC_LEGEND_WEEKEND = "weekend"
 SYNC_LEGEND_TODAY = "oggi (arriva domani)"
 SYNC_LEGEND_BEFORE = "prima dell'inizio dell'archivio"

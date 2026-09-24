@@ -59,6 +59,7 @@ class AutomationPage(WizardStepPage):
         self.legacy_note.setVisible(False)
         self.start_sync_check = QCheckBox(strings.WIZARD_P3_START_SYNC)
         self.start_sync_check.setChecked(True)
+        self.start_sync_note = muted(strings.WIZARD_P3_FIRST_SYNC_NOTE)
 
         self.body.addWidget(self.autosync_check)
         self.body.addWidget(self.autosync_checking)
@@ -68,6 +69,7 @@ class AutomationPage(WizardStepPage):
         self.body.addWidget(self.legacy_note)
         self.body.addSpacing(theme.SPACE[2])
         self.body.addWidget(self.start_sync_check)
+        self.body.addWidget(self.start_sync_note)
         self.body.addStretch(1)
 
     def initializePage(self) -> None:

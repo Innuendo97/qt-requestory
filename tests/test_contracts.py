@@ -316,6 +316,18 @@ class TestEnvStatus:
         assert (svil.last_success, svil.never_synced, svil.fresh) == (None, True, False)
         assert (svil.n_local_files, svil.latest_day, svil.index_pending) == (1, D16, 1)
 
+    def test_a_0_byte_day_is_no_traffic_not_archive_content(self, mirror, tmp_path: Path,
+                                                            fake_clock):
+        """``n_local_files``/``latest_day`` count the days with calls only."""
+        from qtrequestory.core.daily import local_path
+
+        cfg = dataclasses.replace(_config(tmp_path), mirror_root=mirror.root)
+        quiet = local_path(mirror.root, "coll", date(2026, 9, 19))
+        quiet.parent.mkdir(parents=True, exist_ok=True)
+        quiet.write_bytes(b"")
+        coll = facade.SyncService(lambda: cfg, clock=fake_clock).env_status("coll")
+        assert (coll.n_local_files, coll.latest_day) == (3, D18)
+
     def test_index_pending_drops_after_indexing(self, mirror, tmp_path: Path, fake_clock):
         cfg = dataclasses.replace(_config(tmp_path), mirror_root=mirror.root)
         conn = open_index(cfg.index_path)

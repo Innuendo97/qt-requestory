@@ -4,8 +4,8 @@ Two pages describe the same four settings: the Impostazioni form shows what the
 user is about to save, the Sincronizzazione page shows what is registered. If
 each built its own wording they would drift apart the first time one of them
 changed — and a status line that describes a schedule the task does not have is
-worse than no status line at all, because the server keeps only about a day of
-logs and the user trusts what they read here.
+worse than no status line at all: the user trusts what they read here, and
+days the task never fetched are lost at the server's next manual purge.
 
 Pure Python: no Qt, no core imports beyond the ``ScheduleSettings`` dataclass,
 so the arithmetic (when does the retry window actually end?) is unit-tested

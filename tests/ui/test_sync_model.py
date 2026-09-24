@@ -406,8 +406,8 @@ def _status(**kw) -> EnvStatus:
         (dict(status=None), sb.NEVER, "neutral", "mai sincronizzato"),
         (dict(status=_status(fresh=True), running=True), sb.RUNNING, "neutral", "in corso"),
         (dict(status=_status(fresh=True), queued=True), sb.QUEUED, "neutral", "in attesa"),
-        (dict(status=_status(fresh=True), missing=3), sb.MISSING, "warn", "3 giorni mancanti"),
-        (dict(status=_status(fresh=True), missing=1), sb.MISSING, "warn", "1 giorno mancante"),
+        (dict(status=_status(fresh=True), pending=3), sb.PENDING, "warn", "3 da scaricare"),
+        (dict(status=_status(fresh=True), lost=1), sb.LOST, "bad", "1 giorno perso"),
         (dict(status=_status(fresh=True), reachable=False), sb.UNREACHABLE, "warn",
          "non raggiungibile"),
         (dict(status=_status(fresh=True), failed=2), sb.ERRORS, "warn", "errori"),
@@ -421,15 +421,15 @@ def test_every_badge_has_one_readable_text_and_one_tone(kw, kind, tone, text):
 def test_what_is_happening_beats_what_happened():
     assert sb.badge_for(_status(), running=True, reachable=False, failed=2).kind == sb.RUNNING
     assert sb.badge_for(_status(), queued=True, reachable=False).kind == sb.QUEUED
-    assert sb.badge_for(_status(), reachable=False, failed=2, missing=1).kind == sb.UNREACHABLE
-    assert sb.badge_for(_status(), failed=2, missing=1).kind == sb.ERRORS
-    assert sb.badge_for(_status(fresh=True), missing=1).kind == sb.MISSING, (
-        "a lost day matters more than a fresh mirror")
+    assert sb.badge_for(_status(), reachable=False, failed=2, pending=1).kind == sb.UNREACHABLE
+    assert sb.badge_for(_status(), failed=2, pending=1).kind == sb.ERRORS
+    assert sb.badge_for(_status(fresh=True), pending=1).kind == sb.PENDING, (
+        "a day still to download matters more than a fresh mirror")
 
 
-def test_no_badge_is_ever_red():
+def test_no_badge_but_a_lost_day_is_ever_red():
     """An unreachable endpoint is the normal state outside the VPN."""
-    for kw in (dict(reachable=False), dict(failed=5), dict(missing=9), {}):
+    for kw in (dict(reachable=False), dict(failed=5), dict(pending=9), {}):
         assert sb.badge_for(_status(), **kw).tone in ("ok", "warn", "neutral")
 
 
@@ -440,13 +440,13 @@ from qtrequestory.ui.pages import coverage_strip as cs  # noqa: E402
 TODAY = date(2026, 9, 23)  # a Wednesday
 
 
-def test_coverage_days_are_present_missing_weekend_today_or_before_the_archive():
+def test_coverage_days_are_present_pending_weekend_today_or_before_the_archive():
     cov = CoverageDays(present=frozenset({date(2026, 9, 21), date(2026, 9, 19)}),
                        pending=(date(2026, 9, 22),), first_local=date(2026, 9, 18))
     kinds = cs.day_kinds(cov, TODAY, days=30)
     assert len(kinds) == 30
     assert kinds[-1] == (TODAY, cs.TODAY)
-    assert dict(kinds)[date(2026, 9, 22)] == cs.MISSING
+    assert dict(kinds)[date(2026, 9, 22)] == cs.PENDING
     assert dict(kinds)[date(2026, 9, 21)] == cs.PRESENT
     assert dict(kinds)[date(2026, 9, 20)] == cs.WEEKEND
     assert dict(kinds)[date(2026, 9, 19)] == cs.PRESENT, "a weekend file that exists is present"
@@ -455,21 +455,10 @@ def test_coverage_days_are_present_missing_weekend_today_or_before_the_archive()
 
 
 def test_each_square_explains_itself():
-    assert cs.tooltip(date(2026, 9, 22), cs.MISSING) == "22/09/2026: mancante"
+    assert cs.tooltip(date(2026, 9, 22), cs.PENDING) == "22/09/2026: sul server: da scaricare"
     assert cs.tooltip(date(2026, 9, 21), cs.PRESENT) == "21/09/2026: presente"
     assert cs.tooltip(date(2026, 9, 20), cs.WEEKEND) == "20/09/2026: weekend"
     assert cs.tooltip(TODAY, cs.TODAY) == "23/09/2026: oggi (arriva domani)"
-
-
-# ------------------------------------------------------ missing-days banner ---
-
-def test_the_missing_days_banner_names_the_env_the_dates_and_the_server_limit():
-    text = fmt.missing_days_text({"svil": (date(2026, 9, 17),), "coll": ()})
-    assert "svil" in text and "17/09/2026" in text and "coll" not in text
-    assert "circa un giorno" in text
-    many = fmt.missing_days_text({"svil": tuple(date(2026, 9, d) for d in (1, 2, 3, 4, 7, 8, 9))})
-    assert "01/09/2026" in many and "7" in many
-    assert fmt.missing_days_text({"svil": ()}) == ""
 
 
 # ------------------------------------------------------------ run outcome ---
