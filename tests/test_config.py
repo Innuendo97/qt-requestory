@@ -652,3 +652,73 @@ def test_parse_hhmm_accepts_exactly_what_validate_accepts():
     assert cfgmod.parse_hhmm("7:05") == time(7, 5)
     assert cfgmod.parse_hhmm("24:00") is None
     assert cfgmod.parse_hhmm("nonsense") is None
+
+
+# ------------------------------------------------------------ folder_envs ---
+
+
+def test_folder_envs_defaults_to_empty_and_roundtrips(tmp_path: Path):
+    path = tmp_path / "config.json"
+    cfg = _sample_config(tmp_path)
+    assert cfg.folder_envs == {}
+    assert default_config().folder_envs == {}
+    cfg.folder_envs = {"vecchi/svil": "svil", "misti": "__ignora__"}
+    save_config(cfg, path)
+    assert json.loads(path.read_text(encoding="utf-8"))["folder_envs"] == cfg.folder_envs
+    assert load_config(path).folder_envs == cfg.folder_envs
+
+
+def test_a_config_without_folder_envs_still_loads(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_config(_sample_config(tmp_path), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["folder_envs"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_config(path).folder_envs == {}
+
+
+@pytest.mark.parametrize("value", [["a"], "x", 5, {"ok": "svil", "bad": 3, "": "coll"}])
+def test_a_malformed_folder_envs_keeps_only_the_valid_pairs(tmp_path: Path, value, caplog):
+    path = tmp_path / "config.json"
+    save_config(_sample_config(tmp_path), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["folder_envs"] = value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        loaded = load_config(path)
+    assert loaded.folder_envs == ({"ok": "svil"} if isinstance(value, dict) else {})
+    assert "folder_envs" in caplog.text
+
+
+# ------------------------------------------------ F7: output vs mirror root ---
+
+
+@pytest.mark.parametrize("output", ["mirror", "mirror/out", "mirror/coll/2026"])
+def test_validate_rejects_an_output_dir_on_or_inside_the_mirror(tmp_path: Path, output: str):
+    """F7: housekeeping deletes old files in output_dir; there it would delete logs."""
+    cfg = _sample_config(tmp_path)
+    cfg.output_dir = tmp_path / output
+    errors = validate(cfg)
+    assert len(errors) == 1 and "cartella dei log" in errors[0]
+
+
+def test_validate_rejects_a_mirror_inside_the_output_dir(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.output_dir = tmp_path
+    errors = validate(cfg)
+    assert len(errors) == 1 and "cartella dei log" in errors[0]
+
+
+def test_validate_accepts_siblings_with_a_common_prefix(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.output_dir = tmp_path / "mirror-out"  # a prefix of the name is not nesting
+    assert validate(cfg) == []
+
+
+def test_validate_compares_paths_case_insensitively_on_windows(tmp_path: Path):
+    import os
+    if os.name != "nt":
+        pytest.skip("case-insensitive file system")
+    cfg = _sample_config(tmp_path)
+    cfg.output_dir = Path(str(tmp_path / "MIRROR" / "out"))
+    assert len(validate(cfg)) == 1

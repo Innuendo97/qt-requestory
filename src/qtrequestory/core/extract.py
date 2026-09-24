@@ -8,10 +8,15 @@ header, no comments — the user pastes this straight into Postman.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from datetime import date
 from pathlib import Path
+
+from qtrequestory.core.fsutil import paths_overlap
+
+log = logging.getLogger(__name__)
 
 ENCODING = "utf-8"  # never "utf-8-sig": a BOM would break the "starts with {" contract
 NO_FDI = "nofdi"
@@ -43,14 +48,22 @@ def output_name(day: date, fdi: str | None, template_key: str, call_id: str | No
     return stem + ".json"
 
 
-def housekeeping(out_dir: Path, retention_hours: float) -> int:
+def housekeeping(out_dir: Path, retention_hours: float, *, protected: Path | None = None) -> int:
     """Delete regular files in ``out_dir`` older than ``retention_hours`` (mtime).
 
     Only the top level is touched and subdirectories are left alone: the
     output dir defaults to a %TEMP% subfolder, but the user may point it at
     something they also use for other things.
+
+    ``protected`` is the log archive (``mirror_root``). When ``out_dir`` is it,
+    lies inside it or contains it, nothing is deleted at all (F7): ``validate``
+    already refuses that configuration, this is the defence in depth against
+    a hand-edited ``config.json``.
     """
     out_dir = Path(out_dir)
+    if protected is not None and paths_overlap(out_dir, Path(protected)):
+        log.warning("pulizia di %s saltata: coincide con la cartella dei log %s", out_dir, protected)
+        return 0
     if not out_dir.is_dir():
         return 0
     cutoff = time.time() - retention_hours * 3600
@@ -85,16 +98,17 @@ def write_temp_file(
     *,
     retention_hours: float = 24,
     alt_name: str | None = None,
+    protected: Path | None = None,
 ) -> Path:
     """Write ``text`` to ``out_dir/name`` after pruning stale outputs.
 
     If ``name`` already exists and ``alt_name`` is given (the caller passes the
     call-id variant), the alternative name is used so an earlier extraction
     the user may still have open is not overwritten. Without ``alt_name`` the
-    file is simply overwritten.
+    file is simply overwritten. ``protected``: see ``housekeeping``.
     """
     out_dir = Path(out_dir)
-    housekeeping(out_dir, retention_hours)
+    housekeeping(out_dir, retention_hours, protected=protected)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / name
     if alt_name and path.exists():

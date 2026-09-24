@@ -765,6 +765,7 @@ class FakeExtractApi:
         kw = {}
         if self._config_source is not None:
             kw["retention_hours"] = self._config_source().output_retention_hours
+            kw["protected"] = self._config_source().mirror_root
         return extract_mod.write_temp_file(
             self._out_dir, output_name_for(hit), text, alt_name=output_name_with_id(hit), **kw
         )

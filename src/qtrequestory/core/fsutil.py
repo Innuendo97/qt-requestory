@@ -56,3 +56,26 @@ def remove_quietly(path: Path) -> None:
         pass
     except OSError as e:  # pragma: no cover - best effort (e.g. antivirus holding the file)
         log.warning("impossibile rimuovere il file %s: %s", path, e)
+
+
+def _norm(path: Path) -> str:
+    """Absolute, normalised and — on Windows — case-folded, for comparisons."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def is_within(child: Path, parent: Path) -> bool:
+    """True when ``child`` is ``parent`` or anything below it.
+
+    Purely lexical (no symlink resolution) and component-wise: ``C:/logs-old``
+    is NOT inside ``C:/logs``. Case-insensitive on Windows, like its file system.
+    """
+    c, p = _norm(child), _norm(parent)
+    try:
+        return os.path.commonpath([c, p]) == p
+    except ValueError:  # different drives
+        return False
+
+
+def paths_overlap(a: Path, b: Path) -> bool:
+    """``a`` and ``b`` are the same folder or one contains the other."""
+    return is_within(a, b) or is_within(b, a)

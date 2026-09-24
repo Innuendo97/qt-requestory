@@ -497,6 +497,7 @@ class ExtractService:
             text,
             retention_hours=cfg.output_retention_hours,
             alt_name=output_name_with_id(hit),
+            protected=cfg.mirror_root,
         )
 
     def save_as(self, path: Path, text: str) -> None:
