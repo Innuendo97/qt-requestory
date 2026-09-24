@@ -94,7 +94,7 @@ def day_kinds(cov: CoverageDays | None, today: date, days: int = DAYS) -> list[t
 
 
 def tooltip(day: date, kind: str) -> str:
-    """"22/09/2026: mancante"."""
+    """"22/09/2026: sul server: da scaricare"."""
     return strings.SYNC_COVERAGE_TIP.format(day=day.strftime("%d/%m/%Y"), what=_WHAT[kind])
 
 

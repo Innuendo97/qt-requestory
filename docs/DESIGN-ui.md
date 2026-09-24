@@ -39,11 +39,12 @@ user's choice). The width goes to the pages; the sync state sits where it is see
   when" per enabled environment ("coll oggi 11:24", "svil mai", "svil non
   raggiungibile", "coll in corso"), fed by the sync page's `state_changed(list[(env, tone,
   text)])` → `MainWindow.set_sync_state`. The dot uses **the same badge as the env card**
-  (`sync_badge.badge_for`), so chip and card can never disagree, and it is never red:
-  `ok` = aggiornato, `neutral` = mai sincronizzato / in corso / in attesa, `warn` =
-  everything that needs a look (da aggiornare, giorni mancanti, non raggiungibile,
-  errori). After wiring the page hooks the shell calls each page's optional
-  `emit_initial_state()`, so the chip is right from the first frame.
+  (`sync_badge.badge_for`), so chip and card can never disagree: `ok` = aggiornato,
+  `neutral` = mai sincronizzato / in corso / in attesa, `warn` = everything that needs a
+  look (da aggiornare, N da scaricare, non raggiungibile, errori), `bad` = only days
+  purged before they were downloaded ("svil 1 giorno perso"). For pending/lost days the
+  chip text is the badge text. After wiring the page hooks the shell calls each page's
+  optional `emit_initial_state()`, so the chip is right from the first frame.
   A scheduled `--sync` changes the state behind the window's back, so the shell also runs
   every page's optional `refresh_sync_state()` every `SYNC_STATE_REFRESH_MS` (60 s) and
   whenever the window is activated: Sincronizzazione re-reads `env_status` (and the cards'
@@ -67,7 +68,12 @@ user's choice). The width goes to the pages; the sync state sits where it is see
   through duck-typed `getattr(window, …)`.
 - Internal job names never reach the user: `quit_dialog.job_label(name)` maps every
   `workers.JOB_NAMES` entry to Italian ("Aggiornamento indice", "Verifica
-  raggiungibilità"…); a test pins the two lists together.
+  raggiungibilità", "Spostamento degli originali nel Cestino"…); a test pins the two lists
+  together.
+- **Import dialog**: `MainWindow.open_import(sources=None, on_closed=None)` is the one entry
+  point (banners, Impostazioni, wizard). `sources` is a list of folders, `None` standing for
+  the mirror itself. While `mirror_root` is invalid it opens nothing and puts the reason in
+  the status bar (the 1.0.0 gate: nothing is imported into an invalid archive).
 
 ## Keyboard shortcuts
 
@@ -120,7 +126,14 @@ started (file count, reachability, task status).
    Cartella dei log: default `%USERPROFILE%\qtRequestory\logs`, [Sfoglia…]; must be
    writable. If it already contains `<env>/YYYY/MM/*.txt`: "Trovati N file di log già
    presenti: verranno indicizzati, non riscaricati." (`count_local_files(root)` in a
-   worker, "conteggio…" meanwhile). Notepad++: the configured one on a rerun, else
+   worker, "conteggio…" meanwhile). **Import offer** (`ui/wizard_import.py`, job
+   `wizard-archive-report`: `archive.report(folder, canonical_root=folder)`, so the logs
+   already in place do not count): when the folder holds logs outside the structure,
+   [x] "Trovati N log da importare: li importerò alla fine" (on by default); "Hai già dei
+   log altrove? [Scegli cartella…]" queues one more folder ("<path>: N log da importare
+   alla fine", [Non importare]). The count is an estimate on purpose: environments are
+   asked on page 2, so a log with an unknown env still counts; the dialog rescans with the
+   saved configuration before copying. Notepad++: the configured one on a rerun, else
    detected, [Sfoglia…]; not found → "i file verranno aperti con l'applicazione
    predefinita".
 2. **Ambienti** — table [Attivo | Nome | URL] with [Aggiungi] [Rimuovi] [Importa da file…].
@@ -143,14 +156,20 @@ started (file count, reachability, task status).
    worker; the box stays disabled with "verifica in corso…" until it answers). If
    `detect_legacy_task()`: [ ] Rimuovi il vecchio task NginxLogSync — **unticked by
    default** — with "Puoi tenerli entrambi finché non hai verificato che il nuovo funziona:
-   non si danneggiano a vicenda". [x] Avvia la prima sincronizzazione al termine.
+   non si danneggiano a vicenda". [x] Avvia la prima sincronizzazione al termine, with the
+   muted note "La prima sincronizzazione scarica tutto lo storico ancora presente sul
+   server, fino all'ultima pulizia: possono essere diversi GB e richiedere parecchio
+   tempo." (F9).
 
 On [Fine] (`FirstRunWizard.accept`): save the config (a failure keeps the wizard open and
 says why); register the task if ticked (failure → non-blocking info); on a rerun that found
 the task registered and the box now unticked, `unregister()` it (failure → info);
 `remove_legacy_task()` **only** if its box is ticked, and not when our task was asked for
-but could not be registered. Then the main window opens on Ricerca, or starts the sync on
-Sincronizzazione if requested.
+but could not be registered. The result carries `WizardResult.import_sources`; when there
+are any, the import dialog opens **first** and the sync (or the startup tasks) starts only
+when it closes, because the sync would hold the lock the copy needs (`run_gui` on a first
+run, `MainWindow.rerun_wizard` on a rerun). Then the main window opens on Ricerca, or
+starts the sync on Sincronizzazione if requested.
 
 ## Sincronizzazione page
 
@@ -161,14 +180,16 @@ Sincronizzazione if requested.
 | |      Ogni giorno alle 09:00, riprova ogni ora fino alle 18:00, e al login ·     | |
 | |      prossimo avvio: … · ultima esecuzione: … (esito 0)                  [Annulla]* | |
 | +--------------------------------------------------------------------------------+ |
-| svil: manca il log del 21/09/2026. Il server conserva circa un giorno di log, …   | <- warn, only if so
+| Trovati 3 log fuori dalla struttura dell'archivio                       [Importa] | <- warn, only if so
+| svil: 1 giorno (21/09/2026) è ancora sul server ma non è stato scaricato. [Sincronizza ora] <- warn
+| svil: 1 giorno (14/09/2026) è stato ripulito dal server prima di essere scaricato: … <- bad
 | +------------------------------------+ +------------------------------------+      |
-| | coll  [aggiornato]      host.example | | svil  [1 giorno mancante]   host…   |      |
+| | coll  [aggiornato]      host.example | | svil  [1 giorno perso]      host…   |      |
 | | Ultima sincronizzazione  oggi 11:23  | | Ultima sincronizzazione  ieri 18:40 |      |
 | | Archivio locale  42 giorni · 3,9 GB · dal 27/07/2026 | …                       |      |
-| | ■■■■□□■■■■■□□■■■■■□□■■■■■□□■■░        | | ■■■■□□■■■■■□□■■■■■□□■■■■■□□■■■░    |      |
+| | ■■■■▪▪■■■■■▪▪■■■■■▪▪■■■■■▪▪■■░        | | ■■■■▪▪■■■■■▪▪■✖■■■▪▪■■■■■▪▪■!■░    |      |
 | +------------------------------------+ +------------------------------------+      |
-| ■ log presente  ■ giorno feriale mancante  □ weekend  ⬚ oggi (arriva domani)        |
+| ■ log presente  ▪ nessuna chiamata  ! da scaricare  ✖ ripulito dal server  ⬚ oggi   |
 | ▸ Registro dell'ultima esecuzione · 11:24 · completata                              |
 ```
 (* [Annulla] only while a run is in flight.)
@@ -188,19 +209,50 @@ Sincronizzazione if requested.
 - **[Sincronizza ora ▾]** (primary) always = `force=True`; its menu: Tutti gli ambienti ·
   Solo <env> per environment · Anteprima (senza scaricare) (dry run). Ctrl+Shift+S does
   the same as the button.
-- **Missing-days banner** (warn) when any env's `coverage_days(env).missing` is non-empty:
-  names env and dates and says the server keeps about one day.
+- **Import banner** (`pages/import_banner.py`, warn): "Trovati N log fuori dalla struttura
+  dell'archivio · [Importa]" while the mirror folder itself holds `importable` or
+  `needs_env` files; [Importa] opens the import dialog on the mirror. Same banner on
+  Ricerca. The count comes from the shared `ArchiveWatch` (§Import).
+- **Coverage banners** (`pages/sync_banners.py`, `CoverageBanners`, same height):
+  - *pending* (warn, `syncBanner`): "svil: N giorni (dates) sono ancora sul server ma non
+    sono stati scaricati." with its own [Sincronizza ora], which syncs only the envs with
+    pending days and is disabled while a run is on or the scheduled task holds the lock;
+  - *lost* (bad, `syncBannerBad`): "…sono stati ripuliti dal server prima di essere
+    scaricati: non recuperabili." — nothing to click.
+  Singular forms and "e altri N" are handled; the sentences come from
+  `sync_format.pending_days_text` / `lost_days_text`.
 - **Env cards** (`env_card.py`, `QFrame[role=card]`, 2 columns when wide enough, else 1):
   name, badge, host (mono, muted); "Ultima sincronizzazione" (+ "· N file scaricati"),
   "Archivio locale" ({n} giorni · {size} · dal {first}), "Indice: N file da indicizzare"
   when there is a backlog, and the **30-day coverage calendar** (`coverage_strip.py`): one
-  square per day — green present, red missing weekday, grey weekend, dashed today ("arriva
-  domani"), an empty outline before the archive began — each with a tooltip; one legend
-  under the grid.
-- **Badges** (`sync_badge.badge_for`, one rule for card and chip; priority: in corso > in
-  attesa > non raggiungibile > errori > N giorni mancanti > aggiornato / da aggiornare /
-  mai sincronizzato). Tones `ok` / `warn` / `neutral`, **never red**: an unreachable
-  endpoint is the normal state outside the VPN.
+  square per day, drawn from the core's `CoverageDays` by `day_kinds` (plain Python) with
+  theme tokens, each with a tooltip "dd/MM/yyyy: …":
+
+  | kind | look | tooltip / legend |
+  |---|---|---|
+  | `present` | ok fill | presente / log presente |
+  | `empty` | muted grey fill | nessuna chiamata (a 0-byte day) |
+  | `pending` | warn fill | sul server: da scaricare / da scaricare |
+  | `lost` | bad fill | ripulito dal server prima di essere scaricato / ripulito dal server |
+  | `unknown` | `neutral_bg`, dashed muted edge | non verificabile (a weekday nobody ever listed) |
+  | `weekend` | grey | weekend (a weekend day the core says nothing about) |
+  | `today` | dashed outline | oggi (arriva domani) |
+  | `before` | empty outline | prima dell'inizio dell'archivio |
+
+  Weekends follow the core like any other day (a weekend with traffic that is not local is
+  pending/lost); `weekend` is only for a weekend with no file and no listing, so that before
+  the first 1.1.0 sync the strip is not filled with dashed "non verificabile" squares. One
+  legend under the grid (`CoverageLegend.set_kinds`) shows only the kinds some card draws;
+  each swatch and its label sit in one box, so a hidden item leaves no gap.
+  "Archivio locale" counts only days with calls (`EnvStatus` drops 0-byte files); "dal
+  {first}" is `CoverageDays.first_local`, which may be a 0-byte day.
+- **Badges** (`sync_badge.badge_for(status, running=, queued=, reachable=, failed=,
+  pending=, lost=)`, one rule for card and chip; priority: in corso > in attesa > non
+  raggiungibile > errori > "1 giorno perso" / "N giorni persi" > "N da scaricare" >
+  aggiornato / da aggiornare / mai sincronizzato). Tones `ok` / `warn` / `neutral`, and
+  `bad` **only for lost days**: an unreachable endpoint is the normal state outside the
+  VPN, so it is never red. A lost day keeps the red badge while it is inside the 30-day
+  window.
 - **During a run** the environment being processed shows its own progress inside its card:
   current file + size, a bar, "file i di N · done/total", "8,2 MB/s · circa 2 min
   rimanenti" (total from `RemoteIndexRead.bytes_to_download`); the queued ones say "in
@@ -232,7 +284,8 @@ Sincronizzazione if requested.
 ```
 | [coll ▾] [🔍 FDI 1a2b3c4d ✕  aggiungi una template key…      ] [esatta|contiene] [7 gg|30 gg|90 gg|📅] [Cerca] |
 | 5 chiamate · 1 FDI · 3 giorni · ordinate dalla più recente | log coll dal 15/09 al 18/09   [Raggruppa per FDI] |
-| mancano 3 giorni in coll                                                    [Vai a Sincronizzazione] | <- only if so
+| Trovati 3 log fuori dalla struttura dell'archivio                                          [Importa] | <- only if so
+| 2 giorni da scaricare in coll · 1 giorno non recuperabile                   [Vai a Sincronizzazione] | <- only if so
 +-----------------------------------------------+------------------------------------------------+
 | Quando      Template key            Doc  Dim. | 20260918_aaaaaaaa-…_MOD_TEST_A.json            |
 | ▾ aaaaaaaa-1111-… · 18/09/2026 10:38:31 · 5 chiamate | [Apri in Notepad++] ⧉ 💾 📂      JSON | Dettagli |
@@ -268,11 +321,16 @@ Sincronizzazione if requested.
   recente" (the tail follows the active sort: "ordinate per {colonna}") | coverage "log
   {env} dal {first} al {last}" (tooltip: today's calls arrive tomorrow) | [Raggruppa per
   FDI] (checkable, QSettings `search/group_by_fdi`, **default on**).
-- **Coverage warning** (warn banner, `search_meta.coverage_gap`): "manca 1 giorno / mancano
-  N giorni in {env}" + [Vai a Sincronizzazione] when `coverage_days(env).missing` is
-  non-empty or the newest local day is older than the last weekday before today; tooltip
-  lists the days. A muted "Indice in aggiornamento… N file non sono ancora ricercabili."
-  shows while `index.plan` has a backlog.
+- **Coverage warning** (`search_meta.GapBanner.set_gap(env, pending, lost)`): counts
+  `coverage_days(env).pending` + `lost` only — "1 giorno da scaricare in coll", "2 giorni
+  da scaricare in coll · 1 giorno non recuperabile", "N giorni non recuperabili in svil" —
+  + [Vai a Sincronizzazione]. Warn tone, `banner="bad"` as soon as one day is lost; the
+  tooltip lists both groups ("Ancora sul server, da scaricare: …" / "Ripuliti dal server
+  prima di essere scaricati: …"). A mirror that simply stopped syncing, with no listing
+  memory, is not a hole here (the Sincronizzazione badge "da aggiornare" says it). A muted
+  "Indice in aggiornamento… N file non sono ancora ricercabili." shows while `index.plan`
+  has a backlog.
+- **Import banner**: the same `ImportBanner` as Sincronizzazione.
 - **Results** (`search_results.py` + `results_model.py`, a `QTreeView`):
   - *grouped*: one row per FDI, "{fdi completo} · {dd/MM/yyyy HH:mm:ss} · {n} chiamate"
     spanning the columns, expanded; children Quando (HH:mm:ss) · Template key (mono) · Doc
@@ -325,8 +383,8 @@ Sincronizzazione if requested.
     folder instead of writing a `_<call_id>` duplicate.
 - Output contract: the preview/copy/save/open text is exactly `extract.pretty_json(body)`,
   starts with `{\n    "documents": [`; the UI never adds headers or comments.
-- After a sync or an index job the page refreshes coverage, keys and the backlog banner
-  (`on_data_changed`) and **keeps** the current results and period.
+- After a sync, index, import or recycle job the page refreshes coverage, keys and the
+  backlog banner (`on_data_changed`) and **keeps** the current results and period.
 
 ## Impostazioni page
 
@@ -339,15 +397,23 @@ tooltip) + [Sfoglia…] + an [Apri cartella] icon — picked, not typed.
    (`theme.save_mode` + `theme.apply`, outside the Save flow, muted note "Si applica
    subito, senza salvare."); [x] Raggruppa i risultati per FDI (`search/group_by_fdi`).
 2. **Archivio** — Cartella dei log locali; Cartella file temporanei (empty = "Cartella
-   temporanea di sistema", [Usa predefinita]); Indice: "{files} file · {entries} richieste
-   · fino al {last}" + [Ricostruisci indice] (confirmation, then job `index` with
+   temporanea di sistema", [Usa predefinita]; `config.validate` refuses one that is the log
+   folder, inside it or containing it, because old extracted files are deleted
+   automatically); **Log** (`pages/archive_summary.py`): "N log in archivio · M da
+   importare · K da assegnare · J ignorati" (+ " · C in conflitto" only when there are
+   conflicts), from the shared `ArchiveWatch` (the saved configuration, not the form),
+   [Dettagli…] (the import dialog on the mirror) and [Importa log da una cartella…] (a
+   folder picker, then the dialog); while the saved log folder is unusable the row says
+   why and both buttons are off. Indice: "{files} file · {entries} richieste · fino al
+   {last}" + [Ricostruisci indice] (confirmation, then job `index` with
    `full_rebuild=True`).
 3. **Ambienti** — the table [Attivo | Nome | URL] with Aggiungi / Rimuovi / Importa da
    file… / [Verifica] (probes the rows on screen, not what is on disk — see the wizard) and
    the VPN note.
 4. **Sincronizzazione automatica** — Ora di avvio (`QTimeEdit`), Riprova ogni (1–12 h),
    Ripeti per (0–23 h, 0 shown as "nessuna ripetizione"), [x] Esegui anche al login (with
-   why it matters), and "In breve" = the live `schedule_sentence`. A save re-registers the
+   why it matters: "…il login recupera la sincronizzazione mancata: sul server i log
+   restano solo fino alla prossima pulizia manuale."), and "In breve" = the live `schedule_sentence`. A save re-registers the
    task when one is registered; a refused or failed re-registration is a persistent warn
    banner "Impossibile aggiornare l'attività pianificata: …" with [Riprova].
 5. **Ricerca** — Periodo predefinito 7 gg / 30 gg / 90 gg; Template key esatta / contiene
@@ -360,9 +426,58 @@ Nothing is written until [Salva]. The **unsaved bar** — "Modifiche non salvate
 form is dirty; errors from `config.validate` are listed above it instead of saving.
 Leaving the page while dirty asks Salva / Scarta / Annulla (`can_leave`). Changing the log
 folder asks "Vuoi indicizzare i log presenti nella nuova cartella ora?". The page is the
-only writer of `config.json`; it emits `config_changed`, which the window broadcasts to
+only writer of `config.json` except for `folder_envs`, which the import dialog writes; so
+`save()` re-reads `folder_envs` from disk before writing (a stale form would otherwise drop
+the assignments), while `errors` and `to_config` never read the file. It emits `config_changed`, which the window broadcasts to
 every *other* page's `on_config_changed`. `show_section(key)` (`appearance`, `archive`,
 `environments`, `automation`, `search`, `editor`, `advanced`) lets other pages deep-link.
+
+## Import (`ui/import_dialog.py`, `import_report.py`, `import_result.py`, `import_state.py`)
+
+Logs kept in any folder layout are copied into the archive by the core (DESIGN-core
+§Archive import); the UI shows the report, asks what the path cannot tell, and runs the
+slow calls in the `JobRunner`.
+
+- **`ArchiveWatch`** (`import_state.py`): ONE per `JobRunner`, shared by the two banners and
+  the Impostazioni summary. It runs the `archive-report` job (`archive.report()` on the
+  mirror + `index.count_local_files()`) and publishes an `ArchiveSnapshot`. It rescans after
+  every `sync`, `index`, `import` or `recycle` job (`JobRunner.job_finished`), when the
+  configuration is broadcast and when the dialog closes; it never scans while the mirror
+  folder is invalid. Banner count = `importable` + `needs_env`.
+- **ImportDialog** (`QDialog`, 960×580 so it fits 1366×768), three steps:
+  1. *The report* (`import-scan` job, `archive.report(folder)`): a table Percorso |
+     Ambiente | Giorno | Dimensione | Stato, the Stato cell "stato: motivo" coloured with
+     theme tokens (recoloured on `theme.signals.changed`), a "Mostra" filter by status with
+     counts, and a plan line ("Da copiare: 4 log · già in archivio: 1 · in attesa di un
+     ambiente: 2 (per ora saltati)"). Folders needing an environment are grouped in a warn
+     panel, one combo each ("Scegli…", the configured env names, "Ignora"); a pick saves
+     `Config.folder_envs[<ABSOLUTE folder>] = env | "__ignora__"` and rescans. Nothing
+     waiting for an environment is ever copied. [Importa] is enabled when there are
+     importable or duplicate files (a verified duplicate may go to the Recycle Bin too).
+  2. *The copy* (`import` job, exclusive, cancellable): `archive.import_` with a progress
+     bar. [Interrompi], Esc and the close box all cancel, and the dialog stays open until
+     the job stops. `ArchiveBusy` (a sync holds the lock) goes back to step 1 with the
+     reason in a banner.
+  3. *The result*: "Copiati N · già presenti M · conflitti K · errori E", notes for an
+     interruption, for conflicts and for the index, the errors listed. Then — only for
+     `ImportResult.verified` records whose path is NOT inside the mirror (`real_is_within`),
+     and never after an interruption — "Vuoi cancellare gli originali? N file, X MB.
+     Andranno nel Cestino." [Cancella originali] [Tienili]. A yes passes exactly those
+     records to `archive.recycle` in the `recycle` job (exclusive; a refused submit shows
+     the busy status), and refusals are listed.
+  The touched envs are indexed through `import_state.index_after_import`: the `index` job
+  right away, or — when an index is already running — a runner-owned waiter that merges the
+  envs and resubmits once when that `index` finishes (successfully or not), so closing the
+  dialog loses nothing; while the application is closing nothing is queued and the next
+  start indexes the files. `MainWindow` then refreshes every page (`on_data_changed`).
+- **Several sources**: the dialog takes a list (the wizard queues the mirror's strays and a
+  folder elsewhere); each is scanned only when its turn comes ([Avanti: <folder>], disabled
+  while `recycle` runs), so its report already knows what the previous one copied.
+- **Jobs**: `wizard-archive-report`, `archive-report`, `import-scan`, `import`, `recycle` are
+  in `JOB_NAMES` with labels; `import` and `recycle` are `EXCLUSIVE`, in `DATA_JOBS` (they
+  trigger `on_data_changed`) and ask before quitting (`QUIT_IMPORT_INFO`,
+  `QUIT_RECYCLE_INFO`: the originals already moved are in the Recycle Bin and can be
+  restored, the others stay where they are).
 
 ## Info page
 
@@ -383,14 +498,15 @@ class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions
 class JobRunner(QObject): submit(name, fn, ...) -> Job | None; busy(str); job_finished(str, bool)
     # pool size = len(JOB_NAMES) + SUPERSEDED_HEADROOM (4): one thread per job name plus room
     # for superseded jobs still finishing a blocking call (read_body, one SQLite query).
-    # "sync"/"index"/"scheduler" are EXCLUSIVE: a second submit is refused -> busy(name);
+    # "sync"/"index"/"scheduler"/"import"/"recycle" are EXCLUSIVE: a second submit is refused -> busy(name);
     # every other name supersedes (the older job is cancelled and silenced by _Delivery).
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
 - `JOB_NAMES` lists every name a page submits under (a test checks it against the pages'
   constants and against `quit_dialog.JOB_LABELS`).
-- `job_finished(name, ok)` drives the refresh: after `sync` or `index` (even a failed one)
-  the window calls every page's optional `on_data_changed()`.
+- `job_finished(name, ok)` drives the refresh: after a `DATA_JOBS` job (`sync`, `index`,
+  `import`, `recycle`; even a failed one) the window calls every page's optional
+  `on_data_changed()`, and closing the window while one runs asks first.
 - Progress coalesced to ~10/s. Widgets never touched from workers.
 - Which thread runs what (measured in `tests/ui/test_workers.py`, not assumed): `QtEventSink.
   __call__` — the `FileProgress` throttling included — runs on the **worker**; everything after
@@ -416,7 +532,8 @@ the core only and never imports Qt. Otherwise `ui.app.run_gui`:
 2. `QApplication`, `configure_application` (names, window icon, `theme.apply` with the
    saved mode);
 3. single-instance guard (a second instance activates the first and exits 0);
-4. first-run check → wizard; cancelled → exit 0 with nothing written;
+4. first-run check → wizard; cancelled → exit 0 with nothing written; import sources from
+   the wizard → the import dialog opens first, and step 6 waits for it to close;
 5. `MainWindow` built (pages, hooks, `emit_initial_state`) and `show()`n;
 6. only then, in workers: if the wizard asked for a sync, that sync (it indexes too);
    otherwise `QTimer.singleShot(0, window.startup_tasks)` → `ui/startup.StartupTasks`:
@@ -476,8 +593,10 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   (`QWidget#appBar`), the unsaved bar. No module outside `theme.py`/`theme_qss.py` writes
   a colour literal or a stylesheet (`tests/ui/test_theme.py` greps for it). Pill and badge
   colours come from the `ok`/`warn`/`bad`/`neutral_bg` tokens — the old rule "grey pills =
-  palette Mid" is gone (Mid was invisible in dark mode). Status pills are never `bad`
-  (red): errors are `warn`; red appears only for a missing day in the coverage calendar.
+  palette Mid" is gone (Mid was invisible in dark mode). Errors and unreachable endpoints
+  are `warn`; red (`bad`) appears only for **lost days** (purged before they were
+  downloaded): the calendar square, the badge and chip dot, the `syncBannerBad` banner and
+  the Ricerca `banner="bad"` warning.
 - Icon tint and the JSON highlighter read `theme.tokens()` and re-derive on
   `theme.signals.changed`; `theme.apply` clears the icon cache.
 - Fonts: UI Segoe UI Variable Text → Segoe UI; monospace only through `theme.mono_font()`
@@ -501,16 +620,21 @@ to copy qtkit's style. The look is our own — not qtkit's either.
 ## Testability
 
 - `ui/strings/` is a package, one module per page (`common`, `search`, `sync`, `settings`,
-  `wizard`, `about`), all re-exported from `qtrequestory.ui.strings`. `tests/ui/test_strings.py`
+  `wizard`, `about`, `imports`), all re-exported from `qtrequestory.ui.strings`. `tests/ui/test_strings.py`
   also enforces one vocabulary: no English words in user-facing strings, the same labels
   for the same thing on every page, and no module formatting a size by hand — every size
-  goes through `events.format_size` / `ui/pages/sync_format.format_size`.
+  goes through `events.format_size` / `ui/pages/sync_format.format_size`. A test also
+  asserts that no UI string claims the server keeps logs for "circa un giorno".
 - `ui/prefs.py` holds the shared QSettings keys (`search/group_by_fdi`, `search/key_mode`,
   `search/recent`) so Ricerca and Impostazioni never import each other.
 - `ui/contracts.py`: Protocols + dataclasses for everything the UI consumes from core
-  (`ConfigApi`, `SyncApi`, `SchedulerApi`, `IndexApi`, `ExtractApi`) — the core facade
+  (`ConfigApi`, `SyncApi`, `SchedulerApi`, `IndexApi`, `ExtractApi`, `ArchiveApi`, gathered
+  in `CoreServices`) — the core facade
   satisfies them structurally; `tests/fakes/fake_core.py` implements them in memory
-  (synthetic hits, scripted sync progress honouring the cancel token, fake task status),
+  (synthetic hits, scripted sync progress honouring the cancel token, fake task status,
+  `set_local_days(env, days, empty=())` / `set_server_days(env, listed=(), seen=())` for the
+  coverage states, the real archive discovery/import on a temp tree with a simulated
+  Recycle Bin),
   and `tests/test_fake_core.py` checks the fake against the real facade.
 - Presenters (`SearchPresenter`, `SyncPresenter`, `SettingsPresenter`) are plain objects
   with a few Qt signals; widgets render and forward.

@@ -5,9 +5,12 @@ delle chiamate al document generator e ti permette di ritrovare — e tirare
 fuori — il body JSON di una singola chiamata, per FDI (il `correlation_id`
 della pratica) o per template key.
 
-Serve perché **sul server i log restano circa un giorno**: se nessuno li scarica
-vanno persi. L'attività pianificata ci pensa da sola una volta al giorno, con
-tentativi ogni ora; l'archivio locale è l'unico che resta.
+Serve perché **sul server i log restano solo fino alla prossima pulizia**: chi
+gestisce il server la fa a mano dal terminale OCP, e la pulizia **cancella** i
+file. Quello che non è stato scaricato prima di una pulizia è perso: l'archivio
+locale è l'unica copia che resta. L'attività pianificata scarica i log una volta
+al giorno, con tentativi ogni ora; un giorno che manca in locale ma è ancora sul
+server si recupera con *Sincronizza ora*.
 
 ---
 
@@ -39,12 +42,17 @@ Parte una configurazione iniziale in tre passi:
    L'archivio cresce nel tempo: mettilo su un disco con spazio e non dentro una
    cartella sincronizzata sul cloud. Se ci sono già dei log (per esempio quelli
    della vecchia sincronizzazione PowerShell) vengono indicizzati, non
-   riscaricati.
+   riscaricati. Se nella cartella ci sono log sistemati in un altro modo, o ne
+   hai altrove («Hai già dei log altrove? *Scegli cartella…*»), la procedura li
+   **importa alla fine** (vedi [Importare log da altre cartelle](#importare-log-da-altre-cartelle)).
 2. **Ambienti** — nome e indirizzo di ciascun ambiente (vedi sotto).
 3. **Automazione** — se registrare l'attività pianificata che scarica i log
    ogni giorno e se fare subito la prima sincronizzazione. Se sul PC c'è ancora
    la vecchia attività `NginxLogSync`, **resta dov'è** a meno che tu non spunti
    «Rimuovi il vecchio task NginxLogSync» (vedi più sotto).
+   **La prima sincronizzazione scarica tutto lo storico ancora presente sul
+   server**, fino all'ultima pulizia: possono essere diversi GB e richiedere
+   parecchio tempo.
 
 Se chiudi la configurazione iniziale con Annulla non viene salvato nulla: al
 prossimo avvio ripartirà da capo.
@@ -88,7 +96,7 @@ ogni ambiente (cliccalo per aprire la pagina) e le icone di **Impostazioni**
 
 - **Sincronizzazione** — dice se la sincronizzazione automatica è attiva, se
   nell'archivio manca qualche giorno (un calendario degli ultimi 30 giorni per
-  ambiente) e permette di scaricare subito con *Sincronizza ora*
+  ambiente, vedi sotto) e permette di scaricare subito con *Sincronizza ora*
   (`Ctrl+Shift+S`). Normalmente non serve: ci pensa l'attività pianificata, e
   all'apertura il programma aggiorna da solo l'indice e fa una
   sincronizzazione se ce n'è bisogno.
@@ -108,10 +116,82 @@ la chiamata con **più documenti** del giorno più recente — quella che contie
 tutta la pratica; aggiungi la template key per isolarne un'altra.
 
 I file estratti finiscono in `%TEMP%\qtrequestory-calls\` e sono **temporanei**
-(vengono ripuliti dopo un giorno). Se ti servono, salvali altrove.
+(vengono ripuliti dopo 24 ore). Se ti servono, salvali altrove. Per lo stesso
+motivo la cartella dei file estratti (Impostazioni › Archivio) **non può essere
+la cartella dei log, stare dentro di essa o contenerla**: le impostazioni lo
+rifiutano, e la pulizia non parte comunque se le due cartelle si
+sovrappongono.
 
 Le chiamate di oggi non ci sono ancora: sul server vengono compattate nel file
 del giorno la sera, quindi arrivano con la sincronizzazione del giorno dopo.
+
+### Il calendario della Sincronizzazione
+
+Ogni ambiente ha un quadratino per ciascuno degli ultimi 30 giorni. La legenda
+sotto le schede mostra solo i tipi che compaiono davvero:
+
+| Quadratino | Significa |
+|---|---|
+| **presente** (verde) | il log del giorno è nell'archivio |
+| **nessuna chiamata** (grigio pieno) | il server ha pubblicato il giorno vuoto (0 byte): quel giorno nessuno ha chiamato. Succede nei weekend, nei festivi e spesso su svil |
+| **da scaricare** (ambra) | il giorno è ancora sul server ma non in locale: *Sincronizza ora* lo scarica |
+| **perso** (rosso, «ripulito dal server») | il server lo elencava, ma è stato ripulito prima che venisse scaricato: non si può più recuperare, se non da una copia di un collega (vedi sotto) |
+| **non verificabile** (bordo tratteggiato) | un giorno feriale che manca in locale e di cui il programma non sa nulla: è di prima che iniziasse a ricordare cosa c'è sul server |
+| **weekend** | un sabato o una domenica di cui non si sa nulla |
+| **oggi** | il log di oggi arriva domani |
+
+Un giorno vuoto conta come «nessuna chiamata» solo quando il server lo ha
+elencato **in un giorno successivo** (la sera stessa la compattazione potrebbe
+non essere ancora avvenuta). Se un giorno è da scaricare compare un avviso con
+il suo pulsante *Sincronizza ora*; se è perso, un avviso rosso. Anche la
+Ricerca avvisa («2 giorni da scaricare in coll · 1 giorno non recuperabile»)
+con *Vai a Sincronizzazione*. Dopo l'aggiornamento alla 1.1.0 i giorni vecchi
+restano «non verificabile» o «weekend» finché la prima sincronizzazione non ha
+letto l'elenco del server.
+
+### Importare log da altre cartelle
+
+Se tu o un collega avete log salvati altrove, in qualsiasi struttura di
+cartelle, il programma li **copia** nell'archivio (in
+`<ambiente>\AAAA\MM\AAAAMMGG.txt`): non li indicizza mai dove sono. In
+Impostazioni › Archivio la riga «Log» dice quanti log ci sono in archivio e
+quanti sono da importare, da assegnare o ignorati; *Dettagli…* apre
+l'importazione sulla cartella dei log, *Importa log da una cartella…* su una
+cartella che scegli. Se nella cartella dei log stessa ci sono file fuori
+struttura, Ricerca e Sincronizzazione mostrano «Trovati N log fuori dalla
+struttura dell'archivio» con il pulsante *Importa*.
+
+Cosa riconosce:
+
+- **la data** nel nome del file o, se non c'è, nelle cartelle sopra:
+  `20260922`, `2026-09-22` (anche con `_` o `.`), le date italiane
+  `22092026` e `22-09-2026`, e la struttura `2026\09\22.txt`. Due date diverse
+  nello stesso nome, o un numero lungo che non è una data valida, danno «data
+  ambigua» e il file viene saltato: niente tentativi;
+- **l'ambiente** dal percorso, confrontandolo con i nomi degli ambienti che hai
+  configurato (qualsiasi nome, maiuscole o minuscole, come parola intera:
+  `coll_22-09-2026.txt`, `log svil\…`). Con un solo ambiente configurato è
+  quello. Se il percorso non lo dice, l'importazione chiede **una volta per
+  cartella** (gli ambienti configurati oppure «Ignora») e ricorda la scelta:
+  finché l'ambiente non è noto quei file non vengono copiati;
+- solo **log di chiamate** (la prima riga è `### <nome>.json`); un file vuoto
+  vale come giorno senza chiamate solo se è un `.txt` con la data nel nome;
+- i file **compressi** (`.zip`, `.gz`, `.7z`…) non vengono aperti: «archivio
+  compresso: estrailo nella cartella», poi rifai la ricerca.
+
+Ogni copia viene **verificata** (dimensione e contenuto) prima di entrare
+nell'archivio. Un giorno già in archivio non viene mai sovrascritto, a meno che
+la copia importata non sia la stessa più completa; due copie diverse dello
+stesso giorno sono un **conflitto** e restano dove sono (anche una copia con
+gli a capo convertiti in CRLF, se l'archivio ha già quel giorno).
+
+Alla fine il programma chiede **«Vuoi cancellare gli originali?»**. Con
+*Cancella originali* finiscono nel **Cestino** di Windows (si possono
+ripristinare) **solo gli originali verificati**, cioè quelli il cui contenuto è
+davvero nell'archivio, ricontrollati un'ultima volta; **nulla dentro la
+cartella dei log viene mai cancellato**, e sui dischi di rete o rimovibili,
+che non hanno Cestino, non si cancella nulla. Con *Tienili* non si tocca
+niente. Poi l'indice si aggiorna da solo.
 
 **Tema**: in Impostazioni › Aspetto puoi scegliere *Sistema* (segue Windows),
 *Chiaro* o *Scuro*; si applica subito.
@@ -128,6 +208,11 @@ qtRequestory.exe --index --rebuild           # ricostruisce l'indice da zero
 qtRequestory.exe --find -e coll -f aaaaaaaa  # estrae una chiamata per FDI
 qtRequestory.exe --find -e coll -k MOD_TEST_A --days 90
 qtRequestory.exe --task install|status|run|remove
+qtRequestory.exe --archivio                  # log fuori struttura nella cartella dei log (non modifica nulla)
+qtRequestory.exe --archivio D:\vecchi-log    # cosa farebbe l'importazione di un'altra cartella
+qtRequestory.exe --import D:\vecchi-log      # copia e verifica, poi aggiorna l'indice
+qtRequestory.exe --import D:\vecchi-log --env-for "log vecchi=coll" --env-for scarti=ignora
+qtRequestory.exe --import D:\vecchi-log --delete-originals   # poi gli originali verificati nel Cestino
 qtRequestory.exe --version
 ```
 
@@ -148,6 +233,20 @@ raggiungibile (tipicamente VPN giù) **oppure** un problema di configurazione
 messaggio stampato comincia con «Errore»; `3` interrotto. `--find` esce con `1`
 se non trova nulla e con `2` per un ambiente sconosciuto.
 
+`--archivio` elenca ogni file trovato con il suo stato (da importare, già
+presenti, da assegnare, conflitti, ignorati) e il motivo; esce con `1` se
+qualche file aspetta un ambiente o è in conflitto, altrimenti con `0`.
+`--import` fa lo stesso elenco, copia e verifica, poi indicizza gli ambienti
+toccati. `--env-for CARTELLA=AMBIENTE` (ripetibile; la cartella è relativa a
+quella importata oppure assoluta; `ignora` la salta) vale solo per quel
+comando e non viene salvato. Gli originali vanno nel Cestino solo con
+`--delete-originals`, e solo quelli verificati fuori dalla cartella dei log.
+Codici di uscita di `--import`: `0` tutto a posto; `1` errori, conflitti, file
+ancora senza ambiente, originali non spostati nel Cestino, oppure una
+sincronizzazione in corso (riprova quando è finita); `2` cartella inesistente,
+ambiente di `--env-for` sconosciuto o cartella dei log non impostata; `3`
+interrotto con Ctrl+C (in quel caso nessun originale viene cancellato).
+
 `--find` fa quello che faceva il vecchio `nginx/find-call.py`, con due
 differenze:
 
@@ -157,7 +256,7 @@ differenze:
 - estrarre **la stessa chiamata due volte non sovrascrive** il primo file: il
   secondo si chiama `..._<id chiamata>.json`, così un file ancora aperto
   nell'editor non cambia sotto le mani. La cartella non viene svuotata a ogni
-  esecuzione: i file più vecchi di un giorno vengono ripuliti.
+  esecuzione: i file più vecchi di 24 ore vengono ripuliti.
 
 ---
 
@@ -168,7 +267,7 @@ differenze:
 | Configurazione | `%LOCALAPPDATA%\qtRequestory\config.json` |
 | Log del programma | `%LOCALAPPDATA%\qtRequestory\logs\app.log` |
 | Log delle sincronizzazioni | `%LOCALAPPDATA%\qtRequestory\logs\sync.log` |
-| Archivio dei log scaricati | la cartella scelta al primo avvio, in `<ambiente>\AAAA\MM\AAAAMMGG.txt` |
+| Archivio dei log scaricati | la cartella scelta al primo avvio, in `<ambiente>\AAAA\MM\AAAAMMGG.txt` (un giorno senza chiamate è un file vuoto) |
 | Indice di ricerca | `<archivio>\.qtrequestory\index.sqlite` |
 | File estratti | `%TEMP%\qtrequestory-calls\` (temporanei) |
 | Preferenze della finestra (tema, ricerche recenti…) | registro utente, `HKCU\Software\qtRequestory` |
@@ -185,11 +284,19 @@ tali, non copiarli fuori dal PC aziendale.
 
 **…la sincronizzazione dice che l'ambiente non è raggiungibile.**
 È quasi sempre la VPN. Accendi il Cisco Secure Client (e spegni eventuali altre
-VPN), poi premi *Sincronizza ora*. Non è un problema se salti qualche ora:
-l'attività pianificata riprova ogni ora fino a sera e un ambiente irraggiungibile
-non blocca l'altro. Se resti scollegato per giorni, però, i giorni scoperti si
-perdono: il server tiene i log circa un giorno. La pagina Sincronizzazione (e
-la Ricerca) ti avvisano se nell'archivio manca un giorno feriale.
+VPN), poi premi *Sincronizza ora*. Non è un problema se salti qualche ora o
+qualche giorno: l'attività pianificata riprova ogni ora fino a sera, un ambiente
+irraggiungibile non blocca l'altro, e il server tiene i log fino alla prossima
+pulizia manuale, quindi la sincronizzazione successiva scarica tutti i giorni
+che mancano. Un giorno ripulito dal server prima di essere scaricato, invece, è
+perso. La pagina Sincronizzazione (e la Ricerca) ti avvisano sia dei giorni da
+scaricare sia di quelli persi.
+
+**…un collega mi ha passato i suoi log vecchi.**
+Mettili in una cartella qualsiasi (estrai gli zip) e usa Impostazioni ›
+Archivio › *Importa log da una cartella…*, oppure `--import`: vedi
+[Importare log da altre cartelle](#importare-log-da-altre-cartelle). I giorni
+che a te mancano e che sono nei suoi log entrano così nell'archivio.
 
 **…la ricerca non trova qualcosa che dovrebbe esserci.**
 Prima allarga il periodo, e se cerchi una template key parziale passa a

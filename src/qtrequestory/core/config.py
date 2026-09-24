@@ -596,8 +596,9 @@ def sanitised_schedule(schedule: ScheduleSettings) -> ScheduleSettings:
 
     ``validate`` *reports* a bad value; this *repairs* it, because the file can
     be hand-edited and the task must still be registered — a mirror that stops
-    syncing loses days that cannot be recovered. The start time falls back to
-    the default (and is canonicalised, ``"7:30"`` -> ``"07:30"``) and the two
+    syncing loses every day the server purges before the next run. The start
+    time falls back to the default (and is canonicalised, ``"7:30"`` ->
+    ``"07:30"``) and the two
     counts are clamped into range, which also keeps XML ``schtasks`` refuses
     (``<Interval>PT0H</Interval>``) from ever being built.
 

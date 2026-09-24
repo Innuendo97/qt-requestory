@@ -2,8 +2,8 @@
 
 The core is the UI-agnostic engine: sync, index, search, extract, scheduler, config.
 **Rule: `qtrequestory.core` imports only the standard library** (a test enforces it).
-Everything here is callable from the CLI (`--sync`, `--index`, `--find`, `--task`) and
-from the PySide6 UI through the same functions.
+Everything here is callable from the CLI (`--sync`, `--index`, `--find`, `--task`,
+`--archivio`, `--import`) and from the PySide6 UI through the same functions.
 
 ## Domain facts (measured on real data; fixtures must reproduce them synthetically)
 
@@ -12,7 +12,13 @@ from the PySide6 UI through the same functions.
   on weekends/holidays), plus loose `<uuid>_<TEMPLATE_KEY>_<id16hex>.json` files for the
   current day (compacted into the daily file at ~18:30). **The server keeps its daily
   files until a manual purge from the OCP terminal, which deletes them**; a day without
-  traffic is published as a 0-byte file. The local mirror is the only lasting archive.
+  traffic is published as a 0-byte file, so a 0-byte file always means "no traffic".
+  The local mirror is the only lasting archive: what the purge deletes before a sync
+  downloaded it is gone, while a day that is still listed can always be fetched later.
+  A first sync therefore downloads the whole history since the last purge.
+- Colleagues keep old logs in arbitrary layouts (flat folders, `env/YYYYMMDD.txt`,
+  `YYYY/MM/env/…`, Italian dates, extracted zips). They are never indexed in place: they are
+  COPIED into the canonical tree (§Archive import).
 - Daily file format: header line `### <name>.json` followed by ONE line with the request
   body JSON (50–450 KB). Header/body strictly alternate. Files may be CRLF or LF.
 - `<name>` shapes seen: `UUID_KEY_ID` (canonical), `correlationId_vuoto_KEY_ID`,
@@ -34,16 +40,21 @@ from the PySide6 UI through the same functions.
 src/qtrequestory/
 ├── __init__.py            __version__
 ├── __main__.py            -> cli.main()
-├── cli.py                 argparse; --sync/--index/--find/--task; imports ui lazily
+├── cli.py                 argparse; --sync/--index/--find/--task/--archivio/--import; imports ui lazily
+├── cli_archive.py         --archivio / --import (kept apart from cli.py for size)
 ├── core/
 │   ├── paths.py           AppPaths
-│   ├── config.py          Config, Environment, load/save/validate, UnknownEnvironment, import_environments_file, detect_editor
+│   ├── config.py          Config, Environment, load/save/validate, UnknownEnvironment, import_environments_file, detect_editor, IGNORE_FOLDER
 │   ├── logsetup.py        configure_logging(paths, headless, level), resolve_level
 │   ├── events.py          Event dataclasses, EventSink, LoggingSink, CancelToken, Cancelled, format_size
-│   ├── daily.py           day/file-name helpers, list_local_daily_files, parse_entry_name, coverage_days
+│   ├── daily.py           day/file-name helpers, list_local_daily_files, count_local_files, parse_entry_name,
+│   │                      CoverageDays, classify_days
+│   ├── archive_names.py   day and env from the elements of a path (any layout, Italian dates)
+│   ├── archive.py         discover(root, env_names, folder_envs) -> ArchiveReport; compare_files
+│   ├── importer.py        run_import -> ImportResult; VerifiedOriginal; send_to_recycle_bin, check_original
 │   ├── autoindex.py       parse_autoindex(html) -> RemoteIndex, AutoindexFormatError
 │   ├── http.py            HttpClient Protocol + UrllibHttpClient
-│   ├── fsutil.py          replace_with_retry, remove_quietly
+│   ├── fsutil.py          replace_with_retry, remove_quietly, is_within, paths_overlap, real_is_within, same_file
 │   ├── state.py           SyncState (+ legacy .last-sync.json import)
 │   ├── lock.py            ProcessLock, peek_holder (read-only probe)
 │   ├── sync.py            SyncEngine
@@ -56,7 +67,7 @@ src/qtrequestory/
 │   ├── opener.py          find_editor, open_in_editor
 │   ├── scheduler.py       TaskSpec, build_task_xml, register/unregister/status/run_now, detect_legacy_task
 │   ├── jobs.py            run_sync_job, run_index_job
-│   └── facade.py          Config/Sync/Scheduler/Index/ExtractService: what the UI calls
+│   └── facade.py          Config/Sync/Scheduler/Index/Extract/ArchiveService, ArchiveBusy: what the UI calls
 └── ui/                    the only package allowed to import PySide6
 ```
 
@@ -71,12 +82,15 @@ Dependency direction: `ui -> jobs/search/config/scheduler/extract -> core intern
 - UI preferences (window geometry, last environment, theme mode, search options, recent
   searches) are not files: they live in `QSettings` (`HKCU\Software\qtRequestory\qtRequestory`),
   opened only through `ui/actions.user_settings()`.
-- Mirror: `<mirror_root>\<env>\YYYY\MM\YYYYMMDD.txt`, plus the occasional
+- Mirror: `<mirror_root>\<env>\YYYY\MM\YYYYMMDD.txt` (a 0-byte file is a day the server
+  listed empty, see §`core/sync.py` step 4; only this exact path counts, see §`core/daily.py`),
+  plus the occasional
   `YYYYMMDD.txt.remote-<size>` (a server copy smaller than the local day, see §`core/sync.py`)
   and a `.part` while a download runs; `<mirror_root>\.qtrequestory\` holds
   `sync-state.json`, `sync.lock`, `index.sqlite` (+ `-wal`/`-shm`, and up to 3
   `index.sqlite.broken-*`).
-- Output dir default: `%TEMP%\qtrequestory-calls\`.
+- Output dir default: `%TEMP%\qtrequestory-calls\`. It is pruned by age, so it may never
+  overlap the mirror (§`core/config.py`, §`core/extract.py`).
 
 ## `core/events.py`
 
@@ -125,7 +139,8 @@ the CLI `--dry-run` listing and `sync.log` word the same file the same way.
   "sync": {"index_timeout_s": 15, "download_timeout_s": 60, "chunk_size": 1048576, "retries": 1},
   "index": {"parse_json": true},
   "schedule": {"start_time": "09:00", "repeat_every_h": 1, "repeat_for_h": 9, "run_at_logon": true},
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "folder_envs": {"D:\\old-logs\\misc": "coll", "D:\\old-logs\\junk": "__ignora__"}
 }
 ```
 ```python
@@ -146,7 +161,10 @@ def load_config(path) -> Config      # missing -> defaults, file NOT created (a 
 def save_config(cfg, path)           # tmp + os.replace
 def validate(cfg) -> list[str]       # env name ^[A-Za-z0-9_-]+$ unique; url http(s)://…/ ; window 1..3650;
                                      # schedule: start_time HH:MM, repeat_every_h 1..12, repeat_for_h 0..23;
-                                     # log_level: a name logging knows (via logsetup.resolve_level)
+                                     # log_level: a name logging knows (via logsetup.resolve_level);
+                                     # + output_dir_errors
+def output_dir_errors(cfg) -> list[str]   # resolved_output_dir == mirror_root, inside it, or containing it
+IGNORE_FOLDER = "__ignora__"              # folder_envs value: "do not import this folder"
 def mirror_root_errors(cfg) -> list[str]  # only the mirror_root part of validate (the CLI gate)
 class UnknownEnvironment(ValueError)      # "ambiente sconosciuto: 'x' (configurati: coll, svil)"
 Config.require_env(name) -> Environment   # env(name), but UnknownEnvironment instead of KeyError
@@ -161,6 +179,21 @@ hand-edited config at the live mirror). `validate` then reports "La cartella dei
 impostata"; a relative path is "La cartella dei log deve essere un percorso completo…".
 Numbers are coerced tolerantly: `1e999` / `Infinity` (`OverflowError`) fall back to the
 default like any other bad value, with a warning.
+
+`folder_envs: dict[str, str]` (default `{}`, persisted, parsed leniently: a non-object or
+non-string items are dropped with a warning) holds the environment the user chose for a
+folder whose paths name none: `{folder: env name | IGNORE_FOLDER}`. A key is a folder
+**absolute** or relative to the scanned root; the UI always saves absolute paths, because a
+relative `svil` would apply to every scanned folder that has one (§Archive import).
+`--import --env-for` merges its pairs into a copy for that run only.
+
+**Output folder overlap (F7).** `extract.housekeeping` deletes files older than
+`output_retention_hours` in the output folder, so `output_dir_errors` rejects an output
+folder that is the mirror, lies inside it or contains it. The comparison is
+`fsutil.is_within` in both directions: absolute, `normcase`d (case-insensitive on Windows)
+and component-wise (`C:\logs-old` is not inside `C:\logs`). It is skipped while
+`mirror_root` itself is invalid (already reported; a relative path would compare against the
+CWD).
 
 `logsetup.resolve_level(level) -> (int, reason | None)` is shared by `configure_logging` and
 `validate`. `logging.getLevelName("VERBOSE")` returns the *string* `"Level VERBOSE"`, so
@@ -178,7 +211,8 @@ def file_name(day) -> str                                   # 'YYYYMMDD.txt'
 def local_path(root, env, day) -> Path                      # <root>/<env>/YYYY/MM/YYYYMMDD.txt
 def relative_path(env, day) -> str                          # 'coll/2026/09/20260921.txt' (forward slashes)
 @dataclass(frozen=True) class LocalDailyFile: env; day; path; size; mtime_ns
-def list_local_daily_files(root, env) -> list[LocalDailyFile]   # newest first; ignores .part and junk
+def list_local_daily_files(root, env) -> list[LocalDailyFile]   # newest first; ONLY files at local_path(root, env, day)
+def count_local_files(root) -> int                          # every env folder under root (the wizard, the archive summary)
 @dataclass(frozen=True) class EntryName: raw; fdi: str|None; template_key: str; call_id: str|None; well_formed: bool
 def parse_entry_name(raw) -> EntryName
 @dataclass(frozen=True) class CoverageDays: present: frozenset[date]; empty: frozenset[date]
@@ -186,17 +220,32 @@ def parse_entry_name(raw) -> EntryName
     missing -> tuple[date,...]            # property: sorted(pending + lost)
 def classify_days(local_sizes: Mapping[date,int], listed_nonempty, seen_nonempty, days, today) -> CoverageDays
 ```
+`list_local_daily_files` accepts a file only when its path **is** `local_path(root, env,
+day)` (F4): `env/2026/8/…` (unpadded month) or a day filed under the wrong month is
+ignored, because the index keeps one file per day and two candidates made it flip between
+them forever (rescans, `IndexStale`, duplicate downloads). Such files are the archive
+importer's business: `discover` reports them and the import copies them to the right place.
+Both counts include 0-byte days; `facade.SyncService.env_status` drops them (below).
+
 `classify_days` looks at the window `[today - days + 1, today - 1]` (today is excluded:
-its file is complete only after the evening compaction). `present`/`empty` are every
-local file (size > 0 / 0 bytes; a 0-byte file the server lists or listed non-empty is not
-`empty`). A window day without a non-empty local file is `pending` when the
+its file is complete only after the evening compaction). `present` is every local file
+with size > 0, `empty` every 0-byte local file the server never showed non-empty. A
+0-byte local file whose day the last listing shows non-empty is `pending`; one an earlier
+listing showed non-empty and the last one no longer does is `lost` (the placeholder is not
+the day's content). A window day without a non-empty local file is `pending` when the
 last listing still shows it non-empty, `lost` when an earlier listing showed it non-empty
 and the last one no longer does (purged before it was downloaded), `unknown` when it is a
 weekday on or after `first_local` that no listing ever showed non-empty. Weekends are
 classified like any other day. A day before `first_local` is only reported when the
 server listed it. `IndexService.coverage_days(env, days=30, today=None)` feeds it the
-local file listing (not the index) and the listing memory of the sync state. Consumers:
-the Ricerca coverage warning and the Sincronizzazione calendar.
+local file listing (not the index) and the listing memory of the sync state (on a
+legacy-only mirror `SyncState.load()` may write `sync-state.json` once). Consumers:
+the Ricerca coverage warning and the Sincronizzazione calendar, banners and badge.
+`EnvSyncState.oldest_listed` is persisted but not used by the classification.
+
+`facade.SyncService.env_status` counts only days with calls: 0-byte files are dropped
+before `n_local_files`, `local_bytes` and `latest_day` are computed (a 0-byte file is "no
+traffic", not archive content).
 `parse_entry_name` rules (total, deterministic): strip trailing `_[0-9a-f]{16}` → `call_id`;
 if remainder starts with `correlationId_vuoto_` → `fdi=None`, key = rest; else split on first
 `_`: `fdi=left.lower()`, `template_key=right`; no `_` → `fdi=None`, key = whole.
@@ -287,6 +336,7 @@ real lock and, if the scheduled task holds it, runs nothing (`JobReport.sync is 
 @dataclass(frozen=True) class EnvResult: env; status: Literal["ok","fresh","unreachable","errors","cancelled"]; downloaded; present; empty; failed; bytes; error: str|None
 @dataclass(frozen=True) class SyncReport: results: tuple[EnvResult,...]; started; finished; dry_run: bool = False
     exit_code -> int      # 0 ok/nothing, 1 file errors, 2 nothing reachable, 3 cancelled
+def count_crlf(path) -> int   # streamed b"\r\n" count; a pair split across chunks counts once
 class SyncEngine(config, http, state, sink, cancel=None, clock=datetime.now):
     run(envs=None, *, force=False, dry_run=False) -> SyncReport
     sync_env(env: Environment, *, force, dry_run) -> EnvResult
@@ -309,7 +359,8 @@ Per env:
    `RemoteIndexRead` with `bytes_to_download` over the `download` plans. Per remote file:
    size 0 → `empty`; local size == remote → `present`; local larger than remote with
    `local - count(b"\r\n") == remote` (a copy imported with CRLF line endings) → `present`
-   plus one `LogMessage(INFO)`, no sidecar; **otherwise local larger than remote →
+   plus one `LogMessage(INFO)`, no sidecar, the day mirrored (this is exact: a CRLF copy
+   with even one extra byte is `shrunk`); **otherwise local larger than remote →
    `shrunk`**; missing or smaller locally → `download`.
    `empty` (real run only): only when listed on a later calendar day (`day < listing_at.date()`;
    on the day itself a late compaction may still be pending) a missing local file is created as 0 bytes (exclusive create, never over an existing
@@ -401,6 +452,9 @@ def scan_daily_file(path, *, parse_json=True, cancel=None) -> tuple[list[Scanned
 ```
 Binary mode, `pos = f.tell(); line = f.readline()`. Header → pending; non-header with pending →
 entry; non-header without pending → orphan; header while pending → previous header orphan.
+F6: a UTF-8 BOM at offset 0 is skipped (the first `header_offset` is then 3), and a line of
+blanks only (`BLANKS = b" \t\r\n"`) is neither a body nor an orphan, so a blank line between
+a header and its body no longer produces an empty body plus an orphan.
 `body_len = len(line.rstrip(b"\r\n"))`; `header_len` = raw header line bytes without terminator
 (trailing blanks included). The name is decoded with `surrogateescape` (lossless); the builder stores
 it as TEXT, or as the raw bytes (BLOB) if it is not valid UTF-8, and `fdi`/`template_key`/`call_id` with U+FFFD. JSON: `ndocs = len(d.get("documents") or [])`,
@@ -422,7 +476,8 @@ def search(conn, root, q) -> list[SearchHit]   # requires fdi_prefix or template
                                            # `root` is the mirror root, so every SearchHit carries its file_path
 def read_body(hit) -> bytes                # seek(header_offset), readline(max(header_len, len(expected))+8);
                                            # header == '### '+name(surrogateescape)+'.json' after rstrip(b" \t\r\n")
-                                           # on both sides, and the line must end exactly at body_offset;
+                                           # on both sides; only blank bytes [ \t\r\n] may sit between
+                                           # the end of that line and body_offset (the scanner skips them);
                                            # then read body_len+1: that extra byte must be CR, LF or EOF,
                                            # and the body slice must contain no LF nor END with CR (a shorter
                                            # body); a CR in the middle of a body is data and is returned.
@@ -459,10 +514,13 @@ SQL: `env=:env AND day BETWEEN … AND (fdi >= :p AND fdi < :p_hi) AND template_
 def pretty_json(raw: bytes) -> str          # json.dumps(json.loads(raw), ensure_ascii=False, indent=4); on error -> {"_parseError": str, "raw": text}
 def output_name(day, fdi, template_key, call_id=None) -> str   # '<yyyyMMdd>_<fdi or "nofdi">_<TEMPLATE_KEY>[_<call_id>].json'
                                             # search.output_name_for(hit) / output_name_with_id(hit) wrap it for a SearchHit
-def write_temp_file(out_dir, name, text, *, retention_hours=24, alt_name=None) -> Path
+def write_temp_file(out_dir, name, text, *, retention_hours=24, alt_name=None, protected=None) -> Path
                                             # housekeeping (delete files older than N h, best effort: a listing
                                             # or unlink error is skipped) then write; when `name` already
                                             # exists and `alt_name` (the call-id variant) is given, that one is used instead
+def housekeeping(out_dir, retention_hours, *, protected=None) -> int
+                                            # protected = mirror_root: when paths_overlap(out_dir, protected)
+                                            # NOTHING is deleted (one warning) — defence in depth behind validate
 def save_as(path, text) -> None             # utf-8, no BOM
 def find_editor(configured: Path|None) -> Path|None   # configured → Notepad++ standard paths → PATH
 def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor, *paths) else os.startfile each; returns label
@@ -480,6 +538,112 @@ Two differences from the legacy `nginx/find-call.py`, for the user-facing README
   one is written as `..._<call_id>.json`, so a file still open in the editor is never
   replaced under the user's hands. The old script wiped its whole output folder on
   every run; here the folder is pruned by age (`output_retention_hours`, default 24 h).
+
+## Archive import (`core/archive_names.py`, `core/archive.py`, `core/importer.py`)
+
+Logs kept in any other layout are **copied** into `<mirror_root>/<env>/YYYY/MM/YYYYMMDD.txt`,
+never indexed in place. The three modules are stdlib-only and have no UI knowledge.
+
+```python
+# archive_names.py — what a path says (parts are nearest first: file name, parent, ..., scanned root's name)
+def element_dates(text, *, today) -> set[date]      # every valid reading of every date token in one element
+def strip_dates(text) -> str
+def day_from_parts(parts, *, today) -> tuple[date|None, reason|None]    # reasons: NO_DATE, AMBIGUOUS
+def env_from_parts(parts, env_names) -> str | None                      # None: no name, or a tie
+# archive.py — read-only
+IMPORTABLE, DUPLICATE ("duplicate_same"), NEEDS_ENV, CONFLICT, IGNORED; STATUSES
+@dataclass(frozen=True) class FoundLog: rel_path; path; size; mtime_ns; env|None; day|None; status; reason; dest|None
+    rel_dir -> str                                  # "" for the scanned root
+@dataclass(frozen=True) class ArchiveReport: root; canonical_root|None; items: tuple[FoundLog,...]
+    of(status); counts() -> dict[str,int]; needs_env_dirs() -> list[str]
+def discover(root, env_names, folder_envs, *, canonical_root=None, today=None) -> ArchiveReport
+def compare_files(a, b) -> "same" | "a_prefix" | "b_prefix" | "diverge"    # streamed bytes; a_prefix = STRICT prefix
+def looks_like_log(head: bytes) -> bool
+# importer.py
+@dataclass(frozen=True) class VerifiedOriginal: path; size; mtime_ns; dest
+@dataclass class ImportResult: copied; skipped; conflicts; errors: list[(Path, reason)];
+    verified: list[VerifiedOriginal]; envs: set[str]; cancelled: bool;  verified_paths -> list[Path]
+def run_import(report, canonical_root, *, cancel=None, progress=None) -> ImportResult
+def send_to_recycle_bin(originals: Sequence[VerifiedOriginal], *, canonical_root) -> list[(Path, reason)]
+def check_original(rec, canonical_root) -> str | None   # why this record may not be recycled now
+```
+
+**Walk.** `os.scandir` with an explicit stack. Never follows symlinks or junctions
+(`DirEntry.is_junction`), never enters dot-folders, `$RECYCLE.BIN` or `System Volume
+Information`. The app's own `.part` / `.remote-<n>` files, and every file already at its
+canonical path under `canonical_root` (compared **resolved**, so the mirror reached through a
+junction, a `subst` drive or an 8.3 name is still recognised), are skipped silently.
+
+**Day.** From the file name, else from the parent folders, nearest first, and last from the
+scanned root's own name. Accepted tokens: `YYYYMMDD`, `YYYY-MM-DD` / `_` / `.` (the same
+separator twice), Italian `DDMMYYYY` / `DD-MM-YYYY`, plus the `YYYY/MM/DD.txt` folder
+layout when the file name has no date token. No digit may be glued to a token, and only real
+dates in `2020-01-01 … tomorrow` count, which is what makes the Italian reading safe. The
+first element holding a date decides; two different dates in it, or a file name with a
+digit run of 6+ that is no valid date (an epoch, a typo), give `ignored` "data ambigua" —
+never a fallback to a folder's date.
+
+**Content.** Compressed files (`.zip .gz .7z .rar .tgz`) are never opened: `ignored`
+"archivio compresso: estrailo nella cartella". Otherwise at most 64 KiB are read; after a
+BOM the first non-blank line must match `scanner.HEADER_RE`, else "non è un log di
+chiamate". A 0-byte file is an empty day only when the date is in its own name and the
+extension is `.txt` or none; otherwise it is ignored with that explanation.
+
+**Environment.** First `folder_envs`: the deepest ancestor folder with a key (relative to the
+scanned root or absolute) whose value is a configured env name or `IGNORE_FOLDER` ("cartella
+da ignorare"); a value naming an env no longer configured is not trusted and the lookup
+moves up. Then the path tokens: a configured env name, case-insensitive, as a whole word
+(`(?<![a-z0-9])name(?![a-z])` on the element with its date tokens removed, so `prod2` is
+`prod` and `coll20260922` is `coll`); file name before folders, the nearest element that
+names any env decides, the longest name wins a tie inside it, an equal-length tie is left
+to the user. Then, with exactly one env configured, that env. Otherwise `needs_env`.
+
+**Verdict** (per env+day group, then against the canonical file at `dest`). The largest copy
+of a group is the candidate; every other one must be a prefix of it (else the whole group is
+`conflict`) and becomes `duplicate_same`. Candidate vs archive: no file → `importable`
+("giorno mancante in archivio" / "giorno senza chiamate"); identical → `duplicate_same`;
+archive a strict prefix of it → `importable` "più completo della copia in archivio"; it a
+strict prefix of the archive → `duplicate_same` "l'archivio ha già una copia più
+completa"; anything else (including a smaller file that is not a prefix) → `conflict`
+"copie diverse dello stesso giorno", for every member. Byte equality is strict on purpose:
+the index reads bodies by offset, so a copy equal only modulo CRLF is a conflict unless the
+archive lacks the day.
+
+**Copy.** `run_import` holds no lock itself (the facade does, below). Per `importable` item:
+re-check what the archive holds (replacing is allowed only in the strict-prefix case), and
+that the source still has the scanned size and mtime; copy to `dest.part` (parents
+created), flush + fsync, read back and compare size + sha256 with the source, re-stat the
+source (changed during the copy → error, nothing renamed), re-check the archive, then
+`fsutil.replace_with_retry(part, dest)`. The `.part` is removed on every exit path; cancel is
+checked between files and between chunks. A source that IS the canonical file under
+another spelling (`fsutil.same_file`) is skipped silently and never verified. `verified` =
+the copies that passed, plus the `duplicate_same` sources re-checked at import time against
+the canonical file (a prefix whose larger twin failed to copy is not verified). `envs` =
+the environments that received a copy; indexing them is the caller's job.
+
+**Recycle Bin.** `send_to_recycle_bin` accepts only `VerifiedOriginal` records (a bare path
+is refused "non verificato da un'importazione") and runs `check_original` right before each
+shell call: an absolute path that does NOT resolve inside `canonical_root` (the whole mirror
+folder, not only canonical paths) and a `dest` that does; a regular file, not the same file
+as `dest`; unchanged size and mtime; `dest` still a file and `compare_files(path, dest)` in
+`("same", "a_prefix")`. Then Windows only, and only on `DRIVE_FIXED` drives (on network or
+removable drives `FOF_ALLOWUNDO` silently deletes for good). One `SHFileOperationW` call per
+path with `FO_DELETE | FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI`.
+Returns the refused/failed paths with the reason; never deletes anything else. Files
+misplaced inside the mirror are therefore imported but never recycled: they stay as harmless
+leftovers (ignored by the index, `duplicate_same` in the mirror's report).
+
+**Facade.** `facade.ArchiveService(config_source)`:
+- `report(path=None, *, canonical_root=None) -> ArchiveReport` — `path` defaults to the
+  mirror, `canonical_root` to the mirror (the wizard passes the folder about to become the
+  mirror). Raises `ValueError` while `mirror_root` is unusable, so a relative root never
+  scans the CWD. It reads every candidate file (a sniff, plus a full compare against an
+  existing canonical day): callers run it in a worker.
+- `import_(report, *, cancel=None, progress=None) -> ImportResult` — takes the sync
+  `ProcessLock` (the sync writes the same `.part` names); held → `ArchiveBusy`
+  ("sincronizzazione in corso (…): importa al termine"). Does not index.
+- `recycle(originals) -> list[(Path, reason)]` — `send_to_recycle_bin` with
+  `canonical_root = mirror_root`.
 
 ## `core/scheduler.py`
 
@@ -534,7 +698,7 @@ disabled env may still hold history worth searching). Explicit `envs` go through
 CLI (`cli.main(argv) -> int`), first two things:
 
 1. **Console attach.** The exe is windowed (`console=False`), so a headless mode typed in a
-   terminal used to print nothing. For `--sync/--index/--find/--task/--version` (decided on
+   terminal used to print nothing. For `--sync/--index/--find/--task/--version/--archivio/--import` (decided on
    the raw argv, before argparse), `AttachConsole(ATTACH_PARENT_PROCESS)`; when it succeeds
    `sys.stdout`/`sys.stderr` are reopened on `CONOUT$` — both, or neither. Under the
    scheduled task or a double-click there is no parent console, the call returns 0 and
@@ -547,18 +711,29 @@ qtRequestory.exe --sync [--env X]... [--force] [--dry-run]
 qtRequestory.exe --index [--rebuild] [--env X]...
 qtRequestory.exe --find -e ENV (-f FDI | -k KEY | both) [--days N | --from D --to D] [--out PATH] [--no-open]
 qtRequestory.exe --task install|remove|status|run
+qtRequestory.exe --archivio [PATH]                 # read-only report; default PATH = the mirror
+qtRequestory.exe --import PATH [--env-for DIR=ENV]... [--delete-originals]
 qtRequestory.exe --config PATH                     # every mode; only config.json moves, logs stay in the app dir
 qtRequestory.exe --version
 ```
 
 Exit codes:
 
-| code | `--sync` | `--index` | `--find` | `--task` |
-|---|---|---|---|---|
-| 0 | ok, nothing to do, or lock held by another run | ok | extracted | ok |
-| 1 | file errors, or an unexpected exception (logged with traceback to `sync.log`) | index failure / unexpected exception | nothing found | `status`: no task registered; scheduler error |
-| 2 | **no environment reachable**, *or* a config error: unknown `-e`, `mirror_root` empty/relative | config error (unknown `-e`, `mirror_root`) | config error (unknown `-e`, `mirror_root`) | — |
-| 3 | cancelled (Ctrl+C) | cancelled | — | — |
+| code | `--sync` | `--index` | `--find` | `--task` | `--archivio` | `--import` |
+|---|---|---|---|---|---|---|
+| 0 | ok, nothing to do, or lock held by another run | ok | extracted | ok | nothing needs an env, no conflict | all done |
+| 1 | file errors, or an unexpected exception (logged with traceback to `sync.log`) | index failure / unexpected exception | nothing found | `status`: no task registered; scheduler error | some file `needs_env` or `conflict` | copy errors, conflicts, files still `needs_env`, a refused recycle, the index job's failure, or `ArchiveBusy` (a sync holds the lock) |
+| 2 | **no environment reachable**, *or* a config error: unknown `-e`, `mirror_root` empty/relative | config error (unknown `-e`, `mirror_root`) | config error (unknown `-e`, `mirror_root`) | — | `mirror_root`; PATH missing or not a folder | `mirror_root`; PATH empty/missing/not a folder; `--env-for` with an unknown env |
+| 3 | cancelled (Ctrl+C) | cancelled | — | — | — | cancelled (no recycle then) |
+
+`--archivio` prints one line per file (`[stato] rel_path (env day, size) — reason`), the
+counts, and the folders that need `--env-for`. `--import` prints the same report, copies,
+then runs `run_index_job` on `result.envs`; `--env-for DIR=ENV` (repeatable; DIR relative to
+PATH or absolute; `ignora`/`__ignora__` = skip) is merged into a copy of `folder_envs` for
+that run only, never saved. Originals go to the Recycle Bin only with `--delete-originals`,
+only `ImportResult.verified` records outside the mirror (`real_is_within`), and never after
+a cancel; without the flag it prints how many could go. `--env-for` / `--delete-originals`
+without `--import` are argparse errors.
 
 `EXIT_CONFIG_ERROR = 2` deliberately shares the number with the engine's "nothing
 reachable": both mean "nothing was synced, look at the setup/network", but they are
@@ -566,7 +741,7 @@ distinguishable only by the printed message (config errors print "Errore…"/"Er
 configurazione: …" before any job starts). A script that must tell them apart has to read
 the output.
 
-The pre-run gate for `--sync/--index/--find` checks **only** `mirror_root`
+The pre-run gate for `--sync/--index/--find/--archivio/--import` checks **only** `mirror_root`
 (`mirror_root_errors`), not the full `validate`: a bad `log_level` or schedule falls back
 silently and must never stop the scheduled sync. `_run_job` catches every other exception,
 logs it with its traceback to `sync.log` and returns 1 — in the windowed exe an unhandled
@@ -669,8 +844,16 @@ The scheduled task must point at a copy in a stable folder
 - Synthetic identifiers only: FDIs `aaaaaaaa-1111-…`, `bbbbbbbb-…`, `cccccccc-…`; template
   keys `MOD_ALPHA_*`, `CTR_OFFER_FIX_B`, `MOD_TEST_*` — never a real key or FDI.
 
+Archive import tests build every layout synthetically in `tmp_path` (`tests/test_archive_names.py`,
+`test_archive.py`, `test_importer.py`, `test_archive_service.py`, `test_cli_archive.py`);
+`tests/test_import_safety.py` uses a real `mklink /J` junction in a temp folder with the
+shell delete mocked. The real Recycle Bin is never called by the suite.
+
 `tests/test_no_qt_in_core.py` walks `core/` and asserts no `PySide6|PyQt|tkinter` import.
 `tests/fakes/fake_core.py` implements the facade in memory for the UI tests;
 `tests/test_fake_core.py` runs the same calls against the real facade on temp paths and the
 fake (`run(None)` skips disabled envs, unknown env raises, `register` without an exe
-fails, ordering of `list_template_keys`, `plan(envs)`, retention…) so the two cannot drift.
+fails, ordering of `list_template_keys`, `plan(envs)`, retention, `coverage_days` on a disk
+mirror with empty files and a real state file, the five archive verdicts on one synthetic
+tree…) so the two cannot drift. `FakeArchiveApi` runs the real `discover`/`run_import` on
+its temp tree and simulates the Recycle Bin (it unlinks only files under its own root).

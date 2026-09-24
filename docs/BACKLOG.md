@@ -6,6 +6,12 @@ del JSON estratto. Le voci chiuse dal giro "redesign + review fixes" (settembre 
 state tolte: freschezza della sincronizzazione, lock sondato in sola lettura, ricerca
 «contiene», indice che si ripara da solo, anteprima installata, scheduler letto in un
 worker nella pagina Sincronizzazione, nessuna scrittura nel registro durante i test, ecc.
+La 1.1.0 ha chiuso anche: la falsa regola «il server tiene i log circa un giorno», i
+giorni vuoti (0 byte) segnalati come mancanti, la freschezza che non si confermava dopo un
+weekend, i file fuori posto nell'archivio che facevano ciclare l'indice, gli avvisi
+ripetuti per le copie con a capo CRLF, il BOM e le righe vuote nello scanner (una riga
+vuota sotto un header dava un body vuoto più un orfano), la cartella dei file estratti
+sovrapposta a quella dei log, i weekend con traffico mai segnalati.
 
 ## Da fare presto
 
@@ -26,7 +32,39 @@ worker nella pagina Sincronizzazione, nessuna scrittura nel registro durante i t
 
 - `EXIT_CONFIG_ERROR = 2` coincide con il 2 "nessun ambiente raggiungibile" di `--sync`:
   uno script li distingue solo leggendo l'output (documentato in README e DESIGN-core).
-- `cli.py` è a ~450 righe, sopra la soglia che ci eravamo dati.
+- `cli.py` è a ~500 righe, sopra la soglia che ci eravamo dati (la parte archivio è già
+  in `cli_archive.py`).
+
+## Archivio, giorni vuoti e importazione (dalla 1.1.0)
+
+- `count_local_files` conta anche i giorni vuoti (0 byte): la riga «N log in archivio» di
+  Impostazioni e il conteggio della configurazione iniziale li includono, mentre le schede
+  della Sincronizzazione (`EnvStatus`) contano solo i giorni con chiamate.
+- `EnvSyncState.oldest_listed` viene salvato ma nessuno lo usa (la classificazione dei
+  giorni non ne ha bisogno).
+- Dopo l'aggiornamento, finché la prima sincronizzazione non ha letto l'elenco del server,
+  i buchi vecchi sono «non verificabile»: avvisi e badge restano muti.
+- La Ricerca non avvisa più di un archivio che ha semplicemente smesso di sincronizzarsi
+  senza memoria dell'elenco del server: lo dice solo il badge «da aggiornare».
+- Un giorno perso tiene il badge rosso (e il punto rosso nel riepilogo in alto) finché
+  resta nei 30 giorni del calendario: voluto, ma dura fino a un mese.
+- `count_crlf` rilegge a ogni esecuzione un file locale più grande di quello remoto (solo
+  per i giorni «shrunk», rari). Se il download della copia remota `.remote-<n>` fallisce,
+  l'avviso si ripete a ogni esecuzione.
+- `ArchiveWatch` rilegge tutta la cartella dei log dopo ogni sincronizzazione,
+  indicizzazione o importazione: poco per un archivio in ordine, cresce con i file fuori
+  struttura.
+- I file fuori posto dentro la cartella dei log vengono importati ma mai cestinati (tutta
+  la cartella dei log è intoccabile): restano lì, ignorati dall'indice, come «già in
+  archivio» nel resoconto.
+- Il conteggio «Trovati N log da importare» della configurazione iniziale è una stima: gli
+  ambienti non sono ancora noti; la finestra di importazione rifà la ricerca prima di
+  copiare.
+- L'avviso «perso» prende la sua altezza minima una volta sola, alla costruzione, da
+  quella dell'avviso «da scaricare» con una riga: se uno dei due testi va a capo (finestra
+  stretta, molte date) le due altezze tornano diverse.
+- Alcuni test dell'interfaccia di importazione sono stati scritti subito dopo il codice,
+  non prima.
 
 ## Sincronizzazione e indice
 
@@ -92,8 +130,11 @@ worker nella pagina Sincronizzazione, nessuna scrittura nel registro durante i t
 - `SchedulerService.config_source` ha un default che registrerebbe la schedulazione
   sbagliata se qualcuno dimenticasse di passarlo;
 - `plugins/tls/qopensslbackend.dll` finisce ancora nell'exe pur essendo inerte;
-- file lunghi sopra la soglia (~400 righe): `workers.py`, `main_window.py`,
-  `sync_page.py`, `search_page.py`.
+- file lunghi sopra la soglia (~400 righe): `workers.py`, `main_window.py` (~470),
+  `sync_page.py` (~425), `search_page.py`;
+- `tests/ui/test_settings_page.py::test_aggiungi_and_rimuovi_edit_the_table` fallisce se
+  eseguito subito dopo `tests/ui/test_preview_pane.py` (passa nell'ordine della suite
+  completa; c'era già prima della 1.1.0).
 
 ---
 
@@ -102,7 +143,7 @@ worker nella pagina Sincronizzazione, nessuna scrittura nel registro durante i t
 - Task 2: minor (deferred): `DAILY_NAME_RE` uses `$` not `\Z`; tests import helpers from tests.conftest; autoindex docstring mentions sync behaviour.
 - Task 5: minor (deferred): input BOM tolerance (utf-8-sig) in pretty_json; empty-string call_id test.
 - Task 1: minor (deferred): wrong-typed nested blocks silently defaulted; lenient env-item skip persists on next save (note for wizard); ENV_NAME_RE `$` vs fullmatch; double schema_version coercion warning; weak duplicate-name assertion.
-- Task 4: minor (deferred): json_ok=False for valid-JSON-non-object bodies — document on ScannedEntry; blank line under pending header → zero-length body; db.py URI paths.
+- Task 4: minor (deferred): json_ok=False for valid-JSON-non-object bodies — document on ScannedEntry; db.py URI paths.
 - Task 6: minor (deferred): _is_under should resolve 8.3 short paths; CSV "N/A"/"" not normalised to None (UI must treat as unknown); ParseError/FileNotFoundError not wrapped in SchedulerError; `description or default` vs `is None`.
 - Task 3: minor (deferred): state file read as utf-8 not utf-8-sig; no finalizer on ProcessLock; SIGTERM race in lock test; HTTPError fp not closed explicitly; O_BINARY for holder line.
 - Task 8: minor (deferred): request_date DESC with distinct values not exercised in the FDI_A ordering test; _hit relies on Row factory; report test-split counts cosmetic.
