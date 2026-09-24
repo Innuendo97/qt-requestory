@@ -3,7 +3,8 @@
 The state answers one question for the scheduler and the UI: "did the last
 successful sync of this environment happen after the last server-side
 compaction?" — if so there is nothing new to fetch. It also remembers what
-the last listing held (``oldest_listed``, ``listed_nonempty``) and every
+the last listing held (``oldest_listed``, ``listed_nonempty``,
+``listed_empty``) and every
 non-empty day ever listed (``seen_nonempty``), so the coverage view can tell
 a day still on the server ("da scaricare") from one the server purged before
 it was downloaded. The server keeps its daily files until a manual purge
@@ -24,6 +25,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import Literal
 
 from qtrequestory.core.fsutil import replace_with_retry
 
@@ -39,6 +41,9 @@ LEGACY_IMPORT_TIME = time(12, 0)
 
 #: ``seen_nonempty`` only keeps the days this recent (relative to the listing).
 SEEN_NONEMPTY_DAYS = 400
+
+#: How an environment's mirror reads in the UI; see ``SyncState.freshness``.
+Freshness = Literal["fresh", "empty_today", "stale"]
 
 
 @dataclass
@@ -56,6 +61,9 @@ class EnvSyncState:
     oldest_listed: date | None = None
     #: The non-empty days of the last listing read, ascending.
     listed_nonempty: tuple[date, ...] = ()
+    #: The 0-byte days of the last listing read, ascending (display only:
+    #: see ``SyncState.freshness``). ``()`` in a file written before 1.1.1.
+    listed_empty: tuple[date, ...] = ()
     #: Every non-empty day ever listed, ascending, capped to the last
     #: ``SEEN_NONEMPTY_DAYS`` days before the latest listing.
     seen_nonempty: tuple[date, ...] = ()
@@ -156,12 +164,46 @@ class SyncState:
         if last_success > now:
             log.warning("stato di sincronizzazione di %s nel futuro (%s): ignorato", env, last_success.isoformat())
             return False
-        last_compaction = datetime.combine(now.date(), compaction_time)
-        if now.time() < compaction_time:
-            last_compaction -= timedelta(days=1)
+        last_compaction = _last_compaction(now, compaction_time)
         if last_success < last_compaction:
             return False
         return state.newest_day is not None and state.newest_day >= last_compaction.date()
+
+    def freshness(self, env: str, now: datetime, compaction_time: time) -> Freshness:
+        """How the mirror reads in the UI: ``"fresh"``, ``"empty_today"`` or ``"stale"``.
+
+        Display only — ``is_fresh`` alone decides what a run skips, so the next
+        scheduled run still re-lists an ``"empty_today"`` environment and
+        confirms (or downloads) the day.
+
+        ``"fresh"`` is ``is_fresh``. ``"empty_today"`` is the one not-fresh
+        state that is not worth an amber badge: after today's compaction the
+        listing (read after it: ``last_compaction <= last_success <= now``)
+        showed today at 0 bytes (``listed_empty``), and every day up to
+        yesterday is mirrored (``newest_day >= today - 1``). Today's 0-byte
+        day is never written on the day itself (a late compaction must not
+        hide a day, see ``is_fresh``), so without this an environment with no
+        calls today read "da aggiornare" all evening. Only after today's
+        compaction: before it the compacted day is yesterday, and a 0-byte
+        yesterday is mirrored by the listing (fresh) or it is not (stale).
+        Everything else, including a state file written before
+        ``listed_empty`` existed, is ``"stale"``.
+        """
+        if self.is_fresh(env, now, compaction_time):
+            return "fresh"
+        state = self.get(env)
+        last_compaction = _last_compaction(now, compaction_time)
+        today = last_compaction.date()
+        if (
+            today == now.date()
+            and state.last_success is not None
+            and last_compaction <= state.last_success <= now
+            and today in state.listed_empty
+            and state.newest_day is not None
+            and state.newest_day >= today - timedelta(days=1)
+        ):
+            return "empty_today"
+        return "stale"
 
     # --------------------------------------------------------------- update ---
 
@@ -190,10 +232,12 @@ class SyncState:
         *,
         oldest_listed: date | None,
         listed_nonempty: Iterable[date],
+        listed_empty: Iterable[date] = (),
     ) -> None:
         """Remember what a listing read at ``when`` held, whatever the run's
         outcome: ``seen_nonempty`` grows by the listed non-empty days and
-        forgets those older than ``SEEN_NONEMPTY_DAYS`` before ``when``.
+        forgets those older than ``SEEN_NONEMPTY_DAYS`` before ``when``;
+        ``listed_empty`` is replaced by this listing's 0-byte days.
         ``last_success`` and the counts are left alone."""
         self._ensure_loaded()
         listed = tuple(sorted(set(listed_nonempty)))
@@ -201,7 +245,8 @@ class SyncState:
         cutoff = when.date() - timedelta(days=SEEN_NONEMPTY_DAYS)
         seen = tuple(sorted(d for d in set(current.seen_nonempty) | set(listed) if d >= cutoff))
         self._envs[env] = dataclasses.replace(
-            current, oldest_listed=oldest_listed, listed_nonempty=listed, seen_nonempty=seen)
+            current, oldest_listed=oldest_listed, listed_nonempty=listed, seen_nonempty=seen,
+            listed_empty=tuple(sorted(set(listed_empty))))
         self._save()
 
     def _save(self) -> None:
@@ -214,6 +259,7 @@ class SyncState:
                     "newest_day": s.newest_day.isoformat() if s.newest_day else None,
                     "oldest_listed": s.oldest_listed.isoformat() if s.oldest_listed else None,
                     "listed_nonempty": [d.isoformat() for d in s.listed_nonempty],
+                    "listed_empty": [d.isoformat() for d in s.listed_empty],
                     "seen_nonempty": [d.isoformat() for d in s.seen_nonempty],
                 }
                 for env, s in sorted(self._envs.items())
@@ -223,6 +269,14 @@ class SyncState:
         tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         replace_with_retry(tmp, self.path)
+
+
+def _last_compaction(now: datetime, compaction_time: time) -> datetime:
+    """Today at ``compaction_time`` if ``now`` is past it, else yesterday's."""
+    last = datetime.combine(now.date(), compaction_time)
+    if now.time() < compaction_time:
+        last -= timedelta(days=1)
+    return last
 
 
 def _parse_env(raw: object) -> EnvSyncState:
@@ -236,6 +290,7 @@ def _parse_env(raw: object) -> EnvSyncState:
         newest_day=_parse_newest_day(raw.get("newest_day")),
         oldest_listed=_parse_newest_day(raw.get("oldest_listed")),
         listed_nonempty=_parse_days(raw.get("listed_nonempty")),
+        listed_empty=_parse_days(raw.get("listed_empty")),
         seen_nonempty=_parse_days(raw.get("seen_nonempty")),
     )
 

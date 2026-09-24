@@ -319,3 +319,97 @@ def test_listing_memory_parsing_is_tolerant(tmp_path, raw):
     assert got.oldest_listed is None
     assert got.seen_nonempty == ()
     assert got.listed_nonempty in ((), _days(21))
+
+
+# ------------------------------------------- 1.1.1: a quiet today (display) ---
+#
+# is_fresh never counts today's 0-byte day (a late compaction must not hide a
+# day). ``freshness`` only says how that not-fresh state reads: "empty_today"
+# when the one missing confirmation is a day that the listing read after
+# today's compaction showed at 0 bytes, and everything up to yesterday is here.
+
+D22, D23, D24 = date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)
+EVENING = datetime(2026, 9, 24, 22, 33)
+
+
+def _quiet_today(state_path, *, when=EVENING, newest_day=D23, listed_empty=(D22, D24)):
+    st = SyncState(state_path).load()
+    st.record_listing("svil", when, oldest_listed=date(2026, 9, 21),
+                      listed_nonempty=(date(2026, 9, 21), D23), listed_empty=listed_empty)
+    st.mark_success("svil", when, last_remote_daily=4, newest_day=newest_day)
+    return SyncState(state_path).load()  # round-trip through disk
+
+
+def test_listed_empty_roundtrips_through_the_file(state_path):
+    st = _quiet_today(state_path)
+    data = json.loads(state_path.read_text(encoding="utf-8"))["envs"]["svil"]
+    assert data["listed_empty"] == ["2026-09-22", "2026-09-24"]
+    assert st.get("svil").listed_empty == (D22, D24)
+
+
+def test_a_quiet_today_reads_empty_today_but_is_not_fresh(state_path):
+    st = _quiet_today(state_path)
+    assert st.is_fresh("svil", EVENING, COMPACTION) is False
+    assert st.freshness("svil", EVENING, COMPACTION) == "empty_today"
+    assert st.freshness("svil", datetime(2026, 9, 24, 23, 59), COMPACTION) == "empty_today"
+
+
+def test_a_quiet_today_with_yesterday_missing_is_stale(state_path):
+    st = _quiet_today(state_path, newest_day=D22)
+    assert st.freshness("svil", EVENING, COMPACTION) == "stale"
+
+
+def test_a_listing_read_before_todays_compaction_is_stale(state_path):
+    st = _quiet_today(state_path, when=datetime(2026, 9, 24, 18, 0))
+    assert st.freshness("svil", EVENING, COMPACTION) == "stale"
+
+
+def test_today_non_empty_in_the_listing_is_stale(state_path):
+    st = _quiet_today(state_path, listed_empty=(D22,))
+    assert st.freshness("svil", EVENING, COMPACTION) == "stale"
+
+
+def test_before_compaction_nothing_changes(state_path):
+    """Before 18:30 the compacted day is yesterday: a 0-byte yesterday is
+    mirrored by the listing (fresh) or it is not (stale) — never "empty_today"."""
+    morning = datetime(2026, 9, 24, 9, 0)
+    st = _quiet_today(state_path, when=morning, newest_day=D22, listed_empty=(D23, D24))
+    assert st.is_fresh("svil", morning, COMPACTION) is False
+    assert st.freshness("svil", morning, COMPACTION) == "stale"
+    st = _quiet_today(state_path, when=morning, newest_day=D23, listed_empty=(D24,))
+    assert st.is_fresh("svil", morning, COMPACTION) is True
+    assert st.freshness("svil", morning, COMPACTION) == "fresh"
+
+
+def test_a_fresh_env_reads_fresh(state_path):
+    st = _quiet_today(state_path, newest_day=D24)
+    assert st.freshness("svil", EVENING, COMPACTION) == "fresh"
+
+
+def test_a_future_timestamp_is_stale_not_empty_today(state_path):
+    st = _quiet_today(state_path, when=datetime(2026, 9, 25, 22, 33))
+    assert st.freshness("svil", EVENING, COMPACTION) == "stale"
+
+
+def test_an_old_state_file_without_listed_empty_is_stale(tmp_path):
+    (tmp_path / "sync-state.json").write_text(json.dumps({"envs": {"svil": {
+        "last_success": "2026-09-24T22:33:00", "newest_day": "2026-09-23",
+        "listed_nonempty": ["2026-09-23"]}}}), encoding="utf-8")
+    st = SyncState(tmp_path / "sync-state.json").load()
+    assert st.get("svil").listed_empty == ()
+    assert st.freshness("svil", EVENING, COMPACTION) == "stale"
+
+
+@pytest.mark.parametrize("raw", ["not a list", 7, ["2026-09-24", "nope", None, 5]])
+def test_listed_empty_parsing_is_tolerant(tmp_path, raw):
+    (tmp_path / "sync-state.json").write_text(json.dumps({"envs": {"svil": {
+        "last_success": "2026-09-24T22:33:00", "listed_empty": raw}}}), encoding="utf-8")
+    got = SyncState(tmp_path / "sync-state.json").load().get("svil")
+    assert got.last_success == EVENING
+    assert got.listed_empty in ((), (D24,))
+
+
+def test_record_listing_without_listed_empty_clears_it(state_path):
+    st = _quiet_today(state_path)
+    st.record_listing("svil", EVENING, oldest_listed=D23, listed_nonempty=(D23,))
+    assert SyncState(state_path).load().get("svil").listed_empty == ()

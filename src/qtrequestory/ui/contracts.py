@@ -78,6 +78,7 @@ from qtrequestory.core.events import (
 )
 from qtrequestory.core.facade import ArchiveBusy, EnvStatus
 from qtrequestory.core.fsutil import real_is_within
+from qtrequestory.core.state import Freshness
 from qtrequestory.core.index.builder import IndexPlan, IndexStats
 from qtrequestory.core.importer import ImportResult, VerifiedOriginal
 from qtrequestory.core.index.search import Coverage, IndexStale, SearchHit, SearchQuery, pick_best
@@ -94,7 +95,7 @@ __all__ = [
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
     # re-exported core types
     "AppPaths", "CancelToken", "Cancelled", "Config", "ConfigError", "Coverage", "CoverageDays", "EntryName",
-    "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "IndexPlan", "IndexSettings",
+    "Environment", "EnvResult", "EnvStatus", "Event", "EventSink", "Freshness", "IndexPlan", "IndexSettings",
     "IndexStale", "IndexStats", "JobReport", "LocalDailyFile", "NOT_REGISTERED", "ScheduleSettings",
     "SchedulerError", "SearchHit", "SearchQuery", "SyncReport", "SyncSettings", "TaskSpec",
     "TaskStatus",
@@ -224,6 +225,12 @@ class SyncApi(Protocol):
 
     def is_fresh(self, env_name: str) -> bool:
         """True when this env was already synced after the last compaction."""
+        ...
+
+    def freshness(self, env_name: str) -> Freshness:
+        """How the mirror reads: ``"fresh"`` (``is_fresh``), ``"empty_today"``
+        (not fresh only because today had no calls: shown as up to date) or
+        ``"stale"``. Display only; ``is_fresh`` decides what a run skips."""
         ...
 
 

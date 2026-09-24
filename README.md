@@ -148,6 +148,9 @@ Ricerca avvisa («2 giorni da scaricare in coll · 1 giorno non recuperabile»)
 con *Vai a Sincronizzazione*. Dopo l'aggiornamento alla 1.1.0 i giorni vecchi
 restano «non verificabile» o «weekend» finché la prima sincronizzazione non ha
 letto l'elenco del server.
+Se dopo la compattazione serale il server elenca il giorno di oggi vuoto, la
+scheda dell'ambiente resta «aggiornato» (il suggerimento spiega che oggi non ci
+sono state chiamate e che il giorno verrà confermato con la sincronizzazione di domani).
 
 ### Importare log da altre cartelle
 

@@ -107,6 +107,29 @@ def test_freshness_agrees_after_every_knob(fake, env: str):
     _assert_freshness_agrees(sync, env)
 
 
+@pytest.mark.parametrize("env", ENVS)
+def test_empty_today_is_not_fresh_and_still_runs(fake, env: str):
+    """``set_empty_today``: the card reads up to date, but a non-forced run
+    still goes (``is_fresh`` False), exactly like the engine."""
+    sync = fake.sync
+    sync.set_empty_today(env)
+    assert sync.freshness(env) == "empty_today"
+    assert sync.env_status(env).freshness == "empty_today"
+    assert sync.is_fresh(env) is False
+    _assert_freshness_agrees(sync, env)
+    sync.set_fresh(env)
+    assert (sync.freshness(env), sync.env_status(env).freshness) == ("fresh", "fresh")
+    sync.set_ok(env)
+    assert (sync.freshness(env), sync.env_status(env).freshness) == ("stale", "stale")
+
+
+def test_freshness_follows_the_fresh_flag_of_a_patched_status(fake):
+    fake.sync.set_env_status("coll", fresh=True)
+    assert fake.sync.freshness("coll") == "fresh"
+    fake.sync.set_env_status("coll", fresh=False)
+    assert fake.sync.freshness("coll") == "stale"
+
+
 # ------------------------------------------------------- unknown env knobs ---
 
 def test_knobs_tolerate_an_env_the_fake_does_not_know(fake):
@@ -528,6 +551,31 @@ def _case_write_temp_file_honours_retention(tmp_path: Path) -> None:
     assert not fake_stale.exists()
 
 
+def _case_empty_today_reads_the_same(tmp_path: Path) -> None:
+    """1.1.1: a quiet today after the compaction — not fresh (the next run
+    re-lists), read as "empty_today" by ``freshness`` and ``env_status``."""
+    from qtrequestory.core.state import SyncState
+
+    cfg = dataclasses.replace(default_config(), mirror_root=tmp_path / "real" / "mirror",
+                              environments=[Environment("svil", "https://example.invalid/svil/")])
+    st = SyncState(cfg.state_path).load()
+    when = datetime(2026, 9, 24, 22, 33)
+    st.record_listing("svil", when, oldest_listed=date(2026, 9, 21),
+                      listed_nonempty=(date(2026, 9, 23),),
+                      listed_empty=(date(2026, 9, 22), date(2026, 9, 24)))
+    st.mark_success("svil", when, newest_day=date(2026, 9, 23))
+    real = facade.SyncService(lambda: cfg, clock=lambda: datetime(2026, 9, 24, 22, 40))
+
+    fake = build_fake_core(tmp_path / "fake").sync
+    fake.set_empty_today("svil")
+
+    def seen(sync) -> tuple:
+        status = sync.env_status("svil")
+        return sync.is_fresh("svil"), sync.freshness("svil"), status.fresh, status.freshness
+
+    assert seen(real) == seen(fake) == (False, "empty_today", False, "empty_today")
+
+
 _FIDELITY_CASES = [
     ("run_none_excludes_disabled_envs", _case_run_none_excludes_disabled_envs),
     ("unknown_env_in_run_raises", _case_unknown_env_in_run_raises),
@@ -537,6 +585,7 @@ _FIDELITY_CASES = [
     ("list_template_keys_breaks_ties_by_count_then_name", _case_list_template_keys_breaks_ties_by_count_then_name),
     ("plan_is_scoped_to_requested_envs", _case_plan_is_scoped_to_requested_envs),
     ("write_temp_file_honours_retention", _case_write_temp_file_honours_retention),
+    ("empty_today_reads_the_same", _case_empty_today_reads_the_same),
 ]
 
 

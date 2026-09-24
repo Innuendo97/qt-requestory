@@ -167,6 +167,7 @@ class EnvCard(QFrame):
         self.pill_kind = badge.kind
         self.pill.setText(badge.text)
         self.pill.setProperty("pill", badge.tone)
+        self.pill.setToolTip(badge.tooltip)
         theme.repolish(self.pill)
 
     def set_progress(self, texts: StripTexts | None) -> None:

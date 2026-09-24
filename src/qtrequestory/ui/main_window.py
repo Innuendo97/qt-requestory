@@ -15,7 +15,7 @@ are in.
 
 Optional hooks a page may expose (all duck-typed, all optional):
 
-``state_changed``       ``Signal(list)`` of ``(env, tone, text)`` -> the status chip
+``state_changed``       ``Signal(list)`` of ``(env, tone, text[, note])`` -> the status chip
 ``summary_changed``     ``Signal(str)`` -> the status chip as one plain line (only
                         wired when the page has no ``state_changed``)
 ``emit_initial_state()`` called once, after every hook above is connected: a
@@ -214,8 +214,8 @@ class MainWindow(QMainWindow):
         """A confirmation over the content ("JSON copiato · 157 KB"); see ``ui/toast``."""
         self.toast.show_message(text, tone, ms)
 
-    def set_sync_state(self, items: Sequence[tuple[str, str, str]]) -> None:
-        """The app-bar chip: ``(env, tone, text)`` per environment."""
+    def set_sync_state(self, items: Sequence[tuple]) -> None:
+        """The app-bar chip: ``(env, tone, text[, note])`` per environment."""
         self.app_bar.status_chip.set_envs(list(items))
 
     def set_sync_summary(self, text: str) -> None:

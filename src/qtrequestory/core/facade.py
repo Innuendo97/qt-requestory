@@ -75,7 +75,7 @@ from qtrequestory.core.jobs import JobReport, run_index_job, run_sync_job
 from qtrequestory.core.lock import ProcessLock, peek_holder
 from qtrequestory.core.paths import AppPaths, app_paths, executable_dir
 from qtrequestory.core.scheduler import CommandRunner, SchedulerError, TaskStatus
-from qtrequestory.core.state import SyncState
+from qtrequestory.core.state import Freshness, SyncState
 
 #: How a configuration is obtained. ``ConfigService.current`` is the real one.
 ConfigSource = Callable[[], Config]
@@ -98,6 +98,11 @@ class EnvStatus:
     for separately with ``SyncService.check_reachable``. ``n_local_files``,
     ``local_bytes`` and ``latest_day`` count only the days with calls: a
     0-byte daily file is a day without traffic.
+
+    ``freshness`` is how the card reads the mirror (``SyncState.freshness``):
+    ``"fresh"`` exactly when ``fresh``; ``"empty_today"`` when the only day
+    not confirmed is today, listed at 0 bytes after the compaction — shown
+    as up to date, while ``fresh`` stays False so the next run re-lists.
     """
 
     env: str
@@ -109,6 +114,7 @@ class EnvStatus:
     index_pending: int
     last_remote_daily: int = 0
     last_downloaded: int = 0
+    freshness: Freshness = "stale"
 
     @property
     def never_synced(self) -> bool:
@@ -197,20 +203,23 @@ class SyncService:
         cfg = self._config_source()
         if config_mod.mirror_root_errors(cfg):
             return empty_env_status(env_name)
-        st = SyncState(cfg.state_path).load().get(env_name)
+        state = SyncState(cfg.state_path).load()
+        st = state.get(env_name)
+        freshness = state.freshness(env_name, self._clock(), cfg.compaction_time)
         # Newest first. A 0-byte file is a day the server published without
         # traffic: "no calls", not archive content, so it is not counted.
         local = [f for f in daily.list_local_daily_files(cfg.mirror_root, env_name) if f.size > 0]
         return EnvStatus(
             env=env_name,
             last_success=st.last_success,
-            fresh=self.is_fresh(env_name),
+            fresh=freshness == "fresh",
             n_local_files=len(local),
             local_bytes=sum(f.size for f in local),
             latest_day=local[0].day if local else None,
             index_pending=self._index_pending(cfg, env_name),
             last_remote_daily=st.last_remote_daily,
             last_downloaded=st.last_downloaded,
+            freshness=freshness,
         )
 
     def check_reachable(self, env: Environment, timeout: float = REACHABLE_TIMEOUT_S) -> bool:
@@ -294,6 +303,15 @@ class SyncService:
             return False
         state = SyncState(cfg.state_path).load()
         return state.is_fresh(env_name, self._clock(), cfg.compaction_time)
+
+    def freshness(self, env_name: str) -> Freshness:
+        """``"fresh"``, ``"empty_today"`` or ``"stale"``: see ``SyncState.freshness``.
+        An unusable mirror is ``"stale"``, like ``is_fresh`` is False."""
+        cfg = self._config_source()
+        if config_mod.mirror_root_errors(cfg):
+            return "stale"
+        state = SyncState(cfg.state_path).load()
+        return state.freshness(env_name, self._clock(), cfg.compaction_time)
 
     # -- internals ---------------------------------------------------------
 

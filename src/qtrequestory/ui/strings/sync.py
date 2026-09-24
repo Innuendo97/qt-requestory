@@ -90,6 +90,11 @@ SYNC_MISSING_DATES_SEP = ", "
 # -- env cards ---------------------------------------------------------------
 
 SYNC_BADGE_FRESH = "aggiornato"
+#: Tooltip of the "aggiornato" badge (and chip) of an environment that is not
+#: fresh only because today had no calls (``freshness == "empty_today"``).
+SYNC_BADGE_EMPTY_TODAY_TOOLTIP = (
+    "Oggi nessuna chiamata su questo ambiente: verrà confermato con la sincronizzazione di domani."
+)
 SYNC_BADGE_STALE = "da aggiornare"
 SYNC_BADGE_QUEUED = "in attesa"
 SYNC_BADGE_RUNNING = "in corso"

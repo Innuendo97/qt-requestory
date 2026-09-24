@@ -381,6 +381,7 @@ def _lost_in_coll(page, fake_core):
 
 BADGE_SETUPS = {
     sb.FRESH: lambda page, fc: fc.sync.set_env_status("coll", fresh=True),
+    sb.EMPTY_TODAY: lambda page, fc: fc.sync.set_empty_today("coll"),
     sb.STALE: lambda page, fc: fc.sync.set_env_status(
         "coll", fresh=False, last_success=datetime.now() - timedelta(days=1)),
     sb.NEVER: lambda page, fc: fc.sync.set_env_status("coll", fresh=False, last_success=None),
@@ -400,7 +401,7 @@ def test_the_chip_dot_agrees_with_the_card_badge_for_every_kind(page, fake_core,
     page.refresh_cards()
     card = page.card("coll")
     assert card.pill_kind == kind
-    tones = dict((env, tone) for env, tone, _ in page.presenter.state())
+    tones = dict((env, tone) for env, tone, *_ in page.presenter.state())
     assert tones["coll"] == card.pill.property("pill")
     assert (tones["coll"] == "bad") == (kind == sb.LOST), "red only for a lost day"
 
@@ -605,6 +606,38 @@ def test_the_initial_state_is_one_toned_entry_per_environment(page, fake_core):
     [(coll, svil)] = [tuple(s) for s in states]
     assert coll[0] == "coll" and coll[1] == "ok" and coll[2].startswith("oggi ")
     assert svil == ("svil", "neutral", strings.SYNC_WHEN_NEVER)
+
+
+def test_a_quiet_today_is_up_to_date_on_the_card_and_in_the_chip(page, fake_core):
+    """1.1.1: after the compaction, no calls today -> "aggiornato", with the
+    note on the card's pill and in the chip's tooltip; nothing amber."""
+    fake_core.sync.set_empty_today("coll")
+    fake_core.sync.set_env_status("coll", last_success=datetime.now().replace(second=0))
+    page.refresh_cards()
+    card = page.card("coll")
+    assert card.pill_kind == sb.EMPTY_TODAY
+    assert (card.pill.text(), card.pill.property("pill")) == (strings.SYNC_BADGE_FRESH, "ok")
+    assert card.pill.toolTip() == strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP
+    coll = next(item for item in page.presenter.state() if item[0] == "coll")
+    assert coll[1] == "ok" and coll[2].startswith("oggi ")
+    assert coll[3] == strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP
+    fake_core.sync.set_env_status("coll", fresh=True)
+    page.refresh_cards()
+    assert card.pill.toolTip() == "", "the note goes with the quiet today"
+    assert all(len(item) == 3 for item in page.presenter.state())
+
+
+def test_a_quiet_today_is_up_to_date_in_the_app_bar_chip(qtbot, page, fake_core):
+    from qtrequestory.ui.app_bar import StatusChip
+
+    fake_core.sync.set_empty_today("coll")
+    chip = StatusChip()
+    qtbot.addWidget(chip)
+    chip.set_envs(page.presenter.state())
+    tones = dict(zip((item[0] for item in page.presenter.state()),
+                     (dot.property("dot") for dot in chip.dots())))
+    assert tones["coll"] == "ok"
+    assert "coll: " + strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP in chip.toolTip()
 
 
 def test_an_older_mirror_is_amber_never_red(page, fake_core):

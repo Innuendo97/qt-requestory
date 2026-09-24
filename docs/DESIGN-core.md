@@ -283,11 +283,12 @@ class UrllibHttpClient(HttpClient)   # stdlib urllib; default SSL context (Windo
 ```python
 @dataclass class EnvSyncState: last_success: datetime|None; last_remote_daily: int; last_downloaded: int; newest_day: date|None
                                oldest_listed: date|None; listed_nonempty: tuple[date,...]; seen_nonempty: tuple[date,...]
+                               listed_empty: tuple[date,...]   # 0-byte days of the last listing (1.1.1; () from older files)
 class SyncState(path):
     load()                       # tolerant; imports legacy <root>/.last-sync.json (utf-8-sig, {"svil":"YYYY-MM-DD"}) once
     get(env) -> EnvSyncState
     mark_success(env, when, *, last_remote_daily=0, last_downloaded=0, newest_day=None)     # atomic save, keeps the listing memory
-    record_listing(env, when, *, oldest_listed, listed_nonempty)   # every real run's listing; seen_nonempty = union, last 400 days
+    record_listing(env, when, *, oldest_listed, listed_nonempty, listed_empty=())   # every real run's listing; seen_nonempty = union, last 400 days
     is_fresh(env, now, compaction_time) -> bool
         # fresh iff ALL of:
         #  1. last_success is not None and <= now (a future timestamp is never fresh, and logs a warning)
@@ -301,6 +302,12 @@ class SyncState(path):
         #     hourly run retries instead of leaving the day behind until a manual purge deletes it. Today's
         #     0-byte file never counts, even after compaction_time (late compaction); Sunday does on Monday.
         #  4. a state loaded from a file written before newest_day existed (rule 3's key missing) -> not fresh
+    freshness(env, now, compaction_time) -> Literal["fresh", "empty_today", "stale"]   # display only (1.1.1)
+        # "fresh" iff is_fresh; "empty_today" iff not fresh BUT now is past today's compaction,
+        # last_compaction <= last_success <= now, today in listed_empty and newest_day >= today - 1 day
+        # (the only unconfirmed day is today, listed at 0 bytes); else "stale". Exposed as
+        # SyncService.freshness / EnvStatus.freshness: the card and the chip read "aggiornato" with a tooltip,
+        # while is_fresh stays False so the next scheduled run re-lists and confirms or downloads the day.
 class ProcessLock(path): acquire(blocking=False) -> bool; release(); holder_info(); context manager   # msvcrt.locking
 def peek_holder(path) -> str | None     # "<pid> <ISO time>" of a LIVE holder, else None; never takes the lock
 ```

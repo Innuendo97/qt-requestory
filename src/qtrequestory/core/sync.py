@@ -364,6 +364,7 @@ class SyncEngine:
                 env.name, listing_at,
                 oldest_listed=min((r.day for r in daily), default=None),
                 listed_nonempty=[r.day for r in daily if r.size > 0],
+                listed_empty=[r.day for r in daily if r.size == 0],
             )
         except OSError as e:
             self._sink(LogMessage(logging.WARNING,

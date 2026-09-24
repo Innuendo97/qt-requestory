@@ -10,7 +10,9 @@ Three rules shape it:
 * **What is happening beats what happened**, and what happened beats what the
   mirror looks like on disk: in corso > in attesa > non raggiungibile >
   errori > giorni persi > da scaricare > aggiornato / da aggiornare / mai
-  sincronizzato.
+  sincronizzato. A mirror that is not fresh only because today had no calls
+  (``EnvStatus.freshness == "empty_today"``) reads "aggiornato" too, with a
+  tooltip saying tomorrow's sync confirms the day.
 * **A hole beats a fresh mirror.** The server keeps its files until a manual
   purge: a day with calls that is still listed but not local (``pending``)
   is one sync away, a day purged before it was downloaded (``lost``) is gone.
@@ -28,11 +30,12 @@ from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import EnvStatus
 
 __all__ = [
-    "Badge", "ERRORS", "FRESH", "LOST", "NEVER", "PENDING", "QUEUED", "RUNNING", "STALE",
+    "Badge", "EMPTY_TODAY", "ERRORS", "FRESH", "LOST", "NEVER", "PENDING", "QUEUED", "RUNNING", "STALE",
     "UNREACHABLE", "badge_for",
 ]
 
 FRESH = "fresh"
+EMPTY_TODAY = "empty_today"
 STALE = "stale"
 NEVER = "never"
 RUNNING = "running"
@@ -44,6 +47,7 @@ ERRORS = "errors"
 
 _TONES = {
     FRESH: "ok",
+    EMPTY_TODAY: "ok",
     STALE: "warn",
     NEVER: "neutral",
     RUNNING: "neutral",
@@ -56,6 +60,7 @@ _TONES = {
 
 _TEXTS = {
     FRESH: strings.SYNC_BADGE_FRESH,
+    EMPTY_TODAY: strings.SYNC_BADGE_FRESH,
     STALE: strings.SYNC_BADGE_STALE,
     NEVER: strings.SYNC_BADGE_NEVER,
     RUNNING: strings.SYNC_BADGE_RUNNING,
@@ -67,11 +72,13 @@ _TEXTS = {
 
 @dataclass(frozen=True)
 class Badge:
-    """``kind`` for code, ``tone`` for the theme (``pill``/``dot``), ``text`` for people."""
+    """``kind`` for code, ``tone`` for the theme (``pill``/``dot``), ``text`` for
+    people, ``tooltip`` for the one badge that needs a word more (else "")."""
 
     kind: str
     tone: str
     text: str
+    tooltip: str = ""
 
 
 def badge_for(
@@ -98,7 +105,8 @@ def badge_for(
         text = strings.SYNC_BADGE_PENDING.format(n=pending)
     else:
         text = _TEXTS[kind]
-    return Badge(kind, _TONES[kind], text)
+    tooltip = strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP if kind == EMPTY_TODAY else ""
+    return Badge(kind, _TONES[kind], text, tooltip)
 
 
 def _kind(status: EnvStatus | None, *, running: bool, queued: bool, reachable: bool | None,
@@ -119,6 +127,8 @@ def _kind(status: EnvStatus | None, *, running: bool, queued: bool, reachable: b
         return NEVER
     if status.fresh:
         return FRESH
+    if status.freshness == "empty_today":
+        return EMPTY_TODAY
     if status.never_synced:
         return NEVER
     return STALE

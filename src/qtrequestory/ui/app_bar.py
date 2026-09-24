@@ -60,8 +60,11 @@ class StatusChip(QPushButton):
         self._summary = ""
         self.hide()
 
-    def set_envs(self, items: Sequence[tuple[str, str, str]]) -> None:
-        """``(env, tone, text)`` per environment; an empty list hides the chip.
+    def set_envs(self, items: Sequence[tuple]) -> None:
+        """``(env, tone, text)`` or ``(env, tone, text, note)`` per environment;
+        an empty list hides the chip. A note goes into the chip's tooltip as
+        "env: note" (the labels let the mouse through, so they cannot carry
+        one themselves).
 
         ``env`` may be empty: :meth:`MainWindow.set_sync_summary` passes one
         plain line that way.
@@ -73,7 +76,8 @@ class StatusChip(QPushButton):
                 widget.deleteLater()
         self._dots = []
         parts: list[str] = []
-        for index, (env, tone, text) in enumerate(items):
+        notes: list[str] = []
+        for index, (env, tone, text, *note) in enumerate(items):
             if index:
                 self._add_label(strings.CHIP_SEPARATOR.strip(), role="muted")
             dot = self._add_label(DOT)
@@ -83,6 +87,9 @@ class StatusChip(QPushButton):
             line = f"{env} {text}".strip()
             self._add_label(line)
             parts.append(line)
+            if note and note[0]:
+                notes.append(f"{env}: {note[0]}" if env else note[0])
+        self.setToolTip("\n".join([strings.STATUS_SYNC_SUMMARY_TOOLTIP, *notes]))
         self._summary = strings.CHIP_SEPARATOR.join(parts)
         self.setAccessibleName(self._summary)
         self.setVisible(bool(parts))

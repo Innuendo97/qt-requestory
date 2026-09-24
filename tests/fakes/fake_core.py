@@ -83,6 +83,7 @@ from qtrequestory.core.index.search import (
 from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskStatus
+from qtrequestory.core.state import Freshness
 from qtrequestory.core.sync import EnvResult, SyncReport
 from qtrequestory.ui.contracts import CoreServices
 
@@ -280,6 +281,15 @@ class FakeSyncApi:
         engine (with ``force`` — what "Sincronizza ora" uses — it downloads)."""
         self._set_outcome(env_name, "fresh")
 
+    def set_empty_today(self, env_name: str) -> None:
+        """No calls today, listed after the compaction (1.1.1): the card reads
+        up to date (``freshness`` "empty_today") but ``is_fresh`` is False, so
+        a non-forced run still goes — the scripted download, like the engine
+        re-listing the server."""
+        self._outcomes[env_name] = "ok"
+        self._n_failures.pop(env_name, None)
+        self.set_env_status(env_name, fresh=False, freshness="empty_today")
+
     def set_ok(self, env_name: str) -> None:
         """Back to the default scripted download."""
         self._set_outcome(env_name, "ok")
@@ -302,7 +312,12 @@ class FakeSyncApi:
         """Patch one card's status, creating it for an env the fake does not
         know: the wizard can import an ``environments.json`` with any names at
         all, and a knob that raised ``KeyError`` there would make those names
-        untestable even though ``env_status`` answers for them."""
+        untestable even though ``env_status`` answers for them.
+
+        Patching ``fresh`` alone keeps ``freshness`` in step with it
+        ("fresh" / "stale"), as ``core.facade.env_status`` always does."""
+        if "fresh" in kw and "freshness" not in kw:
+            kw["freshness"] = "fresh" if kw["fresh"] else "stale"
         self._statuses[env_name] = dataclasses.replace(self._status(env_name), **kw)
         return self._statuses[env_name]
 
@@ -422,6 +437,9 @@ class FakeSyncApi:
             current,
             last_success=datetime.now(),
             fresh=False,
+            # a quiet today stays quiet after a run (the engine never writes
+            # today's 0-byte day); anything else is simply not fresh
+            freshness="empty_today" if current.freshness == "empty_today" else "stale",
             n_local_files=current.n_local_files + result.downloaded,
             local_bytes=current.local_bytes + result.bytes,
             latest_day=DAYS[0],
@@ -455,6 +473,9 @@ class FakeSyncApi:
 
     def is_fresh(self, env_name: str) -> bool:
         return self.env_status(env_name).fresh
+
+    def freshness(self, env_name: str) -> Freshness:
+        return self.env_status(env_name).freshness
 
     # -- internals ---------------------------------------------------------
 

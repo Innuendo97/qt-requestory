@@ -311,10 +311,38 @@ class TestEnvStatus:
         assert coll.index_up_to_date is False
         # the state says 09:00 today and the clock is 09:30, before the 18:30 compaction
         assert coll.fresh is True and svc.is_fresh("coll") is True
+        assert coll.freshness == "fresh" and svc.freshness("coll") == "fresh"
 
         svil = svc.env_status("svil")
         assert (svil.last_success, svil.never_synced, svil.fresh) == (None, True, False)
         assert (svil.n_local_files, svil.latest_day, svil.index_pending) == (1, D16, 1)
+
+    def test_a_quiet_today_reads_empty_today_through_the_facade(self, tmp_path: Path):
+        """1.1.1: the listing read at 22:33 showed today at 0 bytes and
+        yesterday is mirrored: not fresh (the next run re-lists), but the card
+        reads it as up to date."""
+        from qtrequestory.core.state import SyncState
+
+        cfg = _config(tmp_path)
+        st = SyncState(cfg.state_path).load()
+        when = datetime(2026, 9, 24, 22, 33)
+        st.record_listing("svil", when, oldest_listed=date(2026, 9, 21),
+                          listed_nonempty=(date(2026, 9, 23),),
+                          listed_empty=(date(2026, 9, 22), date(2026, 9, 24)))
+        st.mark_success("svil", when, newest_day=date(2026, 9, 23))
+        svc = facade.SyncService(lambda: cfg, clock=lambda: datetime(2026, 9, 24, 22, 40))
+
+        status = svc.env_status("svil")
+        assert (status.fresh, status.freshness) == (False, "empty_today")
+        assert (svc.is_fresh("svil"), svc.freshness("svil")) == (False, "empty_today")
+        other = svc.env_status("coll")
+        assert (other.fresh, other.freshness) == (False, "stale")
+
+    def test_freshness_of_an_unusable_mirror_is_stale(self, tmp_path: Path):
+        cfg = dataclasses.replace(_config(tmp_path), mirror_root=Path(""))
+        svc = facade.SyncService(lambda: cfg)
+        assert svc.freshness("svil") == "stale"
+        assert svc.env_status("svil").freshness == "stale"
 
     def test_a_0_byte_day_is_no_traffic_not_archive_content(self, mirror, tmp_path: Path,
                                                             fake_clock):

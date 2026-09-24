@@ -75,6 +75,20 @@ def test_the_chip_renders_one_dot_and_text_per_env(qtbot):
     assert not chip.isHidden()
 
 
+def test_a_note_on_an_env_goes_into_the_chip_tooltip(qtbot):
+    from qtrequestory.ui import strings
+
+    chip = StatusChip()
+    qtbot.addWidget(chip)
+    chip.set_envs([("coll", "ok", "oggi 11:24"), ("svil", "ok", "oggi 22:33", "nessuna chiamata")])
+    assert chip.summary() == "coll oggi 11:24 · svil oggi 22:33"
+    assert [d.property("dot") for d in chip.dots()] == ["ok", "ok"]
+    assert chip.toolTip().startswith(strings.STATUS_SYNC_SUMMARY_TOOLTIP)
+    assert "svil: nessuna chiamata" in chip.toolTip()
+    chip.set_envs([("coll", "ok", "oggi 11:24")])
+    assert chip.toolTip() == strings.STATUS_SYNC_SUMMARY_TOOLTIP
+
+
 def test_replaced_chip_labels_disappear_at_once(qtbot):
     """deleteLater runs on the next event loop turn: until then the old labels
     must not be painted over the new ones."""

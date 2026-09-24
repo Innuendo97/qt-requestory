@@ -427,6 +427,26 @@ def test_what_is_happening_beats_what_happened():
         "a day still to download matters more than a fresh mirror")
 
 
+def test_a_quiet_today_reads_up_to_date_with_a_note():
+    """1.1.1: not fresh only because today had no calls -> the ok badge,
+    with a tooltip saying tomorrow's sync confirms it. Never amber or red."""
+    badge = sb.badge_for(_status(freshness="empty_today"))
+    assert (badge.kind, badge.tone, badge.text) == (sb.EMPTY_TODAY, "ok", strings.SYNC_BADGE_FRESH)
+    assert badge.tooltip == strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP
+    assert strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP == (
+        "Oggi nessuna chiamata su questo ambiente: "
+        "verrà confermato con la sincronizzazione di domani.")
+    assert sb.badge_for(_status(freshness="empty_today"), pending=1).kind == sb.PENDING
+    assert sb.badge_for(_status(freshness="empty_today"), reachable=False).kind == sb.UNREACHABLE
+    assert sb.badge_for(_status(freshness="empty_today"), running=True).kind == sb.RUNNING
+
+
+def test_only_the_quiet_today_badge_has_a_tooltip():
+    assert sb.badge_for(_status(fresh=True, freshness="fresh")).tooltip == ""
+    assert sb.badge_for(_status()).tooltip == ""
+    assert sb.badge_for(None).tooltip == ""
+
+
 def test_no_badge_but_a_lost_day_is_ever_red():
     """An unreachable endpoint is the normal state outside the VPN."""
     for kw in (dict(reachable=False), dict(failed=5), dict(pending=9), {}):

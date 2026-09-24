@@ -971,3 +971,70 @@ def test_a_dry_run_summary_says_anteprima():
 def test_the_engine_report_carries_dry_run(cfg, state, events, fake_clock, stub_server):
     _serve_env(stub_server, "svil", {"20260921.txt": _payload(100)})
     assert _engine(cfg, state, events, fake_clock).run(["svil"], dry_run=True).dry_run is True
+
+
+# ------------------------------------- 9d. 1.1.1: a quiet today (display) ---
+
+def _serve_dated(stub_server: StubServer, env: str, files: dict[str, bytes]) -> None:
+    entries = [(name, "24-Sep-2026 18:30", len(body)) for name, body in files.items()]
+    stub_server.add(f"/{env}/", autoindex_html(entries))
+    for name, body in files.items():
+        stub_server.add(f"/{env}/{name}", body)
+
+
+def test_a_quiet_today_reads_empty_today_and_is_confirmed_the_next_morning(cfg, state, events, stub_server):
+    """The real case: svil read at 22:33 on the 24th listed four daily files,
+    the 22nd and the 24th at 0 bytes. The 24th is not written (a late
+    compaction must never hide a day), so the env is not fresh — but it reads
+    "empty_today", not "da aggiornare". The next morning's listing writes the
+    placeholder and the env is fresh."""
+    files = {"20260924.txt": b"", "20260923.txt": _payload(900),
+             "20260922.txt": b"", "20260921.txt": _payload(700)}
+    _serve_dated(stub_server, "svil", files)
+    clock = FakeClock(datetime(2026, 9, 24, 22, 33))
+
+    _engine(cfg, state, events, clock).run(["svil"], force=True)
+
+    assert not _local(cfg, "svil", "20260924.txt").exists(), "today's 0-byte day is never written"
+    assert _local(cfg, "svil", "20260922.txt").stat().st_size == 0
+    st = SyncState(cfg.state_path).load()
+    assert st.get("svil").newest_day == date(2026, 9, 23)
+    assert st.get("svil").listed_empty == (date(2026, 9, 22), date(2026, 9, 24))
+    assert st.is_fresh("svil", clock.now, cfg.compaction_time) is False
+    assert st.freshness("svil", clock.now, cfg.compaction_time) == "empty_today"
+
+    # the next scheduled run still re-lists (is_fresh is unchanged)
+    before = len(_requests_to(stub_server, "/svil/"))
+    clock.now = datetime(2026, 9, 24, 23, 30)
+    _engine(cfg, SyncState(cfg.state_path).load(), events, clock).run(["svil"])
+    assert len(_requests_to(stub_server, "/svil/")) == before + 1
+
+    _serve_dated(stub_server, "svil", {"20260925.txt": b"", **files})
+    clock.now = datetime(2026, 9, 25, 8, 0)
+    _engine(cfg, SyncState(cfg.state_path).load(), events, clock).run(["svil"])
+
+    assert _local(cfg, "svil", "20260924.txt").stat().st_size == 0
+    assert not _local(cfg, "svil", "20260925.txt").exists()
+    st = SyncState(cfg.state_path).load()
+    assert st.get("svil").newest_day == date(2026, 9, 24)
+    assert st.is_fresh("svil", clock.now, cfg.compaction_time) is True
+    assert st.freshness("svil", clock.now, cfg.compaction_time) == "fresh"
+
+
+def test_a_quiet_today_with_yesterday_not_downloaded_stays_stale(cfg, state, events, stub_server):
+    _serve_dated(stub_server, "svil", {"20260924.txt": b"", "20260923.txt": _payload(900)})
+    stub_server.routes["/svil/20260923.txt"].status = 500
+    clock = FakeClock(datetime(2026, 9, 24, 22, 33))
+
+    report = _engine(cfg, state, events, clock).run(["svil"])
+
+    assert report.results[0].status == "errors"
+    st = SyncState(cfg.state_path).load()
+    assert st.get("svil").listed_empty == (date(2026, 9, 24),)
+    assert st.freshness("svil", clock.now, cfg.compaction_time) == "stale"
+
+
+def test_a_dry_run_records_no_listed_empty(cfg, state, events, stub_server):
+    _serve_dated(stub_server, "svil", {"20260924.txt": b"", "20260923.txt": _payload(900)})
+    _engine(cfg, state, events, FakeClock(datetime(2026, 9, 24, 22, 33))).run(["svil"], dry_run=True)
+    assert not cfg.state_path.exists()

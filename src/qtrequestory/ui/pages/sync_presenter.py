@@ -155,8 +155,10 @@ class SyncPresenter(QObject):
             parts.append(strings.SYNC_SUMMARY_ENTRY.format(env=name, when=when))
         return strings.SYNC_SUMMARY_SEP.join(parts)
 
-    def state(self) -> list[tuple[str, str, str]]:
-        """``(env, tone, text)`` per enabled environment, for the status chip.
+    def state(self) -> list[tuple]:
+        """``(env, tone, text)`` per enabled environment, for the status chip;
+        ``(env, tone, text, note)`` when the badge carries a tooltip (a quiet
+        today: the chip puts the note in its own tooltip).
 
         The tone is the badge's tone — the same function decides both — and
         the text is what fits in a chip: "in corso", "in attesa",
@@ -176,7 +178,8 @@ class SyncPresenter(QObject):
                 text = badge.text
             else:
                 text = fmt.format_when(self._services.sync.env_status(name).last_success)
-            items.append((name, badge.tone, text))
+            items.append((name, badge.tone, text, badge.tooltip) if badge.tooltip
+                         else (name, badge.tone, text))
         return items
 
     def emit_state(self) -> None:
