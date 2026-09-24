@@ -275,10 +275,13 @@ class IndexApi(Protocol):
         ...
 
     def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> CoverageDays:
-        """Weekday gaps in the local mirror over the ``days`` days before
-        ``today`` (default: today's date). Today itself is excluded — its
-        file only arrives on the server tomorrow. Read from the local mirror
-        listing, not the index, so it is right even before indexing runs.
+        """Every day of the ``days`` days before ``today`` (default: today's
+        date) classified: present / empty locally, pending (still on the
+        server), lost (purged before being downloaded) or unknown. Today
+        itself is excluded — its file is complete only after the evening
+        compaction. ``CoverageDays.missing`` is pending + lost. Read from the
+        local mirror and the sync state, not the index, so it is right even
+        before indexing runs.
         """
         ...
 

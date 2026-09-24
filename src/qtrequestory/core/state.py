@@ -2,8 +2,13 @@
 
 The state answers one question for the scheduler and the UI: "did the last
 successful sync of this environment happen after the last server-side
-compaction?" — if so there is nothing new to fetch. Everything else stored
-here is informational (counts shown in the UI).
+compaction?" — if so there is nothing new to fetch. It also remembers what
+the last listing held (``oldest_listed``, ``listed_nonempty``) and every
+non-empty day ever listed (``seen_nonempty``), so the coverage view can tell
+a day still on the server ("da scaricare") from one the server purged before
+it was downloaded. The server keeps its daily files until a manual purge
+from the OCP terminal, which deletes them: the local mirror is the archive.
+The counts are informational (shown in the UI).
 
 The file is written atomically (temp file + ``os.replace``) so a crash or a
 killed scheduled task can never leave a half-written JSON behind. Loading is
@@ -12,8 +17,10 @@ costs one redundant sync.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -26,9 +33,12 @@ LEGACY_FILE_NAME = ".last-sync.json"
 # The legacy PowerShell script only recorded the *day* of the last sync. We
 # import it as noon of that day: noon is before the 18:30 compaction, so the
 # first run after the migration is deliberately "not fresh" and re-syncs — the
-# safe direction (a redundant sync costs seconds; a skipped one loses a day
-# that the server drops after ~1 day of retention).
+# safe direction (a redundant sync costs seconds; a skipped one delays a day
+# that a manual purge on the server could then delete before it is mirrored).
 LEGACY_IMPORT_TIME = time(12, 0)
+
+#: ``seen_nonempty`` only keeps the days this recent (relative to the listing).
+SEEN_NONEMPTY_DAYS = 400
 
 
 @dataclass
@@ -36,12 +46,19 @@ class EnvSyncState:
     last_success: datetime | None = None
     last_remote_daily: int = 0
     last_downloaded: int = 0
-    #: The newest NON-EMPTY daily day, from the last listing read, that is
-    #: now mirrored locally (present, shrunk, or a successful download); a
-    #: 0-byte day never counts. ``None`` when never synced, when the listing
-    #: held only 0-byte days, or when read from a state file written before
-    #: this field existed. See ``is_fresh`` for how it drives freshness.
+    #: The newest daily day, from the last listing read, that is now
+    #: mirrored locally: present, shrunk, a successful download, or a
+    #: COMPACTED 0-byte day whose local 0-byte file exists (created by the
+    #: sync or already there). ``None`` when never synced or when read from a
+    #: state file written before this field existed. See ``is_fresh``.
     newest_day: date | None = None
+    #: The oldest day of the last listing read (the server's current horizon).
+    oldest_listed: date | None = None
+    #: The non-empty days of the last listing read, ascending.
+    listed_nonempty: tuple[date, ...] = ()
+    #: Every non-empty day ever listed, ascending, capped to the last
+    #: ``SEEN_NONEMPTY_DAYS`` days before the latest listing.
+    seen_nonempty: tuple[date, ...] = ()
 
 
 class SyncState:
@@ -116,17 +133,17 @@ class SyncState:
            (``last_compaction`` is today at ``compaction_time`` if ``now`` is
            past it, otherwise yesterday's).
         3. ``newest_day is not None and newest_day >= last_compaction.date()``:
-           the newest NON-EMPTY daily file *seen in the remote listing*
-           that is now mirrored locally (present, shrunk, or a successful
-           download) must be at least the compacted day. A sync that read the
-           listing before the server had compacted is NOT fresh even though
-           it ran after ``compaction_time`` — this is what makes a late/slow
-           compaction on the server retried on the next hourly run instead of
-           silently skipped (a skipped day is lost: the server keeps only ~1
-           day). A 0-byte file never confirms a day: the server lists one
-           before it compacts too. A quiet day (a weekend) therefore costs
-           one cheap listing per hour until the next non-empty day is
-           mirrored.
+           the newest daily file *seen in the remote listing* that is now
+           mirrored locally must be at least the compacted day. A sync that
+           read the listing before the server had compacted is NOT fresh even
+           though it ran after ``compaction_time`` — this is what makes a
+           late/slow compaction on the server retried on the next hourly run
+           instead of silently skipped (a day left behind for long could be
+           deleted by a manual purge on the server before it is mirrored). A
+           0-byte day counts once it is compacted (listing time >= that day
+           at ``compaction_time``) and its 0-byte local file exists: it is a
+           day without traffic, so a quiet weekend is fresh like any other
+           day. Today's 0-byte file before compaction never counts.
         4. A state loaded from a file written before ``newest_day`` existed
            (no such key) has ``newest_day is None`` and so is also not fresh —
            one extra sync after the upgrade is the safe direction.
@@ -156,8 +173,34 @@ class SyncState:
         last_downloaded: int = 0,
         newest_day: date | None = None,
     ) -> None:
+        """Record a successful sync; the listing memory is kept as it is."""
         self._ensure_loaded()
-        self._envs[env] = EnvSyncState(when, last_remote_daily, last_downloaded, newest_day)
+        self._envs[env] = dataclasses.replace(
+            self._envs.get(env, EnvSyncState()),
+            last_success=when, last_remote_daily=last_remote_daily,
+            last_downloaded=last_downloaded, newest_day=newest_day,
+        )
+        self._save()
+
+    def record_listing(
+        self,
+        env: str,
+        when: datetime,
+        *,
+        oldest_listed: date | None,
+        listed_nonempty: Iterable[date],
+    ) -> None:
+        """Remember what a listing read at ``when`` held, whatever the run's
+        outcome: ``seen_nonempty`` grows by the listed non-empty days and
+        forgets those older than ``SEEN_NONEMPTY_DAYS`` before ``when``.
+        ``last_success`` and the counts are left alone."""
+        self._ensure_loaded()
+        listed = tuple(sorted(set(listed_nonempty)))
+        current = self._envs.get(env, EnvSyncState())
+        cutoff = when.date() - timedelta(days=SEEN_NONEMPTY_DAYS)
+        seen = tuple(sorted(d for d in set(current.seen_nonempty) | set(listed) if d >= cutoff))
+        self._envs[env] = dataclasses.replace(
+            current, oldest_listed=oldest_listed, listed_nonempty=listed, seen_nonempty=seen)
         self._save()
 
     def _save(self) -> None:
@@ -168,6 +211,9 @@ class SyncState:
                     "last_remote_daily": s.last_remote_daily,
                     "last_downloaded": s.last_downloaded,
                     "newest_day": s.newest_day.isoformat() if s.newest_day else None,
+                    "oldest_listed": s.oldest_listed.isoformat() if s.oldest_listed else None,
+                    "listed_nonempty": [d.isoformat() for d in s.listed_nonempty],
+                    "seen_nonempty": [d.isoformat() for d in s.seen_nonempty],
                 }
                 for env, s in sorted(self._envs.items())
             }
@@ -187,6 +233,9 @@ def _parse_env(raw: object) -> EnvSyncState:
         last_remote_daily=int(raw.get("last_remote_daily", 0)),
         last_downloaded=int(raw.get("last_downloaded", 0)),
         newest_day=_parse_newest_day(raw.get("newest_day")),
+        oldest_listed=_parse_newest_day(raw.get("oldest_listed")),
+        listed_nonempty=_parse_days(raw.get("listed_nonempty")),
+        seen_nonempty=_parse_days(raw.get("seen_nonempty")),
     )
 
 
@@ -200,6 +249,22 @@ def _parse_newest_day(raw: object) -> date | None:
         return date.fromisoformat(str(raw))
     except ValueError:
         return None
+
+
+def _parse_days(raw: object) -> tuple[date, ...]:
+    # Same tolerance as _parse_newest_day: a missing key (older file) or a
+    # value that is not a list is (); invalid items are dropped one by one.
+    if not isinstance(raw, list):
+        return ()
+    days: set[date] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        try:
+            days.add(date.fromisoformat(item))
+        except ValueError:
+            continue
+    return tuple(sorted(days))
 
 
 def _read_legacy(legacy: Path) -> dict[str, EnvSyncState]:

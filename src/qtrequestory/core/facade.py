@@ -393,12 +393,14 @@ class IndexService:
             return core_coverage(conn, env)
 
     def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> daily.CoverageDays:
-        """Weekday gaps in the local mirror, computed from the on-disk daily
-        files (no index/DB involved), so it is right even before an index
-        update has run."""
+        """Each day of the window classified (``daily.classify_days``) from
+        the on-disk daily files and the listing memory of the sync state (no
+        index/DB involved), so it is right even before an index update."""
         cfg = self._config_source()
-        present = {f.day for f in daily.list_local_daily_files(cfg.mirror_root, env)}
-        return daily.coverage_days(present, days, today if today is not None else date.today())
+        sizes = {f.day: f.size for f in daily.list_local_daily_files(cfg.mirror_root, env)}
+        st = SyncState(cfg.state_path).load().get(env)
+        return daily.classify_days(sizes, st.listed_nonempty, st.seen_nonempty, days,
+                                   today if today is not None else date.today())
 
     def count_local_files(self, root: Path | None = None) -> int:
         """``root`` defaults to the configured mirror; the wizard passes the

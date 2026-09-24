@@ -442,7 +442,7 @@ TODAY = date(2026, 9, 23)  # a Wednesday
 
 def test_coverage_days_are_present_missing_weekend_today_or_before_the_archive():
     cov = CoverageDays(present=frozenset({date(2026, 9, 21), date(2026, 9, 19)}),
-                       missing=(date(2026, 9, 22),), first_local=date(2026, 9, 18))
+                       pending=(date(2026, 9, 22),), first_local=date(2026, 9, 18))
     kinds = cs.day_kinds(cov, TODAY, days=30)
     assert len(kinds) == 30
     assert kinds[-1] == (TODAY, cs.TODAY)

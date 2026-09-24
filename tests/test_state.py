@@ -238,3 +238,84 @@ def test_legacy_import_on_read_only_mirror_does_not_raise(state_path, monkeypatc
     assert st.get("coll").last_success == datetime(2026, 9, 21, 12, 0)
     assert any(r.levelno == logging.WARNING for r in caplog.records)
     assert not state_path.exists()
+
+
+# ------------------------------------------------ listing memory (U1.3) ---
+
+def _days(*ds: int) -> tuple[date, ...]:
+    return tuple(date(2026, 9, d) for d in ds)
+
+
+def test_record_listing_roundtrip_and_union_of_seen_days(state_path):
+    st = SyncState(state_path).load()
+    st.record_listing("coll", datetime(2026, 9, 21, 19, 0), oldest_listed=date(2026, 9, 18),
+                      listed_nonempty=_days(21, 18))
+    st.record_listing("coll", datetime(2026, 9, 22, 19, 0), oldest_listed=date(2026, 9, 20),
+                      listed_nonempty=_days(22, 21))
+
+    data = json.loads(state_path.read_text(encoding="utf-8"))["envs"]["coll"]
+    assert data["oldest_listed"] == "2026-09-20"
+    assert data["listed_nonempty"] == ["2026-09-21", "2026-09-22"]
+    assert data["seen_nonempty"] == ["2026-09-18", "2026-09-21", "2026-09-22"]
+
+    again = SyncState(state_path).load().get("coll")
+    assert again.oldest_listed == date(2026, 9, 20)
+    assert again.listed_nonempty == _days(21, 22)
+    assert again.seen_nonempty == _days(18, 21, 22)
+    assert again.last_success is None, "recording a listing is not a successful sync"
+
+
+def test_seen_days_are_capped_to_the_last_400_days(state_path):
+    st = SyncState(state_path).load()
+    old = date(2025, 8, 1)
+    st.record_listing("coll", datetime(2025, 8, 2, 9, 0), oldest_listed=old, listed_nonempty=(old,))
+    st.record_listing("coll", datetime(2026, 9, 22, 9, 0), oldest_listed=date(2026, 9, 21),
+                      listed_nonempty=_days(21))
+    seen = SyncState(state_path).load().get("coll").seen_nonempty
+    assert seen == _days(21), "a day more than 400 days before the listing is forgotten"
+    # The cut is inclusive: 2026-09-22 minus 400 days is 2025-08-18.
+    st.record_listing("coll", datetime(2026, 9, 22, 9, 0), oldest_listed=date(2025, 8, 17),
+                      listed_nonempty=(date(2025, 8, 18), date(2025, 8, 17)))
+    assert SyncState(state_path).load().get("coll").seen_nonempty == (date(2025, 8, 18),) + _days(21)
+
+
+def test_mark_success_keeps_the_listing_memory_and_record_listing_keeps_success(state_path):
+    st = SyncState(state_path).load()
+    st.record_listing("coll", datetime(2026, 9, 22, 9, 0), oldest_listed=date(2026, 9, 20),
+                      listed_nonempty=_days(21))
+    st.mark_success("coll", datetime(2026, 9, 22, 9, 0), last_remote_daily=3, newest_day=date(2026, 9, 21))
+    got = SyncState(state_path).load().get("coll")
+    assert got.listed_nonempty == _days(21) and got.seen_nonempty == _days(21)
+    assert got.oldest_listed == date(2026, 9, 20)
+    assert got.last_remote_daily == 3
+
+    st.record_listing("coll", datetime(2026, 9, 23, 9, 0), oldest_listed=date(2026, 9, 21),
+                      listed_nonempty=_days(22))
+    got = SyncState(state_path).load().get("coll")
+    assert got.last_success == datetime(2026, 9, 22, 9, 0)
+    assert got.newest_day == date(2026, 9, 21)
+    assert got.listed_nonempty == _days(22)
+
+
+def test_an_old_state_file_has_an_empty_listing_memory(tmp_path):
+    (tmp_path / "sync-state.json").write_text(
+        '{"envs": {"coll": {"last_success": "2026-09-22T19:00:00", "newest_day": "2026-09-22"}}}',
+        encoding="utf-8")
+    got = SyncState(tmp_path / "sync-state.json").load().get("coll")
+    assert got.oldest_listed is None
+    assert got.listed_nonempty == () and got.seen_nonempty == ()
+    assert got.newest_day == date(2026, 9, 22)
+
+
+@pytest.mark.parametrize("raw", [
+    {"oldest_listed": "garbage", "listed_nonempty": "not a list", "seen_nonempty": 7},
+    {"oldest_listed": 3, "listed_nonempty": ["2026-09-21", "nope", None, 5], "seen_nonempty": [["x"]]},
+])
+def test_listing_memory_parsing_is_tolerant(tmp_path, raw):
+    (tmp_path / "sync-state.json").write_text(
+        json.dumps({"envs": {"coll": {"last_success": "2026-09-22T19:00:00", **raw}}}), encoding="utf-8")
+    got = SyncState(tmp_path / "sync-state.json").load().get("coll")
+    assert got.last_success == datetime(2026, 9, 22, 19, 0), "one bad field never discards the env"
+    assert got.oldest_listed is None
+    assert got.seen_nonempty == ()
+    assert got.listed_nonempty in ((), _days(21))

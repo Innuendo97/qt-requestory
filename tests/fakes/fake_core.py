@@ -20,6 +20,9 @@ Knobs the tests use (all plain attributes/setters, no magic):
 * ``FakeSchedulerApi.set_status(...)`` / ``set_legacy(flag)``
 * ``FakeIndexApi.set_missing(hit)`` — ``read_body`` of that hit raises ``IndexStale``
 * ``FakeIndexApi.set_pending(n)`` — n files waiting to be indexed
+* ``FakeIndexApi.set_local_days(env, days, empty=())`` / ``set_server_days(env,
+  listed=(), seen=())`` — what ``coverage_days`` classifies (local files, and
+  the listing memory of the sync state)
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ import copy
 import dataclasses
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime
 from pathlib import Path
 
@@ -60,7 +63,7 @@ from qtrequestory.core.events import (
     SyncStarted,
 )
 from qtrequestory.core.daily import CoverageDays, LocalDailyFile
-from qtrequestory.core.daily import coverage_days as core_coverage_days
+from qtrequestory.core.daily import classify_days as core_classify_days
 from qtrequestory.core.facade import EnvStatus
 from qtrequestory.core.index.builder import IndexPlan
 from qtrequestory.core.index.search import (
@@ -599,17 +602,30 @@ class FakeIndexApi:
         #: env -> local mirror days, for coverage_days. Defaults to the hit
         #: days of that env (the synthetic hits stand in for what is on disk
         #: unless a test overrides it with ``set_local_days``).
-        self._local_days: dict[str, set[date]] | None = None
+        self._local_days: dict[str, dict[date, int]] | None = None
+        #: env -> (listed_nonempty, seen_nonempty), the sync state's listing
+        #: memory; unset -> nothing listed yet (like a fresh state file).
+        self._server_days: dict[str, tuple[frozenset[date], frozenset[date]]] = {}
 
     # -- knobs -------------------------------------------------------------
 
-    def set_local_days(self, env: str, days: set[date]) -> None:
+    def set_local_days(self, env: str, days: set[date], empty: Iterable[date] = ()) -> None:
         """Override what ``coverage_days(env, ...)`` sees as the local mirror
-        listing for ``env`` — used to line the fake up with a real mirror on
-        disk (e.g. the ``mirror`` fixture) for a fake-vs-real comparison."""
+        listing for ``env``: ``days`` are non-empty files, ``empty`` 0-byte
+        ones — used to line the fake up with a real mirror on disk (e.g. the
+        ``mirror`` fixture) for a fake-vs-real comparison."""
         if self._local_days is None:
             self._local_days = {}
-        self._local_days[env] = set(days)
+        sizes = {d: 0 for d in empty}
+        sizes.update({d: 1 for d in days})
+        self._local_days[env] = sizes
+
+    def set_server_days(self, env: str, listed: Iterable[date] = (), seen: Iterable[date] = ()) -> None:
+        """The sync state's listing memory for ``env``: the non-empty days of
+        the last listing (``listed``) and every non-empty day ever listed
+        (``seen``; ``listed`` is added to it, as the real state does)."""
+        listed = frozenset(listed)
+        self._server_days[env] = (listed, frozenset(seen) | listed)
 
     def set_missing(self, hit: SearchHit) -> None:
         """``read_body`` of ``hit`` raises ``IndexStale``.
@@ -664,10 +680,11 @@ class FakeIndexApi:
 
     def coverage_days(self, env: str, days: int = 30, today: date | None = None) -> CoverageDays:
         if self._local_days is not None and env in self._local_days:
-            present = self._local_days[env]
+            sizes = self._local_days[env]
         else:
-            present = {h.day for h in self.hits if h.env == env}
-        return core_coverage_days(present, days, today if today is not None else date.today())
+            sizes = {h.day: 1 for h in self.hits if h.env == env}
+        listed, seen = self._server_days.get(env, (frozenset(), frozenset()))
+        return core_classify_days(sizes, listed, seen, days, today if today is not None else date.today())
 
     def set_local_file_count(self, root: Path, n: int) -> None:
         """What ``count_local_files(root)`` answers for that folder (wizard)."""

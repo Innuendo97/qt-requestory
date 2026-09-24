@@ -1,6 +1,7 @@
 """Windows Task Scheduler integration: the scheduled task is what keeps the mirror complete.
 
-The server keeps roughly one day of logs, so a missed day is lost for good.
+The server keeps its daily logs only until a manual purge deletes them, so a
+day not mirrored before the next purge is lost for good.
 The task therefore mirrors the legacy ``NginxLogSync`` PowerShell task
 semantics exactly: every day at ``start_time``, repeated hourly for
 ``repeat_for_h`` hours (each run exits early when today is already synced),
@@ -398,7 +399,8 @@ def is_unstable_location(exe: Path) -> str | None:
     """Why scheduling this exe is a bad idea (Italian, for the UI), or None when the folder looks permanent.
 
     A task pointing at a file that gets cleaned up, moved or is only reachable
-    through the network silently stops syncing — and lost days cannot be recovered.
+    through the network silently stops syncing — and a day the server purges before
+    it is mirrored cannot be recovered.
     """
     raw = str(exe)
     if raw.startswith("\\\\") or raw.startswith("//"):

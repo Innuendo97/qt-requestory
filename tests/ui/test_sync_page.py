@@ -253,6 +253,7 @@ def test_a_missing_weekday_is_red_on_the_strip_named_in_a_banner_and_on_the_badg
         qtbot, page, fake_core):
     gap = max(weekdays_back(10))  # the most recent weekday before today
     fake_core.index.set_local_days("svil", weekdays_back(40, skip=(gap,)))
+    fake_core.index.set_server_days("svil", listed={gap})  # still on the server: pending
     fake_core.sync.set_env_status("svil", last_success=datetime.now(), n_local_files=28,
                                   local_bytes=MB)
     assert page.missing_banner.isHidden()
@@ -333,6 +334,7 @@ def test_the_chip_says_in_corso_and_in_attesa_during_a_run(qtbot, page, fake_cor
 def _gap_in_coll(page, fake_core):
     gap = max(weekdays_back(10))
     fake_core.index.set_local_days("coll", weekdays_back(40, skip=(gap,)))
+    fake_core.index.set_server_days("coll", listed={gap})  # still on the server: pending
 
 
 BADGE_SETUPS = {

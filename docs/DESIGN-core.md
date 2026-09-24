@@ -10,8 +10,9 @@ from the PySide6 UI through the same functions.
 - Server exposes an nginx autoindex page per environment
   (`https://<host>/AutoDeploy/Input/`). Entries: `YYYYMMDD.txt` (one per day; **0 bytes**
   on weekends/holidays), plus loose `<uuid>_<TEMPLATE_KEY>_<id16hex>.json` files for the
-  current day (compacted into the daily file at ~18:30). **Server retention is ~1 day**:
-  the local mirror is the only archive.
+  current day (compacted into the daily file at ~18:30). **The server keeps its daily
+  files until a manual purge from the OCP terminal, which deletes them**; a day without
+  traffic is published as a 0-byte file. The local mirror is the only lasting archive.
 - Daily file format: header line `### <name>.json` followed by ONE line with the request
   body JSON (50–450 KB). Header/body strictly alternate. Files may be CRLF or LF.
 - `<name>` shapes seen: `UUID_KEY_ID` (canonical), `correlationId_vuoto_KEY_ID`,
@@ -180,16 +181,21 @@ def relative_path(env, day) -> str                          # 'coll/2026/09/2026
 def list_local_daily_files(root, env) -> list[LocalDailyFile]   # newest first; ignores .part and junk
 @dataclass(frozen=True) class EntryName: raw; fdi: str|None; template_key: str; call_id: str|None; well_formed: bool
 def parse_entry_name(raw) -> EntryName
-def missing_weekdays(present: set[date], start, end) -> list[date]   # Mon-Fri in [start, end] not present
-@dataclass(frozen=True) class CoverageDays: present: frozenset[date]; missing: tuple[date,...]; first_local: date|None
-def coverage_days(present, days, today) -> CoverageDays
+@dataclass(frozen=True) class CoverageDays: present: frozenset[date]; empty: frozenset[date]
+    pending: tuple[date,...]; lost: tuple[date,...]; unknown: tuple[date,...]; first_local: date|None
+    missing -> tuple[date,...]            # property: sorted(pending + lost)
+def classify_days(local_sizes: Mapping[date,int], listed_nonempty, seen_nonempty, days, today) -> CoverageDays
 ```
-`coverage_days` looks at the window `[today - days + 1, today - 1]` — today is excluded,
-its calls arrive tomorrow — and reports as `missing` only weekdays on or after
-`first_local` (the oldest local day), so a young archive never flags the days before it
-began. It reads the local file listing, not the index, so it is right before any
-indexing. Consumers: the Ricerca coverage warning and the Sincronizzazione calendar,
-through `IndexService.coverage_days(env, days=30, today=None)`.
+`classify_days` looks at the window `[today - days + 1, today - 1]` (today is excluded:
+its file is complete only after the evening compaction). `present`/`empty` are every
+local file (size > 0 / 0 bytes). A window day without a local file is `pending` when the
+last listing still shows it non-empty, `lost` when an earlier listing showed it non-empty
+and the last one no longer does (purged before it was downloaded), `unknown` when it is a
+weekday on or after `first_local` that no listing ever showed non-empty. Weekends are
+classified like any other day. A day before `first_local` is only reported when the
+server listed it. `IndexService.coverage_days(env, days=30, today=None)` feeds it the
+local file listing (not the index) and the listing memory of the sync state. Consumers:
+the Ricerca coverage warning and the Sincronizzazione calendar.
 `parse_entry_name` rules (total, deterministic): strip trailing `_[0-9a-f]{16}` → `call_id`;
 if remainder starts with `correlationId_vuoto_` → `fdi=None`, key = rest; else split on first
 `_`: `fdi=left.lower()`, `template_key=right`; no `_` → `fdi=None`, key = whole.
@@ -226,29 +232,31 @@ class UrllibHttpClient(HttpClient)   # stdlib urllib; default SSL context (Windo
 
 ```python
 @dataclass class EnvSyncState: last_success: datetime|None; last_remote_daily: int; last_downloaded: int; newest_day: date|None
+                               oldest_listed: date|None; listed_nonempty: tuple[date,...]; seen_nonempty: tuple[date,...]
 class SyncState(path):
     load()                       # tolerant; imports legacy <root>/.last-sync.json (utf-8-sig, {"svil":"YYYY-MM-DD"}) once
     get(env) -> EnvSyncState
-    mark_success(env, when, *, last_remote_daily=0, last_downloaded=0, newest_day=None)     # atomic save
+    mark_success(env, when, *, last_remote_daily=0, last_downloaded=0, newest_day=None)     # atomic save, keeps the listing memory
+    record_listing(env, when, *, oldest_listed, listed_nonempty)   # every real run's listing; seen_nonempty = union, last 400 days
     is_fresh(env, now, compaction_time) -> bool
         # fresh iff ALL of:
         #  1. last_success is not None and <= now (a future timestamp is never fresh, and logs a warning)
         #  2. last_success >= last_compaction_moment, where
         #     last_compaction_moment = today@compaction_time if now >= that else yesterday@compaction_time
         #  3. newest_day is not None and newest_day >= last_compaction_moment.date()
-        #     newest_day = the newest NON-EMPTY daily day seen in the *listing that produced this state*
-        #     which is now mirrored locally (present, shrunk, or a successful download) — so a run whose
-        #     listing was read before the server compacted is NOT fresh even if last_success is already past
-        #     compaction_time; the next hourly run retries instead of silently skipping a day the ~1-day
-        #     server retention would then lose. A 0-byte day never counts (the server lists one before it
-        #     compacts too): a weekend costs one cheap listing per hour until a non-empty day is mirrored.
+        #     newest_day = the newest daily day seen in the *listing that produced this state* which is
+        #     now mirrored locally (present, shrunk, a successful download, or a COMPACTED 0-byte day whose
+        #     0-byte local file exists) — so a run whose listing was read before the server compacted is NOT
+        #     fresh even if last_success is already past compaction_time; the next hourly run retries
+        #     instead of leaving the day behind until a manual purge deletes it. Today's 0-byte file before
+        #     compaction never counts; a compacted quiet day (a weekend) does.
         #  4. a state loaded from a file written before newest_day existed (rule 3's key missing) -> not fresh
 class ProcessLock(path): acquire(blocking=False) -> bool; release(); holder_info(); context manager   # msvcrt.locking
 def peek_holder(path) -> str | None     # "<pid> <ISO time>" of a LIVE holder, else None; never takes the lock
 ```
 **Freshness** is the rule above, not "synced recently": `mark_success` receives the clock
-reading taken right before the listing GET and the newest listed NON-EMPTY day that ended up
-mirrored (present, downloaded, or shrunk — see below; 0-byte days never count). A listing read at 18:29, before the
+reading taken right before the listing GET and the newest listed day that ended up
+mirrored (present, downloaded, shrunk, or a compacted 0-byte day — see below). A listing read at 18:29, before the
 server compacted, therefore never makes the env fresh for the next day, and a timestamp in
 the future is distrusted (`log.warning` "…nel futuro…"). State files from before
 `newest_day` existed cost exactly one extra sync.
@@ -295,16 +303,25 @@ Per env:
    nothing downloaded. A page with no daily file at all (captive portal, login page,
    proxy error answering 200) → `LogMessage(WARNING)`, status `unreachable`, state
    untouched.
-4. Plan every listed daily, newest first, and emit `RemoteIndexRead` with
-   `bytes_to_download` over the `download` plans. Per remote file: size 0 → `empty`;
-   local size == remote → `present`; **local larger than remote → `shrunk`**; missing or
-   smaller locally → `download`.
+4. Not a dry run → `state.record_listing` (oldest listed day, non-empty listed days),
+   whatever the outcome of the downloads. Plan every listed daily, newest first, and emit
+   `RemoteIndexRead` with `bytes_to_download` over the `download` plans. Per remote file:
+   size 0 → `empty`; local size == remote → `present`; local larger than remote with
+   `local - count(b"\r\n") == remote` (a copy imported with CRLF line endings) → `present`
+   plus one `LogMessage(INFO)`, no sidecar; **otherwise local larger than remote →
+   `shrunk`**; missing or smaller locally → `download`.
+   `empty` (real run only): once the day is compacted (`listing_at >= day@compaction_time`)
+   a missing local file is created as 0 bytes (exclusive create, never over an existing
+   file) and the day counts as mirrored; an existing local file of any size also counts.
+   A creation failure is a `LogMessage(WARNING)` and confirms nothing. If the server later
+   lists that day non-empty, the normal `download` replaces the 0-byte file.
 5. `shrunk` — **never shrink the archive**: `dest` is not touched. The remote copy is
    fetched into `YYYYMMDD.txt.remote-<size>` (skipped if already there with that size; the
    name never matches `DAILY_NAME_RE`, so the indexer ignores it), then `FileSkipped(…,
-   "shrunk")` and one warning "… sul server è più piccolo della copia locale (L contro R):
-   tenuta la copia locale, quella remota salvata come …" (or "impossibile salvare la copia
-   remota (…)" when the sidecar failed). The day counts as mirrored, the status stays `ok`.
+   "shrunk")` and, only when the sidecar is fetched in this run, one warning "… sul server è
+   più piccolo della copia locale (L contro R): tenuta la copia locale, quella remota salvata
+   come …" (or "impossibile salvare la copia remota (…)" when the sidecar failed). A sidecar
+   already there is not reported again. The day counts as mirrored, the status stays `ok`.
    If the local file can no longer be read when the shrunk day is handled (removed or locked
    since the plan), that file is a `FileFailed` "copia locale non più leggibile: …" (status
    `errors`), never an exception out of the run.
@@ -324,11 +341,11 @@ Per env:
    (`LoggingSink` remembers `SyncStarted.dry_run`) and the summary `"anteprima della
    sincronizzazione terminata …"` (`SyncReport.dry_run`). The window's "Anteprima" writes
    the same lines.
-8. `failed > 0` → status `errors`, state untouched. Otherwise `mark_success(env,
+8. `failed > 0` → status `errors`, no `mark_success` (only the listing is remembered). Otherwise `mark_success(env,
    listing_at, newest_day=max(mirrored))`; a failed state write is a warning, not an error
    (see §state).
 
-Never delete local files. Cancel → `.part` removed, status `cancelled`, state untouched,
+Never delete local files. Cancel → `.part` removed, status `cancelled`, no `mark_success`,
 exit 3.
 
 The UI facade adds one network call the engine has no use for:

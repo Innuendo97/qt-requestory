@@ -5,8 +5,10 @@ server-side compaction; read the autoindex; download, newest first, every
 non-empty daily file that is missing locally or has a different size. A file
 is streamed to ``<name>.part`` and renamed only once its size matches the
 index, so an interrupted run never leaves a half file that looks complete.
-Nothing local is ever deleted: the server keeps ~1 day of history, the mirror
-is the archive.
+A compacted 0-byte day (a day without traffic) is mirrored as a 0-byte local
+file, never over an existing one. Nothing local is ever deleted or shrunk:
+the server keeps its daily files until a manual purge deletes them, so the
+mirror is the archive.
 
 Environments are independent: an unreachable one (no VPN, wrong host) is
 reported and the next one is still synced. Progress goes to the ``EventSink``
@@ -157,7 +159,7 @@ class _Plan:
     that ``RemoteIndexRead`` can announce the total bytes up front."""
     remote: RemoteDailyFile
     dest: Path
-    action: Literal["download", "present", "empty", "shrunk"]
+    action: Literal["download", "present", "crlf", "empty", "shrunk"]
 
 
 class SyncEngine:
@@ -238,6 +240,8 @@ class SyncEngine:
             text = f"{env.name}: {NOT_AN_INDEX_TEXT}"
             self._sink(LogMessage(logging.WARNING, text))
             return tally.result("unreachable", text)
+        if not dry_run:
+            self._record_listing(env, listing_at, index.daily)
         plans = [self._plan(env, remote) for remote in index.daily]  # already newest first
         to_download = [p for p in plans if p.action == "download"]
         self._sink(RemoteIndexRead(
@@ -247,20 +251,30 @@ class SyncEngine:
             n_loose=index.loose_count,
             bytes_to_download=sum(p.remote.size for p in to_download),
         ))
-        # NON-EMPTY days confirmed mirrored locally (present, shrunk, or a
-        # successful download) among what THIS listing showed — the basis for
+        # Days confirmed mirrored locally among what THIS listing showed —
+        # present, shrunk, a successful download, or a COMPACTED 0-byte day
+        # whose 0-byte local file now exists. The basis for
         # EnvSyncState.newest_day, so is_fresh can require the compacted day
-        # to actually be here, not just "we ran recently". A 0-byte day never
-        # counts: the server also lists one before it has compacted, so it
-        # cannot confirm anything (final review #2).
+        # to actually be here, not just "we ran recently". A 0-byte day not
+        # compacted yet (today, before compaction_time) never counts: the
+        # server lists one before it has compacted too (final review #2).
         mirrored: set[date] = set()
         for plan in plans:
             if plan.action == "empty":
                 self._sink(FileSkipped(env.name, plan.remote.name, "empty"))
                 tally.empty += 1
+                if not dry_run and self._mirror_empty_day(env, plan, listing_at):
+                    mirrored.add(plan.remote.day)
                 continue
-            if plan.action == "present":
+            if plan.action in ("present", "crlf"):
                 self._sink(FileSkipped(env.name, plan.remote.name, "present"))
+                if plan.action == "crlf":
+                    self._sink(LogMessage(
+                        logging.INFO,
+                        f"{env.name}: {plan.remote.name} locale ha i fine riga Windows (CRLF): "
+                        f"a parte quelli ha la dimensione del server ({plan.remote.size} byte), "
+                        f"tenuta la copia locale",
+                    ))
                 tally.present += 1
                 mirrored.add(plan.remote.day)
                 continue
@@ -323,10 +337,62 @@ class SyncEngine:
         if local_size == remote.size:
             return _Plan(remote, dest, "present")
         if local_size > remote.size:
+            # A copy imported with converted line endings (LF -> CRLF) is the
+            # same day, only longer by one byte per line (F5).
+            try:
+                crlf = count_crlf(dest)
+            except OSError:
+                crlf = 0
+            if crlf and local_size - crlf == remote.size:
+                return _Plan(remote, dest, "crlf")
             # A server-side compaction/truncation must never shrink what we
             # already have — the local copy is the archive of record.
             return _Plan(remote, dest, "shrunk")
         return _Plan(remote, dest, "download")
+
+    # ----------------------------------------------------------- listing ---
+
+    def _record_listing(self, env: Environment, listing_at: datetime,
+                        daily: Iterable[RemoteDailyFile]) -> None:
+        """Remember the listing in the state, whatever the run's outcome: a
+        day that fails to download is exactly what the coverage view must
+        show as still on the server. Best effort, like ``mark_success``."""
+        daily = list(daily)
+        try:
+            self._state.record_listing(
+                env.name, listing_at,
+                oldest_listed=min((r.day for r in daily), default=None),
+                listed_nonempty=[r.day for r in daily if r.size > 0],
+            )
+        except OSError as e:
+            self._sink(LogMessage(logging.WARNING,
+                                  f"{env.name}: elenco del server non salvato nello stato ({e})"))
+
+    # ------------------------------------------------------------- empty ---
+
+    def _mirror_empty_day(self, env: Environment, plan: _Plan, listing_at: datetime) -> bool:
+        """Mirror a listed 0-byte day as a 0-byte local file (F1).
+
+        Only once the day is compacted (``listing_at`` at or after that day
+        at ``compaction_time``): before that, the 0-byte file only means "not
+        compacted yet". Never overwrites: any existing local file (0 bytes or
+        not) is kept and confirms the day. Returns whether the day is now
+        mirrored; a creation failure is a warning, not a file failure (there
+        was nothing to download), and confirms nothing.
+        """
+        if listing_at < datetime.combine(plan.remote.day, self._config.compaction_time):
+            return False
+        if plan.dest.exists():
+            return True
+        try:
+            _create_empty(plan.dest)
+        except FileExistsError:
+            return True
+        except OSError as e:
+            self._sink(LogMessage(logging.WARNING,
+                                  f"{env.name}: impossibile creare il giorno vuoto {plan.remote.name}: {e}"))
+            return False
+        return True
 
     # --------------------------------------------------------------- shrunk ---
 
@@ -344,7 +410,8 @@ class SyncEngine:
         The sidecar write is best-effort (the local day is already safe on
         disk either way), so the single warning emitted below reflects
         whether it actually succeeded — never claiming "salvata come" when no
-        sidecar landed on disk.
+        sidecar landed on disk. When the sidecar is already there from an
+        earlier run nothing is logged: the warning came with its creation.
         """
         remote, dest = plan.remote, plan.dest
         try:
@@ -352,13 +419,14 @@ class SyncEngine:
         except OSError as e:
             return self._fail(env, remote, f"copia locale non più leggibile: {e}")
         sidecar = dest.with_name(f"{dest.name}.remote-{remote.size}")
+        self._sink(FileSkipped(env.name, remote.name, "shrunk"))
         if _size_or_none(sidecar) == remote.size:
-            error: str | None = None
-        else:
-            error = self._download_shrunk_sidecar(env, remote, sidecar)
+            # Already reported when the sidecar was created: warning again on
+            # every run would bury the log (F5).
+            return None
+        error = self._download_shrunk_sidecar(env, remote, sidecar)
         outcome = (f"quella remota salvata come {sidecar.name}" if error is None
                    else f"impossibile salvare la copia remota ({error})")
-        self._sink(FileSkipped(env.name, remote.name, "shrunk"))
         self._sink(LogMessage(
             logging.WARNING,
             f"{env.name}: {remote.name} sul server è più piccolo della copia locale "
@@ -468,6 +536,28 @@ class SyncEngine:
     def _fail(self, env: Environment, remote: RemoteDailyFile, error: str) -> str:
         self._sink(FileFailed(env.name, remote.name, error))
         return error
+
+
+def count_crlf(path: Path, chunk_size: int = 1 << 20) -> int:
+    """Number of ``b"\\r\\n"`` pairs in ``path``, streamed (a pair split across
+    two chunks counts once)."""
+    count = 0
+    prev_cr = False
+    with open(path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            count += chunk.count(b"\r\n")
+            if prev_cr and chunk[:1] == b"\n":
+                count += 1
+            prev_cr = chunk[-1:] == b"\r"
+    return count
+
+
+def _create_empty(dest: Path) -> None:
+    """Create ``dest`` as a 0-byte file; ``FileExistsError`` if anything is
+    already there (exclusive create: never truncates an existing day)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "xb"):
+        pass
 
 
 def _size_or_none(path: Path) -> int | None:

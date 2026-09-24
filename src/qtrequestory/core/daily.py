@@ -11,6 +11,7 @@ cannot fully understand — the user can still search it by template key.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -106,55 +107,76 @@ def count_local_files(root: Path) -> int:
     )
 
 
-# ------------------------------------------------------------------ gaps ---
-
-def missing_weekdays(present: set[date], start: date, end: date) -> list[date]:
-    """The Mon-Fri dates in ``[start, end]`` (inclusive) that are not in
-    ``present``, ascending. Weekends are never reported: the server produces
-    no traffic on Saturday/Sunday, so an absent weekend file is normal, not a
-    gap in the mirror."""
-    out: list[date] = []
-    d = start
-    while d <= end:
-        if d.weekday() < 5 and d not in present:
-            out.append(d)
-        d += timedelta(days=1)
-    return out
-
+# -------------------------------------------------------------- coverage ---
 
 @dataclass(frozen=True)
 class CoverageDays:
-    """Weekday coverage of one environment's local mirror, as consumed by the
-    search coverage warning and the sync-page coverage calendar.
+    """What each day of one environment's coverage window is, as consumed by
+    the search coverage warning and the sync-page coverage calendar.
 
-    ``present`` is every locally mirrored day (unfiltered); ``missing`` is the
-    gaps within the requested window, restricted to ``first_local`` onward so
-    days from before the archive began are never flagged; ``first_local`` is
-    the oldest locally mirrored day, or ``None`` when nothing is mirrored yet.
+    ``present`` and ``empty`` are every local daily file (unfiltered): size
+    > 0, and 0 bytes (a compacted day the server published without traffic).
+    The three tuples only cover the window and days WITHOUT a local file:
+
+    * ``pending``: still listed non-empty by the server (can be downloaded);
+    * ``lost``: listed non-empty once, no longer listed (purged by the server
+      before it was downloaded);
+    * ``unknown``: a weekday on or after ``first_local`` that no listing ever
+      showed non-empty (before the tracking began, nothing to say about it).
+
+    ``first_local`` is the oldest local day (either kind), or ``None``.
     """
     present: frozenset[date]
-    missing: tuple[date, ...]
-    first_local: date | None
+    empty: frozenset[date] = frozenset()
+    pending: tuple[date, ...] = ()
+    lost: tuple[date, ...] = ()
+    unknown: tuple[date, ...] = ()
+    first_local: date | None = None
+
+    @property
+    def missing(self) -> tuple[date, ...]:
+        """The days that need attention: ``pending`` plus ``lost``, ascending."""
+        return tuple(sorted(self.pending + self.lost))
 
 
-def coverage_days(present: set[date], days: int, today: date) -> CoverageDays:
-    """Weekday gaps in ``present`` over the ``days`` days before ``today``.
+def classify_days(
+    local_sizes: Mapping[date, int],
+    listed_nonempty: Iterable[date],
+    seen_nonempty: Iterable[date],
+    days: int,
+    today: date,
+) -> CoverageDays:
+    """Classify the ``days`` days before ``today`` for one environment.
 
-    The window is ``[today - days + 1, today - 1]``: today is excluded
-    because today's calls only arrive on the server tomorrow, so a missing
-    file for today is expected, not a gap. ``missing`` only counts days on or
-    after the oldest locally mirrored day (``first_local``), so an empty or
-    young mirror never reports the days before it started as missing.
+    ``local_sizes`` maps every local daily file's day to its size;
+    ``listed_nonempty`` / ``seen_nonempty`` come from the sync state. The
+    window is ``[today - days + 1, today - 1]``: today's file is only
+    complete after the evening compaction, so it is never judged. Weekends
+    are classified like any other day: a weekend with traffic that is not
+    local is ``pending`` or ``lost``. A day before ``first_local`` is only
+    reported when the server listed it non-empty.
     """
+    present = frozenset(d for d, size in local_sizes.items() if size > 0)
+    empty = frozenset(d for d, size in local_sizes.items() if size == 0)
+    first_local = min(local_sizes) if local_sizes else None
+    listed = set(listed_nonempty)
+    seen = set(seen_nonempty) | listed
+    pending: list[date] = []
+    lost: list[date] = []
+    unknown: list[date] = []
+    day = today - timedelta(days=days - 1)
     end = today - timedelta(days=1)
-    start = today - timedelta(days=days - 1)
-    first_local = min(present) if present else None
-    missing: list[date] = []
-    if first_local is not None:
-        window_start = max(start, first_local)
-        if window_start <= end:
-            missing = missing_weekdays(present, window_start, end)
-    return CoverageDays(present=frozenset(present), missing=tuple(missing), first_local=first_local)
+    while day <= end:
+        if day not in local_sizes:
+            if day in listed:
+                pending.append(day)
+            elif day in seen:
+                lost.append(day)
+            elif first_local is not None and day >= first_local and day.weekday() < 5:
+                unknown.append(day)
+        day += timedelta(days=1)
+    return CoverageDays(present=present, empty=empty, pending=tuple(pending), lost=tuple(lost),
+                        unknown=tuple(unknown), first_local=first_local)
 
 
 # -------------------------------------------------------- entry name parse ---

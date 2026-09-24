@@ -390,6 +390,7 @@ def test_a_mirror_with_holes_raises_the_warning_with_a_way_to_sync(qtbot, fake_c
     present = {expected - timedelta(days=d) for d in range(0, 20)}
     hole = max(d for d in present if d.weekday() < 5 and d != expected)
     fake_core.index.set_local_days("coll", present - {hole})
+    fake_core.index.set_server_days("coll", listed={hole})  # still on the server: pending
     page = make_page()
     assert page.gap_banner.isVisible()
     assert page.gap_banner.label.text() == strings.SEARCH_GAP_ONE.format(env="coll")

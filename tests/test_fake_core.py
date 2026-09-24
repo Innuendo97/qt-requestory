@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import time as time_mod
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -245,7 +245,7 @@ def test_dry_run_result_carries_the_counts_it_announced(fake):
 def test_coverage_days_fake_agrees_with_real_on_the_same_mirror(fake, mirror):
     """``FakeIndexApi.coverage_days`` must compute the same thing the real
     facade does from an actual mirror on disk — both call the same pure
-    ``qtrequestory.core.daily.coverage_days``, so this pins the wiring, not
+    ``qtrequestory.core.daily.classify_days``, so this pins the wiring, not
     the algorithm (that is ``tests/test_daily.py``'s job).
     """
     cfg = dataclasses.replace(
@@ -267,6 +267,42 @@ def test_coverage_days_fake_agrees_with_real_on_the_same_mirror(fake, mirror):
     assert fake_result == real_result
     assert real_result.first_local == date(2026, 8, 3)
     assert real_result.present == frozenset(mirror_days)
+
+
+def test_coverage_days_fake_agrees_with_real_on_every_kind_of_day(fake, mirror):
+    """Empty local days and the sync state's listing memory: the fake's knobs
+    must produce exactly what the facade reads from disk and state."""
+    from qtrequestory.core.daily import local_path
+    from qtrequestory.core.state import SyncState
+
+    cfg = dataclasses.replace(
+        default_config(),
+        mirror_root=mirror.root,
+        environments=[Environment("coll", "https://example.invalid/coll/")],
+    )
+    empty_days = {date(2026, 9, 19), date(2026, 9, 16)}
+    for day in empty_days:
+        local_path(mirror.root, "coll", day).write_bytes(b"")
+    listed = {date(2026, 9, 21), date(2026, 9, 20)}
+    seen = {date(2026, 9, 17), date(2026, 8, 20)}
+    st = SyncState(cfg.state_path).load()
+    st.record_listing("coll", datetime(2026, 8, 21, 9, 0), oldest_listed=date(2026, 8, 20),
+                      listed_nonempty=seen)
+    st.record_listing("coll", datetime(2026, 9, 22, 9, 0), oldest_listed=date(2026, 9, 15),
+                      listed_nonempty=listed)
+    today = date(2026, 9, 22)
+
+    real_result = IndexService(lambda: cfg).coverage_days("coll", days=40, today=today)
+
+    fake.index.set_local_days("coll", {day for (env, day) in mirror.files if env == "coll"}, empty=empty_days)
+    fake.index.set_server_days("coll", listed=listed, seen=seen)
+    fake_result = fake.index.coverage_days("coll", days=40, today=today)
+
+    assert fake_result == real_result
+    assert real_result.empty == frozenset(empty_days)
+    assert real_result.pending == (date(2026, 9, 20), date(2026, 9, 21))
+    assert real_result.lost == (date(2026, 8, 20), date(2026, 9, 17))
+    assert real_result.unknown and all(d.weekday() < 5 for d in real_result.unknown)
 
 
 # ---------------------------------------------------- fake vs. real fidelity ---
