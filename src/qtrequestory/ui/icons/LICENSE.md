@@ -10,9 +10,9 @@
 recoloured at runtime by `qtrequestory/ui/icons.py` to follow the system light
 or dark palette; the files themselves keep the upstream `#212121` fill.
 
-`calendar.svg`, `dismiss.svg` and `text-bullet-list-tree.svg` are the same family's 20 px *regular*
-`calendar_ltr`, `dismiss` and `text_bullet_list_tree` glyphs, redrawn on the same 20 px grid, under the
-same licence.
+`calendar.svg`, `dismiss.svg`, `text-bullet-list-tree.svg` and `wrench.svg` are the same family's
+20 px *regular* `calendar_ltr`, `dismiss`, `text_bullet_list_tree` and `wrench` glyphs, redrawn on the
+same 20 px grid, under the same licence.
 
     MIT License
 

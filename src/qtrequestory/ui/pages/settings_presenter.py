@@ -10,6 +10,7 @@ and it keeps each file down to something that can be read in one sitting.
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -22,13 +23,15 @@ from qtrequestory.ui.actions import user_settings
 from qtrequestory.ui.contracts import (
     Config,
     CoreServices,
+    OFFICINA_TIMEOUT_RANGE,
     Environment,
+    OfficinaSettings,
     ScheduleSettings,
     parse_hhmm,
 )
 
 __all__ = [
-    "FormValues", "PrefValues", "SettingsPresenter", "canonical_schedule", "check_reachable",
+    "FormValues", "PrefValues", "SettingsPresenter", "canonical_officina", "canonical_schedule", "check_reachable",
     "form_of", "load_prefs", "normalised", "save_prefs",
 ]
 
@@ -57,6 +60,8 @@ class FormValues:
     #: shape: a frozen dataclass of scalars, so comparing two forms (dirty
     #: tracking) and handing it to ``config.validate`` both work unchanged.
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
+    #: The Officina section, already in the core's shape (``settings_officina``).
+    officina: OfficinaSettings = field(default_factory=OfficinaSettings)
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,17 @@ def canonical_schedule(schedule: ScheduleSettings) -> ScheduleSettings:
     return dataclasses.replace(schedule, start_time=parsed.strftime(TIME_FORMAT))
 
 
+def canonical_officina(o: OfficinaSettings) -> OfficinaSettings:
+    """A copy with the timeout inside the range its spin box can show.
+
+    Same idea as :func:`canonical_schedule`: a hand-edited ``timeout_s: 0``
+    is shown clamped, and comparing the raw values would open the form dirty.
+    The next save writes the clamped value.
+    """
+    low, high = OFFICINA_TIMEOUT_RANGE
+    return dataclasses.replace(copy.deepcopy(o), timeout_s=min(max(o.timeout_s, low), high))
+
+
 def form_of(cfg: Config) -> FormValues:
     """The form a configuration loads into."""
     return FormValues(
@@ -124,6 +140,7 @@ def form_of(cfg: Config) -> FormValues:
         window_days=cfg.default_window_days,
         output_dir=str(cfg.output_dir) if cfg.output_dir is not None else "",
         schedule=canonical_schedule(cfg.schedule),
+        officina=canonical_officina(cfg.officina),
     )
 
 
@@ -178,6 +195,7 @@ class SettingsPresenter(QObject):
             default_window_days=form.window_days,
             output_dir=_optional_path(form.output_dir),
             schedule=form.schedule,
+            officina=copy.deepcopy(form.officina),
         )
 
     def is_dirty(self, form: FormValues) -> bool:

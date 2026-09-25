@@ -35,7 +35,7 @@ ICON_DIR = SRC / "qtrequestory" / "ui" / "icons"
 # nothing else would put it on the path.
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SRC))
-from PyInstaller.utils.hooks import collect_submodules  # noqa: E402
+from PyInstaller.utils.hooks import collect_all, collect_submodules  # noqa: E402
 from make_version_info import write_version_info  # noqa: E402
 
 # The Windows version resource is generated from qtrequestory.__version__ so the
@@ -55,14 +55,35 @@ VERSION_FILE = write_version_info()
 # collect_submodules (not --collect-all) so a page added later is picked up too.
 PAGE_MODULES = collect_submodules("qtrequestory.ui.pages")
 
-# The four modules ui/main_window.py's PAGES actually asks import_module for. A
+# The five modules ui/main_window.py's PAGES actually asks import_module for. A
 # collect_submodules that silently returned only the package (a moved directory,
 # a renamed package) would otherwise build the exact broken exe this is here to
 # prevent, and nothing would say so until someone opened the window.
-for _page in ("search_page", "sync_page", "settings_page", "about_page"):
+for _page in ("search_page", "sync_page", "officina_page", "settings_page", "about_page"):
     assert f"qtrequestory.ui.pages.{_page}" in PAGE_MODULES, (
         f"qtrequestory.ui.pages.{_page} was not collected; got {PAGE_MODULES}"
     )
+
+# qtrequestory.officina is reached the same dynamic way: ui/pages/officina_page.py
+# is only imported by the page factory (lazily, so the hourly --sync never loads
+# it), and it reaches the officina package from there — collected explicitly so
+# the Officina is never the part left out of a build the way the other pages
+# once were.
+OFFICINA_MODULES = collect_submodules("qtrequestory.officina")
+
+# pypdfium2 (imported only by qtrequestory.officina.pdf — see
+# tests/test_officina_boundary.py) ships its own pdfium.dll/libpdfium.so.
+# Those never show up as a Python import, so PyInstaller's static analysis
+# cannot find them; collect_all pulls in its datas/binaries/hiddenimports
+# together (version metadata pypdfium2 reads at import time included).
+# Without this the exe starts, the Officina tab opens, and the first PDF view
+# raises "OSError: cannot load library".
+# Measured with pypdfium2 4.30: pdfium.dll itself lives in the separate
+# pypdfium2_raw package and is collected by pyinstaller-hooks-contrib's
+# hook-pypdfium2_raw (PDFIUM_BINARIES comes back empty); collect_all("pypdfium2")
+# brings the package's data files and its dist-info folder, which holds the
+# licence texts THIRD-PARTY-NOTICES.md points to.
+PDFIUM_DATAS, PDFIUM_BINARIES, PDFIUM_HIDDENIMPORTS = collect_all("pypdfium2")
 
 # ui/icons.py reads these from disk at runtime (ICON_DIR = Path(__file__).with_name("icons")),
 # which under onefile resolves inside the extraction dir — hence the same relative
@@ -76,7 +97,11 @@ datas = [
     (str(ICON_DIR / "*.svg"), "qtrequestory/ui/icons"),
     (str(ICON_DIR / "app.ico"), "qtrequestory/ui/icons"),
     (str(ICON_DIR / "LICENSE.md"), "qtrequestory/ui/icons"),
-]
+    # The notice the bundled third-party licences ask for (pypdfium2/PDFium,
+    # PySide6/Qt). pypdfium2's own licence texts come with its dist-info,
+    # which collect_all("pypdfium2") above already puts in PDFIUM_DATAS.
+    (str(SRC / "qtrequestory" / "THIRD-PARTY-NOTICES.md"), "qtrequestory"),
+] + PDFIUM_DATAS
 
 # Every exclusion below was verified against the built exe (GUI launch + the
 # headless paths), not assumed. Note what is NOT here:
@@ -132,13 +157,15 @@ excludes = [
 a = Analysis(
     [str(SCRIPTS / "entrypoint.py")],
     pathex=[str(SRC)],
-    binaries=[],
+    binaries=PDFIUM_BINARIES,
     datas=datas,
-    # The only hidden imports are the dynamically loaded pages (see above).
-    # Everything else is reached statically: cli.py imports the core eagerly and
-    # the UI lazily but by name (`from qtrequestory.ui.app import run_gui`), and
-    # an import inside a function is still visible to the module graph.
-    hiddenimports=PAGE_MODULES,
+    # The dynamically loaded pages (see above), the officina package reached
+    # the same way once its page exists, and pypdfium2's own hidden imports
+    # (version metadata it reads at import time). Everything else is reached
+    # statically: cli.py imports the core eagerly and the UI lazily but by
+    # name (`from qtrequestory.ui.app import run_gui`), and an import inside a
+    # function is still visible to the module graph.
+    hiddenimports=PAGE_MODULES + OFFICINA_MODULES + PDFIUM_HIDDENIMPORTS,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

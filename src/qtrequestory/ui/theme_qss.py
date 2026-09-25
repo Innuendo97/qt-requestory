@@ -177,6 +177,8 @@ QFrame#settingsSaveBar QPushButton {{ background: transparent; color: {bg}; bord
 QFrame#settingsSaveBar QPushButton:hover {{ border-color: {bg}; }}
 QFrame#settingsSaveBar QPushButton[role="primary"] {{ background: {accent}; color: {on_accent};
     border-color: {accent}; }}
+QFrame#settingsSaveBar QPushButton[role="primary"]:disabled {{ background: transparent;
+    color: {muted}; border-color: {muted}; }}
 QFrame#settingsBanner {{ background: {warn_bg}; border: none; border-radius: 6px; }}
 QFrame#settingsBanner QLabel {{ color: {warn}; background: transparent; }}
 /* -- Sync unit (Task 17): primary split button, warn banner, registro toggle -- */

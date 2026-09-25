@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from qtrequestory.ui.pages.search_page import SearchPage
 
 __all__ = [
-    "BODY_ACTIONS", "build_context_menu", "copy_shortcut", "install_shortcuts",
+    "BODY_ACTIONS", "add_to_officina", "build_context_menu", "copy_shortcut", "install_shortcuts",
     "prepare_drag_file", "row_tsv", "show_context_menu",
 ]
 
@@ -189,9 +189,22 @@ def build_context_menu(page: SearchPage, hit: SearchHit) -> QMenu:
     menu.addSeparator()
     _add(menu, strings.SEARCH_MENU_OPEN_DAY_FOLDER, partial(page.open_day_folder, hit),
          icon_name="folder-open")
+    menu.addSeparator()
+    _add(menu, strings.OFFICINA_ADD_MENU, partial(add_to_officina, page, hit), icon_name="wrench")
     for extra in page.context_menu_actions:
         menu.addAction(extra)
     return menu
+
+
+def add_to_officina(page: SearchPage, hit: SearchHit) -> None:
+    """"Aggiungi all'Officina…": the call becomes a case (``officina_add``).
+
+    Imported on use: the Officina's modules are not Ricerca's business until
+    the user asks for them.
+    """
+    from qtrequestory.ui.pages.officina_add import add_hit_to_officina
+
+    add_hit_to_officina(page, page.services, hit)
 
 
 def _add(menu: QMenu, label: str, slot, *, enabled: bool = True, icon_name: str = "",

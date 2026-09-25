@@ -39,6 +39,8 @@ Optional hooks a page may expose (all duck-typed, all optional):
                         for the quit question
 ``can_leave()``         asked before switching away from the page; False keeps
                         it on screen (Impostazioni with unsaved changes)
+``on_quit()``           the window is closing (after the quit question): stop
+                        starting new work (the Officina's waiting cases)
 
 Pages open the import dialog with ``window.open_import(sources)``.
 """
@@ -74,17 +76,22 @@ from qtrequestory.ui.quit_dialog import (  # noqa: F401 - JOB_LABELS/build_quit_
 from qtrequestory.ui.startup import StartupTasks
 from qtrequestory.ui.toast import DEFAULT_MS as TOAST_MS
 from qtrequestory.ui.toast import Toast
-from qtrequestory.ui.workers import JobRunner
+from qtrequestory.ui.workers import OFFICINA_DELIVERY_JOB, OFFICINA_GENERATE_JOBS, JobRunner
 
 log = logging.getLogger(__name__)
 
 STATUS_TIMEOUT_MS = 4000
 #: Page key -> its navigation shortcut; also shown in the tab/icon tooltip.
-PAGE_SHORTCUTS = {"search": "Ctrl+1", "sync": "Ctrl+2", "settings": "Ctrl+,", "about": "F1"}
+PAGE_SHORTCUTS = {"search": "Ctrl+1", "sync": "Ctrl+2", "officina": "Ctrl+3",
+                  "settings": "Ctrl+,", "about": "F1"}
 SYNC_NOW_SHORTCUT = "Ctrl+Shift+S"
 #: Jobs after which every page's ``on_data_changed`` runs — and which closing
 #: the window would interrupt, so it asks first.
 DATA_JOBS = ("sync", "index", "import", "recycle")
+#: Jobs closing the window would interrupt: the data jobs, and an Officina
+#: generation (a document already on its way would not be saved). The three
+#: generation lanes are asked about once. A delivery too (it stops between files).
+QUIT_JOBS = (*DATA_JOBS, *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB)
 #: How often the pages' ``refresh_sync_state`` runs (the app-bar chip would
 #: otherwise stay stale after a scheduled sync until the user opened
 #: Sincronizzazione). Slow on purpose: it only re-reads a state file.
@@ -133,6 +140,8 @@ PAGES: list[PageSpec] = [
     PageSpec("search", strings.NAV_SEARCH, "search",
              page_factory("search_page", "SearchPage"), "tab"),
     PageSpec("sync", strings.NAV_SYNC, "arrow-sync", page_factory("sync_page", "SyncPage"), "tab"),
+    PageSpec("officina", strings.OFFICINA_NAV, "wrench",
+             page_factory("officina_page", "OfficinaPage"), "tab"),
     PageSpec("settings", strings.NAV_SETTINGS, "settings",
              page_factory("settings_page", "SettingsPage"), "icon"),
     PageSpec("about", strings.NAV_ABOUT, "info", page_factory("about_page", "AboutPage"), "icon"),
@@ -458,13 +467,24 @@ class MainWindow(QMainWindow):
             self.refresh_sync_state()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        """Ask before abandoning a sync or an index job, then remember the geometry."""
-        for name in DATA_JOBS:
-            if self._runner.is_running(name) and not confirm_quit_during_job(
-                    self, name, self._job_detail(name)):
+        """Ask before abandoning a sync, an index or an Officina generation,
+        then remember the geometry."""
+        asked_officina = False
+        for name in QUIT_JOBS:
+            if not self._runner.is_running(name):
+                continue
+            if name in OFFICINA_GENERATE_JOBS:
+                if asked_officina:
+                    continue  # one question for the three lanes
+                asked_officina = True
+            if not confirm_quit_during_job(self, name, self._job_detail(name)):
                 event.ignore()
                 return
-        for name in DATA_JOBS:
+        for page in self._pages.values():
+            quitting = getattr(page, "on_quit", None)
+            if callable(quitting):
+                quitting()  # e.g. the Officina drops the cases still waiting
+        for name in QUIT_JOBS:
             self._runner.cancel(name)
         stored = self.settings()
         stored.setValue("window/geometry", self.saveGeometry())

@@ -1,4 +1,4 @@
-"""The boundary the UI is written against: six Protocols plus the core dataclasses.
+"""The boundary the UI is written against: seven Protocols plus the core dataclasses.
 
 Every widget, presenter and worker in ``qtrequestory.ui`` takes its core
 functionality from a ``CoreServices`` bundle and never imports a core module
@@ -14,7 +14,11 @@ Rules that keep that swap free of surprises:
   ``QApplication``; only typing and core dataclasses are allowed.
 * **No new dataclasses.** Everything returned is the core's own type, re-exported
   below so the UI has a single import surface. ``EnvStatus`` is a core dataclass
-  too (``core.facade``), not a UI invention.
+  too (``core.facade``), not a UI invention. The Officina types come from
+  ``qtrequestory.officina`` (model, generator, compare, service) the same way.
+* **Officina stays lazy.** Importing this module imports only the light,
+  stdlib-only Officina modules (never pypdfium2), and ``CoreServices.officina``
+  builds the real service on first use, not in ``CoreServices.real()``.
 * **No adapter code in the UI.** If the core's shape does not fit what a page
   needs, the adapter goes into ``core/facade.py`` — never into a widget.
 
@@ -24,11 +28,12 @@ turns those into queued Qt signals. Cancellation is a ``CancelToken``.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import threading
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from qtrequestory import __version__
 from qtrequestory.core.archive import (
@@ -42,6 +47,8 @@ from qtrequestory.core.archive import (
 )
 from qtrequestory.core.config import (
     IGNORE_FOLDER,
+    GeneratorEndpoint,
+    OfficinaSettings,
     REPEAT_EVERY_RANGE,
     REPEAT_FOR_RANGE,
     Config,
@@ -50,7 +57,13 @@ from qtrequestory.core.config import (
     IndexSettings,
     ScheduleSettings,
     SyncSettings,
+    OFFICINA_TIMEOUT_RANGE,
+    default_generator_problem,
+    generator_problems,
+    header_problems,
+    officina_root_errors,
     parse_hhmm,
+    postman_token_problem,
     sanitised_schedule,
 )
 from qtrequestory.core.daily import CoverageDays, EntryName, LocalDailyFile, parse_entry_name
@@ -86,10 +99,30 @@ from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
+from qtrequestory.officina.compare.extract_pdf import DocText, Word
+from qtrequestory.officina.compare.textdiff import Difference, TextComparison
+from qtrequestory.officina.delivery import (
+    DeliveryItem,
+    DeliveryPlan,
+    DeliveryReport,
+    MissingSlot,
+    delivery_folder,
+    safe_component,
+    zip_destination,
+)
+from qtrequestory.officina.generator import SendResult
+from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version
+from qtrequestory.officina.links import mask_text
+from qtrequestory.officina.service import CompareError
 
 __all__ = [
     # protocols + bundle
-    "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "ArchiveApi", "CoreServices",
+    "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "ArchiveApi", "OfficinaApi",
+    "CoreServices",
+    # Officina (qtrequestory.officina: model, generator, compare, service)
+    "Initiative", "Case", "Version", "SendResult", "TextComparison", "Difference", "Word", "DocText",
+    "CompareError", "AsisAlreadyExistsError", "OfficinaSettings", "GeneratorEndpoint",
+    "mask_text", "DeliveryItem", "DeliveryPlan", "DeliveryReport", "MissingSlot",
     # archive import (core/archive.py, core/importer.py)
     "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
@@ -103,9 +136,15 @@ __all__ = [
     "parse_entry_name", "parse_hhmm", "sanitised_schedule",
     # the limits config.validate enforces on a schedule (the Impostazioni spin boxes)
     "REPEAT_EVERY_RANGE", "REPEAT_FOR_RANGE",
+    # the Officina rules config.validate applies, per row (the Impostazioni tables)
+    "generator_problems", "default_generator_problem", "header_problems", "postman_token_problem",
+    "officina_root_errors",
+    "OFFICINA_TIMEOUT_RANGE",
     "pick_best",
     # "inside the archive" as the Recycle Bin guard decides it (junctions resolved)
     "real_is_within",
+    # the delivery's names (pure: the dialog's preview uses them)
+    "safe_component", "delivery_folder", "zip_destination",
     # events (the sink payloads the UI renders)
     "SyncStarted", "EnvStarted", "EnvSkipped", "EnvUnreachable", "RemoteIndexRead", "FileSkipped",
     "FileStarted", "FileProgress", "FileDone", "FileFailed", "EnvFinished", "SyncFinished",
@@ -406,7 +445,147 @@ class ArchiveApi(Protocol):
         ...
 
 
+# ----------------------------------------------------------------- officina ---
+
+@runtime_checkable
+class OfficinaApi(Protocol):
+    """The Officina tab: initiatives and cases on disk, generation against the
+    Inspire Scaler, text comparison. The blocking methods (``generate``,
+    ``compare``, ``case_from_hit``) run in a worker.
+
+    Everything is read from and written to the Officina folder
+    (``Config.officina.root``). While it is not set, ``workspace_root()`` is
+    None, ``initiatives()`` is empty and every write raises ``ValueError``.
+    """
+
+    def workspace_root(self) -> Path | None:
+        """The Officina folder, or None while it is not chosen (or not absolute)."""
+        ...
+
+    def initiatives(self) -> list[Initiative]:
+        """Every initiative under the root, with its cases (read from disk)."""
+        ...
+
+    def create_initiative(self, name: str) -> Initiative:
+        """``FileExistsError`` for a name already used; ``ValueError`` for a
+        blank name or no root."""
+        ...
+
+    def load(self, initiative_id: str) -> Initiative:
+        """Re-read one initiative from disk, by its id: its FOLDER's name
+        (``Initiative.id``), never its display name — a folder copied in
+        Explorer keeps the original's name. ``FileNotFoundError`` if it is
+        gone. An unreadable ``iniziativa.json`` loads with ``load_error`` set."""
+        ...
+
+    def case_from_hit(self, ini: Initiative, hit: SearchHit, variant: str = "") -> Case:
+        """A new case from a Ricerca hit: the payload is the hit's body (read
+        through ``IndexApi.read_body``), key and FDI come from the hit, the env
+        is the default generator. ``ValueError`` when the body is not a JSON
+        object, and ``ValueError("la chiamata non è più nel log locale:
+        ripetere la ricerca")`` when the daily file was rewritten or deleted
+        since the search (no case is created); ``FileExistsError`` for a
+        key+variant already in the initiative."""
+        ...
+
+    def case_from_file(self, ini: Initiative, path: Path, key: str, variant: str = "") -> Case:
+        """A new case from a JSON file (UTF-8, BOM allowed), without a source
+        FDI. ``ValueError`` for a blank key or a file that is not a JSON object."""
+        ...
+
+    def save_case(self, case: Case) -> None:
+        """Merge into ``caso.json``. ``ValueError`` (nothing written) for a
+        case with ``load_error``, or whose file is unreadable now."""
+        ...
+
+    def payload(self, case: Case) -> dict:
+        """The case's payload as edited; ``{}`` when missing or unreadable."""
+        ...
+
+    def save_payload(self, case: Case, payload: dict) -> None:
+        """The first save keeps the original as ``payload.original.json``."""
+        ...
+
+    def set_target(self, case: Case, src: Path) -> Version:
+        """Copy ``src`` in as the TARGET, under its original name."""
+        ...
+
+    def generate(
+        self,
+        ini: Initiative,
+        case: Case,
+        kind: Literal["asis", "tobe"],
+        *,
+        replace_asis_note: str | None = None,
+        cancel=None,
+    ) -> tuple[Version | None, SendResult]:
+        """Send the case to its generator and store the answer as the AS-IS or
+        the next TO-BE.
+
+        Never raises for a refused or failed run: it returns ``(None, result)``
+        with ``result.ok`` False and an Italian ``reason``, and writes nothing.
+        Refused before sending: an env that is not an enabled generator, an
+        existing AS-IS without ``replace_asis_note``, a header problem, a
+        still-valid upload link, an empty payload, ``cancel`` already set.
+        After sending, an answer of the wrong type for the case (e.g. HTML for
+        a PDF case: a gateway error page) is a failed run too.
+        """
+        ...
+
+    def compare(self, left: Version, right: Version) -> TextComparison:
+        """Word diff of ``left`` (the reference, usually the TARGET) against
+        ``right``. HTML is printed to PDF by Edge first, under the case's
+        ``cache`` folder. Cached by content hash.
+
+        ``CompareError`` (Italian message) when it cannot be made: a file gone,
+        an unreadable PDF, Edge missing or failing. A side without text is a
+        result, not an error: the ``note`` says so and there are no differences.
+        """
+        ...
+
+    def render_path(self, case: Case, version: Version) -> Path:
+        """The PDF the viewer renders for ``version``: the version file itself
+        for a PDF; for an HTML, its Edge print in the case's ``cache`` folder
+        (converted now if needed — the same file ``compare`` uses, so call it
+        from a worker). ``CompareError`` when the file is gone or the
+        conversion fails."""
+        ...
+
+    # -- delivery to the testers (spec §8) ---------------------------------
+
+    def delivery_plan(self, ini: Initiative, case_ids: Sequence[str]) -> DeliveryPlan:
+        """The files a delivery of ``case_ids`` writes (``dest_rel`` relative
+        to ``<destination>/<Iniziativa>``) and the slots it skips. Reads only
+        the Officina folder (quick enough for the GUI thread)."""
+        ...
+
+    def delivery_conflicts(self, ini: Initiative, items: Sequence[DeliveryItem], destination: Path,
+                           *, make_zip: bool) -> list[Path]:
+        """The files already at the destination (to ask about them first).
+        Touches the destination, which may be a synced folder: call it from a worker."""
+        ...
+
+    def deliver(self, ini: Initiative, items: Sequence[DeliveryItem], destination: Path, *,
+                on_conflict: Callable[[Path], Literal["replace", "keep_both", "skip"]],
+                make_zip: bool, cancel: CancelToken | None = None) -> DeliveryReport:
+        """Copy ``items`` (and, with ``make_zip``, zip exactly this delivery:
+        the files written plus the existing ones kept with "Salta" — nothing
+        else in the folder, never through a symbolic link) and remember
+        ``destination`` as the initiative's last one. Never overwrites a file
+        without ``on_conflict``; a file that fails is in ``report.failed`` and
+        the others are still delivered; one written under another name is in
+        ``report.renamed``. ``ValueError`` for a relative destination."""
+        ...
+
+    def last_delivery_destination(self, ini: Initiative) -> Path | None:
+        """Where the initiative was last delivered, or None."""
+        ...
+
+
 # ----------------------------------------------------------- service bundle ---
+
+_OFFICINA_LOCK = threading.Lock()
+
 
 @dataclass(frozen=True)
 class CoreServices:
@@ -414,6 +593,11 @@ class CoreServices:
 
     ``MainWindow`` receives one of these and hands it to the pages; tests pass
     the fake bundle instead. Nothing else is injected.
+
+    ``officina`` is a property: ``officina_factory`` builds the service on
+    first access (once, thread-safe), so starting the app or the CLI never
+    pays for the Officina. ``dataclasses.replace(services, ...)`` does not copy
+    that cache: the new bundle builds its own service on its first access.
     """
 
     config: ConfigApi
@@ -424,6 +608,22 @@ class CoreServices:
     archive: ArchiveApi
     paths: AppPaths
     app_version: str = __version__
+    officina_factory: Callable[[], OfficinaApi] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def officina(self) -> OfficinaApi:
+        """The Officina service, built on first access."""
+        built = self.__dict__.get("_officina")
+        if built is not None:
+            return built
+        with _OFFICINA_LOCK:
+            built = self.__dict__.get("_officina")
+            if built is None:
+                if self.officina_factory is None:
+                    raise RuntimeError("Officina non disponibile: nessun servizio configurato")
+                built = self.officina_factory()
+                object.__setattr__(self, "_officina", built)  # frozen: cached outside the fields
+        return built
 
     @classmethod
     def real(cls, paths: AppPaths | None = None) -> CoreServices:
@@ -437,14 +637,22 @@ class CoreServices:
 
         resolved = paths if paths is not None else app_paths().ensure()
         config = facade.ConfigService(resolved)
+        index = facade.IndexService(config.current)
+
+        def officina() -> OfficinaApi:
+            from qtrequestory.officina.service import OfficinaService
+
+            return OfficinaService(config.current, index=index)
+
         return cls(
             config=config,
             sync=facade.SyncService(config.current, paths=resolved),
             scheduler=facade.SchedulerService(config_source=config.current),
-            index=facade.IndexService(config.current),
+            index=index,
             extract=facade.ExtractService(config.current),
             archive=facade.ArchiveService(config.current),
             paths=resolved,
+            officina_factory=officina,
         )
 
     # -- misc accessors the Info page shows ---------------------------------

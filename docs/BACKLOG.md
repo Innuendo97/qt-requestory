@@ -28,6 +28,72 @@ sovrapposta a quella dei log, i weekend con traffico mai segnalati.
 4. **Chiudere la finestra con impostazioni non salvate non chiede nulla** (lo fa solo il
    cambio di pagina).
 
+## Officina
+
+La fase 1 (generazione, confronto del solo testo, visore, consegna) è descritta in README
+§Officina, DESIGN-core §Officina e DESIGN-ui §Officina. Il resto del progetto arriva a fasi.
+
+### Fase 2 — confronto a tre vie
+
+- **Verdetto a tre vie**: per ogni differenza, TO-BE contro target combinato con AS-IS
+  contro target → *fatta*, *da fare*, *in corso*, *regressione*, *tollerata*; l'avanzamento
+  del caso (fatte / (fatte + da fare + regressioni)) e le pillole sulla bacheca. *Segna
+  accettato* diventa bloccante (0 da fare, 0 regressioni) invece della conferma di oggi.
+- **Allineamento dei blocchi**: pagine e blocchi non si abbinano per indice ma con un
+  punteggio pesato (contenuto, posizione, struttura) risolto come assegnamento, con pagine
+  inserite e tolte; tabelle confrontate cella per cella; OCR solo come ripiego, segnalato,
+  per le pagine con il livello di testo inutilizzabile (oggi un documento misto conta come
+  «con testo» e la pagina scansionata esce come differenze normali).
+- **Profili di tolleranza** *Tollerante* (predefinito: testo, composizione e immagini
+  contano; stile e spaziatura tollerati), *Stretto*, *Solo testo*, per iniziativa e per
+  caso; classi `testo`, `composizione`, `stile`, `spaziatura`, `immagine`, `spostato`.
+- **Differenze DOM per l'HTML**: testo visibile e struttura (inscriptis + xmldiff),
+  confronto esatto degli attributi critici (`href`, `src`), una scheda «DOM» accanto al
+  visore.
+- **Spostamenti**: un blocco tolto e uno aggiunto con lo stesso testo normalizzato diventano
+  una sola differenza «spostato» (in blu; il colore è già previsto negli overlay). Oggi
+  escono come «mancante» più «in più».
+
+### Fase 3 — rifiniture
+
+- **Confronto delle immagini**: pHash come filtro veloce, SSIM su ritagli in scala di
+  grigi come criterio (tollerante a renderer e antialiasing diversi).
+- **Regole di rumore nell'interfaccia**: regex per iniziativa (date di generazione, numeri
+  di pratica, codici a barre, marcatori di firma, timestamp) → segnaposto; piccole e
+  visibili, mai pulizie globali silenziose. Oggi `noise_rules` esiste in `iniziativa.json`
+  ma non viene usato, e numeri di pagina e date escono come differenze.
+- **`riepilogo-differenze.pdf`** nella consegna: per caso il verdetto, le differenze
+  tollerate con le note, versioni e date (QPdfWriter). Serve il verdetto della fase 2.
+- **Minimappa delle differenze** (heat-strip) lungo la barra di scorrimento del visore.
+- **Annotazioni**: segnare una differenza «tollerata» con una nota (tasto T), annotarla
+  (tasto N), con ↑/↓ e Invio nell'elenco; salvate in `caso.json` e ritrovate dopo una
+  rigenerazione (ancora di testo indipendente dalla pagina + tipo).
+- **Editor dei predefiniti degli header dell'iniziativa** nell'interfaccia: oggi
+  `header_defaults` si scrive a mano in `iniziativa.json` (il generatore lo usa già).
+- Rigenerazione in blocco con i verdetti; «Condividi caso anonimizzato» (pseudonimi
+  deterministici, elenco dei campi non personali).
+
+### Limiti noti della fase 1
+
+- Il motivo di una generazione fallita vive solo in memoria (il modello salva solo le
+  generazioni riuscite): si perde alla chiusura.
+- La cache delle estrazioni è solo in memoria (le stampe HTML di Edge invece sono in
+  `cache\`): dopo un riavvio il primo confronto rilegge i PDF.
+- Edge con un profilo nuovo a ogni stampa impiega circa 3,5 s; un timeout su
+  `--headless=new` viene ritentato, quindi il caso peggiore è il doppio del timeout.
+- Una chiamata già partita non si interrompe: *Annulla* agisce tra un caso e l'altro, e
+  chiudendo la finestra durante un invio lungo l'attesa di `JobRunner.shutdown()` (5 s) può
+  scadere.
+- Il controllo dei link firmati rifiuta anche un link SAS valido di sola lettura fuori dagli
+  attributi di upload (es. in `customData`): più sicuro, e il motivo indica il percorso.
+- urllib invia i nomi degli header con le iniziali maiuscole (`Template_Key`): HTTP non
+  distingue, ma se il generatore si rivelasse sensibile servirebbe `http.client`.
+- `compare_text` ha solo `right_label`: quando a sinistra non c'è il target il servizio
+  riscrive la nota a mano (un `left_label` sarebbe più pulito).
+- L'eseguibile non è stato rimisurato dopo l'aggiunta di pypdfium2 (`pdfium.dll` ~5,4 MB).
+- `officina/delivery.py` (~450 righe) e `officina/service.py` (~560) sono sopra la soglia
+  delle ~400 righe (moduli del motore, non dell'interfaccia).
+
 ## Codici di uscita e CLI
 
 - `EXIT_CONFIG_ERROR = 2` coincide con il 2 "nessun ambiente raggiungibile" di `--sync`:

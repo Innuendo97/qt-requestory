@@ -22,6 +22,7 @@ which also exercises a live theme switch. PNGs are named
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import sys
 import tempfile
@@ -247,11 +248,61 @@ def main(argv: list[str] | None = None) -> int:
 
     scenes += [
         (f"impostazioni-{key}", settings_section(key))
-        for key in ("archive", "environments", "automation", "search", "editor", "advanced")
+        for key in ("archive", "environments", "automation", "search", "officina", "editor",
+                    "advanced")
     ]
     scenes += [
         ("impostazioni-modifiche", settings_section("search", dirty=True)),
         ("impostazioni-banner", settings_section("automation", dirty=True, banner=True)),
+    ]
+
+    def settings_officina_problems(scroll_to: str):
+        """Impostazioni → Officina with what the section reports inline: a
+        OneDrive folder (a warning), a PROD generator, the default disabled,
+        a Host header. ``scroll_to`` names the widget brought into view."""
+        def prepare() -> None:
+            settings.reload()
+            window.show_page("settings")
+            settings.show_section("officina")
+            s = settings.officina_section
+            onedrive = tmp / "userprofile" / "OneDrive - Esempio"
+            os.environ["OneDrive"] = str(onedrive)
+            s.folder.setText(str(onedrive / "Officina"))
+            table = s.generators
+            row = table.add_row()
+            table.item(row, table.COL_NAME).setText("PROD")
+            table.item(row, table.COL_URL).setText(
+                "https://inspire-prod.example.invalid/rest/api/submit-job/documentGenerator")
+            row = table.add_row()
+            table.item(row, table.COL_NAME).setText("coll")
+            table.item(row, table.COL_URL).setText(
+                "https://example.invalid/coll/rest/api/submit-job/documentGenerator?sv=1&sig=abc")
+            table.item(0, table.COL_ENABLED).setCheckState(Qt.CheckState.Unchecked)
+            heads = s.headers
+            row = heads.add_row()
+            heads.item(row, heads.COL_NAME).setText("Host")
+            heads.item(row, heads.COL_VALUE).setText("example.invalid")
+            pump(100)
+            settings.scroll.ensureWidgetVisible(getattr(s, scroll_to), 0, 0)
+        return prepare
+
+    def settings_save_blocked() -> None:
+        """A PROD row in Officina, then an edit in Ricerca: the bar says why
+        Salva is off and offers [Mostra]."""
+        settings.reload()
+        window.show_page("settings")
+        table = settings.officina_section.generators
+        row = table.add_row()
+        table.item(row, table.COL_NAME).setText("PROD")
+        table.item(row, table.COL_URL).setText("https://example.invalid/g")
+        settings.show_section("search")
+        settings.set_window_days(7)
+
+    scenes += [
+        ("impostazioni-salva-bloccato", settings_save_blocked),
+        ("impostazioni-officina-avvisi", settings_officina_problems("folder")),
+        ("impostazioni-officina-generatori", settings_officina_problems("default_combo")),
+        ("impostazioni-officina-intestazioni", settings_officina_problems("remove_header_button")),
     ]
 
     good_config = services.config.load()
@@ -409,6 +460,295 @@ def main(argv: list[str] | None = None) -> int:
         ("importa-2-copia", dialog_copy),
         ("importa-3-risultato", dialog_result),
         ("importa-4-cestino", dialog_deleted),
+    ]
+    # -- Officina viewer (Task 6): two DocViews in sync, synthetic PDFs only ----
+    officina_docs: dict[str, object] = {}
+
+    def officina_pdfs():
+        """TARGET / TO-BE PDFs (synthetic words) and their differences, made once."""
+        if not officina_docs:
+            from qtrequestory.officina.compare.extract_pdf import extract
+            from qtrequestory.officina.compare.textdiff import compare_text
+            from tests.officina import pdfgen
+
+            pdfgen.load_font()
+            folder = tmp / "officina-viewer"
+            folder.mkdir(exist_ok=True)
+
+            def pages(changed: bool) -> str:
+                out = []
+                for n in range(12):
+                    words = pdfgen.lorem(240, seed=n).split()
+                    if changed and n == 0:
+                        words[14] = "MOD_TEST_NUOVO"
+                        words.insert(40, "parola aggiunta qui")
+                        del words[80:84]
+                    brk = "always" if n else "auto"
+                    out.append(f"<h2 style='page-break-before: {brk}'>Sezione {n + 1}</h2>"
+                               f"<p>{' '.join(words)}</p>")
+                return "".join(out)
+
+            left = pdfgen.html_pdf(folder / "target.pdf", pages(False))
+            right = pdfgen.html_pdf(folder / "tobe.pdf", pages(True))
+            lt, rt = extract(left), extract(right)
+            officina_docs.update(left=(left, lt), right=(right, rt),
+                                 diffs=compare_text(lt, rt).differences)
+        return officina_docs
+
+    def officina_viewer(zoom="fit_width"):
+        def prepare():
+            from PySide6.QtWidgets import QHBoxLayout, QWidget
+
+            from qtrequestory.ui.pages.officina_viewer import DocView, SyncController
+
+            docs = officina_pdfs()
+            holder = QWidget()
+            holder.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            row = QHBoxLayout(holder)
+            views = []
+            for side in ("left", "right"):
+                view = DocView()
+                path, text = docs[side]
+                view.load(side, path, text.page_sizes)
+                pick = (lambda d: d.left) if side == "left" else (lambda d: d.right)
+                view.set_highlights([(d.id, d.kind, pick(d)) for d in docs["diffs"]])
+                row.addWidget(view)
+                views.append(view)
+            holder._sync = SyncController(*views)
+            holder.resize(width, height)
+            holder.show()
+            pump(200)
+            views[0].set_zoom(zoom)
+            if docs["diffs"]:
+                holder._sync.focus_difference(docs["diffs"][0].id)
+            pump(900)
+            return holder
+        return prepare
+
+    scenes += [
+        ("officina-visore", officina_viewer()),
+        ("officina-visore-pagina", officina_viewer("fit_page")),
+    ]
+
+    # -- Officina tab (Task 7): list, board, case — synthetic keys and PDFs ------
+    officina_state: dict[str, object] = {}
+
+    sending_key = "MOD_TEST_RICHIESTA_B"
+
+    def officina_settle() -> None:
+        """A "-invio" scene leaves a slow generation running: let it end, and
+        forget it (it is answered 502 on purpose, so no version is written and
+        every mode shows the same documents)."""
+        page = window.page("officina")
+        end = time.monotonic() + 10
+        while page.queue.is_busy() and time.monotonic() < end:
+            pump(100)
+        services.officina.delay_s = 0.0
+        services.officina.set_response_for(sending_key, None)
+        if officina_state:
+            page.failures.pop((officina_state["ini"], officina_state["case"]), None)
+
+    def officina_send_slowly(case_id: str) -> None:
+        page = window.page("officina")
+        services.officina.delay_s = 3.0
+        services.officina.set_response_for(sending_key, b"<html>gateway</html>", 502)
+        page.regenerate_tobe([case_id])
+
+    def officina_setup():
+        """Two initiatives; the first holds five cases in every state (a TO-BE
+        with differences, one equal and reopened by a newer version after its
+        acceptance, one accepted, one failed, one empty)."""
+        officina_settle()
+        if officina_state:
+            return officina_state
+        from tests.fakes.fake_core import canned_pdf
+
+        docs = officina_pdfs()
+        api = services.officina
+        payloads = tmp / "officina-payloads"
+        payloads.mkdir(exist_ok=True)
+        ini = api.create_initiative("Iniziativa di esempio")
+        api.create_initiative("Rinnovo moduli")
+        keys = [("MOD_TEST_MANDATO_A", ""), ("MOD_TEST_RICHIESTA_B", "abilitato"),
+                ("MOD_TEST_CARTA_C", ""), ("MOD_TEST_CARTA_D", ""), ("MOD_TEST_RICHIESTA_E", "")]
+        for key, variant in keys:
+            path = payloads / f"{key}.json"
+            path.write_text('{"documents": [{"template": {"templateKey": "%s"}}]}' % key,
+                            encoding="utf-8")
+            api.case_from_file(ini, path, key, variant)
+        ini = api.load(ini.id)
+        cases = {c.key: c for c in ini.cases}
+        left, right = docs["left"][0], docs["right"][0]
+        for key in ("MOD_TEST_MANDATO_A", "MOD_TEST_RICHIESTA_B", "MOD_TEST_CARTA_C",
+                    "MOD_TEST_CARTA_D"):
+            api.set_target(cases[key], left)
+        api.set_response(left.read_bytes())
+        for key in ("MOD_TEST_MANDATO_A", "MOD_TEST_RICHIESTA_B", "MOD_TEST_CARTA_C",
+                    "MOD_TEST_CARTA_D"):
+            api.generate(ini, cases[key], "asis")
+        api.generate(ini, cases["MOD_TEST_MANDATO_A"], "tobe")
+        cases["MOD_TEST_MANDATO_A"].mark_accepted()
+        api.save_case(cases["MOD_TEST_MANDATO_A"])
+        api.generate(ini, cases["MOD_TEST_MANDATO_A"], "tobe")  # reopens it: da ricontrollare
+        api.set_response(right.read_bytes())
+        api.generate(ini, cases["MOD_TEST_RICHIESTA_B"], "tobe")
+        api.generate(ini, cases["MOD_TEST_RICHIESTA_B"], "tobe")
+        api.set_response(left.read_bytes())
+        api.generate(ini, cases["MOD_TEST_CARTA_C"], "tobe")
+        cases["MOD_TEST_CARTA_C"].mark_accepted()
+        api.save_case(cases["MOD_TEST_CARTA_C"])
+        api.set_response(canned_pdf("x"))
+        api.set_response_for("MOD_TEST_CARTA_D", b"<html><body>gateway</body></html>", 502)
+        officina_state.update(ini=ini.id, case=cases["MOD_TEST_RICHIESTA_B"].id,
+                              failing=cases["MOD_TEST_CARTA_D"])
+        return officina_state
+
+    def officina_list() -> None:
+        officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.show_list()
+        pump(300)
+
+    def officina_board() -> None:
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        page.regenerate_tobe([state["failing"].id])  # fails: 502, shown on its row
+        pump(1500)
+        page.board.select_cases([state["case"]])
+        pump(300)
+
+    def officina_case() -> None:
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        page.open_case(state["case"])
+        pump(2500)
+        view = page.case_view
+        if view.diffs.list.count():
+            view.diffs.list.setCurrentRow(0)
+        pump(900)
+
+    def officina_board_sending() -> None:
+        """The board while a case is on its way: "Generazione su svil…"."""
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        officina_send_slowly(state["case"])
+        pump(600)
+
+    def officina_case_sending() -> None:
+        """The workbench while its case is on its way: the busy label names
+        the generator (the header always does)."""
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        page.open_case(state["case"])
+        pump(2500)
+        officina_send_slowly(state["case"])
+        pump(400)
+
+    def officina_chooser() -> None:
+        cfg = services.config.config
+        saved = cfg.officina
+        services.config.config = dataclasses.replace(
+            cfg, officina=dataclasses.replace(saved, root=None))
+        page = window.page("officina")
+        window.show_page("officina")
+        page.refresh()
+        pump(300)
+        services.config.config = dataclasses.replace(services.config.config, officina=saved)
+
+    def officina_editor():
+        """"Payload e header…" of the case, on its second tab, grabbed on its own."""
+        from qtrequestory.ui.pages.officina_editor import PayloadHeaderDialog
+
+        state = officina_setup()
+        page = window.page("officina")
+        page.open_initiative(state["ini"])
+        case = page._case(state["case"])
+        case.headers = {"X-Flag": "active", "current_timestamp": "1767225600000"}
+        dialog = PayloadHeaderDialog(services, case, window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.tabs.setCurrentIndex(1)
+        dialog.show()
+        pump(300)
+        return dialog
+
+    def officina_add_dialog():
+        from qtrequestory.ui.pages.officina_add import AddCaseDialog
+
+        officina_setup()
+        dialog = AddCaseDialog([("Iniziativa di esempio", "Iniziativa di esempio"),
+                                ("Rinnovo moduli", "Rinnovo moduli")],
+                               current="Iniziativa di esempio", key="MOD_TEST_RICHIESTA_B",
+                               parent=window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.variant.setText("abilitato")
+        dialog.show()
+        pump(300)
+        return dialog
+
+    delivery_dest = tmp / "OneDrive - Esempio" / "Consegne tester"
+
+    def officina_delivery_dialog():
+        """"Consegna…": the accepted case, plus a non-accepted one (the warning)
+        and one without TO-BE (a missing slot in the preview), zip on."""
+        from qtrequestory.ui.pages.officina_delivery import DeliveryDialog
+
+        state = officina_setup()
+        ini = services.officina.load(state["ini"])
+        dialog = DeliveryDialog(services, runner, ini, window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        for case in ini.cases:
+            if case.key in ("MOD_TEST_RICHIESTA_B", "MOD_TEST_CARTA_D"):
+                dialog.set_checked(case.id, True)
+        dialog.set_destination(delivery_dest)
+        dialog.zip_box.setChecked(True)
+        dialog.show()
+        pump(300)
+        return dialog
+
+    def officina_delivery_summary():
+        """The summary after a delivery that found one file already there
+        (answered "Salta" for all) and skipped the missing TO-BE."""
+        from qtrequestory.ui.pages import officina_dialogs
+
+        import shutil
+
+        shutil.rmtree(delivery_dest, ignore_errors=True)  # the same picture in every mode
+        dialog = officina_delivery_dialog()
+        existing = delivery_dest / "Iniziativa di esempio" / "MOD_TEST_CARTA_C"
+        existing.mkdir(parents=True, exist_ok=True)
+        (existing / "MOD_TEST_CARTA_C_ASIS.pdf").write_bytes(b"%PDF-1.4 vecchio")
+        saved = officina_dialogs.ask_conflict
+        officina_dialogs.ask_conflict = lambda *_a: ("skip", True)
+        try:
+            dialog.start()
+            end = time.monotonic() + 10
+            while not dialog.showing_summary() and time.monotonic() < end:
+                pump(100)
+        finally:
+            officina_dialogs.ask_conflict = saved
+        pump(300)
+        return dialog
+
+    scenes += [
+        ("officina-consegna", officina_delivery_dialog),
+        ("officina-consegna-riepilogo", officina_delivery_summary),
+        ("officina-cartella", officina_chooser),
+        ("officina-iniziative", officina_list),
+        ("officina-bacheca", officina_board),
+        ("officina-caso", officina_case),
+        ("officina-bacheca-invio", officina_board_sending),
+        ("officina-caso-invio", officina_case_sending),
+        ("officina-payload-header", officina_editor),
+        ("officina-aggiungi", officina_add_dialog),
     ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]

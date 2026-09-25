@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 from qtrequestory.ui import strings
 from qtrequestory.ui.pages.settings_presenter import check_reachable, normalised
 from qtrequestory.ui.pages.settings_widgets import PathField
+from qtrequestory.ui.workers import officina_writing
 
 __all__ = ["CHECK_JOB", "INDEX_JOB", "SettingsActions", "ask_leave"]
 
@@ -179,6 +180,26 @@ class SettingsActions:
         # wrote nothing, and the form (already clean) stays as it is.
         if self._services.config.load() != self._presenter.loaded:
             self.reload()
+
+    def _show_errors(self, errors: list[str]) -> None:
+        if not errors:
+            self.errors_label.clear()
+            self.errors_label.hide()
+            return
+        self.errors_label.setText(
+            "\n".join([strings.SETTINGS_ERRORS_TITLE,
+                       *(strings.SETTINGS_ERROR_BULLET + e for e in errors)])
+        )
+        self.errors_label.show()
+
+    def officina_writing(self) -> bool:
+        """True while the Officina writes into its folder: the Officina tab's
+        own answer (``is_writing``: waiting and running cases, a delivery)
+        when the window has built it, and the runner's lanes in any case."""
+        finder = getattr(self._window, "page", None)
+        page = finder("officina") if callable(finder) else None
+        hook = getattr(page, "is_writing", None)
+        return (callable(hook) and bool(hook())) or officina_writing(self._runner)
 
     def on_config_changed(self, _cfg: object) -> None:
         """The configuration was written elsewhere (the wizard): show it.

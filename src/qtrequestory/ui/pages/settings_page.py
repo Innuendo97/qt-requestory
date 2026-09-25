@@ -1,6 +1,6 @@
 """The Impostazioni page: a section list on the left, one section on the right.
 
-The seven sections are built by ``settings_sections.py`` (layout only); the
+The eight sections are built by ``settings_sections.py`` (layout only); the
 rules live in ``settings_presenter.py`` (:class:`SettingsPresenter` — what the
 form means as a ``Config``, whether it is dirty, whether it validates, and the
 one call that writes it). This page holds the behaviour: dirty tracking, the
@@ -139,12 +139,18 @@ class SettingsPage(SettingsActions, QWidget):
         self.save_bar = QFrame()
         self.save_bar.setObjectName("settingsSaveBar")
         self.save_bar_label = QLabel(strings.SETTINGS_UNSAVED)
+        # Why Salva is disabled, even when the Officina section is not on screen.
+        self.save_blocked_label = QLabel(strings.SETTINGS_OFFICINA_FIX_ROWS)
+        self.show_officina_button = button(strings.SETTINGS_OFFICINA_SHOW,
+                                           lambda: self.show_section("officina"))
         self.cancel_button = button(strings.BTN_CANCEL, self.reload)
         self.save_button = button(strings.BTN_SAVE, self.save)
         theme.set_role(self.save_button, "primary")
         layout = QHBoxLayout(self.save_bar)
         layout.setContentsMargins(theme.SPACE[2], theme.SPACE[1], theme.SPACE[1], theme.SPACE[1])
-        layout.addWidget(self.save_bar_label)
+        for widget in (self.save_bar_label, self.save_blocked_label, self.show_officina_button):
+            layout.addWidget(widget)
+        layout.insertSpacing(1, theme.SPACE[4])  # "Modifiche non salvate" | the reason
         layout.addStretch(1)
         layout.addWidget(self.cancel_button)
         layout.addWidget(self.save_button)
@@ -202,6 +208,7 @@ class SettingsPage(SettingsActions, QWidget):
             window_days=self._window_days,
             output_dir=normalised(self.output_path.text()),
             schedule=self.schedule_values(),
+            officina=self.officina_section.values(),
         )
 
     def pref_values(self) -> PrefValues:
@@ -247,6 +254,7 @@ class SettingsPage(SettingsActions, QWidget):
         self.editor_path.setText(form.editor_path)
         self.output_path.setText(form.output_dir)
         self.set_schedule(form.schedule)
+        self.officina_section.load(form.officina)
         self.set_window_days(form.window_days)
         self.group_by_fdi.setChecked(self._prefs.group_by_fdi)
         self.set_key_mode(self._prefs.key_mode)
@@ -282,7 +290,14 @@ class SettingsPage(SettingsActions, QWidget):
         self.output_default_button.setVisible(bool(self.output_path.text()))
         dirty = self.is_dirty()
         self.save_bar.setVisible(dirty)
-        self.save_button.setEnabled(dirty)
+        # An Officina problem (a PROD row…) blocks a configuration save only;
+        # the bar says why, with a way to the section, wherever the user is.
+        blocked = (bool(self.officina_section.problems())
+                   and self._presenter.is_dirty(self.form_values()))
+        self.save_button.setEnabled(dirty and not blocked)
+        self.save_button.setToolTip(strings.SETTINGS_OFFICINA_FIX_ROWS if blocked else "")
+        self.save_blocked_label.setVisible(blocked)
+        self.show_officina_button.setVisible(blocked)
 
     def on_data_changed(self) -> None:
         """A sync or an index job finished (``MainWindow`` hook)."""
@@ -325,7 +340,11 @@ class SettingsPage(SettingsActions, QWidget):
         config_dirty = self._presenter.is_dirty(form)
         moved = config_dirty and self._presenter.mirror_moved(form)
         if config_dirty:
-            errors = self._presenter.save(form)
+            blocked = self.officina_section.save_refusals(
+                self._presenter.to_config(form), self._presenter.loaded.officina.root,
+                self.officina_writing())
+            errors = ([*blocked, *self._presenter.errors(form)] if blocked
+                      else self._presenter.save(form))
             self._show_errors(errors)
             if errors:
                 return False
@@ -369,17 +388,6 @@ class SettingsPage(SettingsActions, QWidget):
         self.schedule_banner_label.setText(
             strings.SETTINGS_SCHEDULE_UPDATE_FAILED.format(message=message))
         self.schedule_banner.show()
-
-    def _show_errors(self, errors: list[str]) -> None:
-        if not errors:
-            self.errors_label.clear()
-            self.errors_label.hide()
-            return
-        self.errors_label.setText(
-            "\n".join([strings.SETTINGS_ERRORS_TITLE,
-                       *(strings.SETTINGS_ERROR_BULLET + e for e in errors)])
-        )
-        self.errors_label.show()
 
 
 def _count(n: int) -> str:

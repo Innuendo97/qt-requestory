@@ -4,6 +4,9 @@ The core is the UI-agnostic engine: sync, index, search, extract, scheduler, con
 **Rule: `qtrequestory.core` imports only the standard library** (a test enforces it).
 Everything here is callable from the CLI (`--sync`, `--index`, `--find`, `--task`,
 `--archivio`, `--import`) and from the PySide6 UI through the same functions.
+The Officina engine (`qtrequestory.officina`, §Officina) sits beside the core: it is Qt-free
+too, may use `pypdfium2` (only through `officina/pdf.py`, loaded lazily), and imports the
+core — never the other way round (`tests/test_no_qt_in_core.py` checks both).
 
 ## Domain facts (measured on real data; fixtures must reproduce them synthetically)
 
@@ -68,11 +71,30 @@ src/qtrequestory/
 │   ├── scheduler.py       TaskSpec, build_task_xml, register/unregister/status/run_now, detect_legacy_task
 │   ├── jobs.py            run_sync_job, run_index_job
 │   └── facade.py          Config/Sync/Scheduler/Index/Extract/ArchiveService, ArchiveBusy: what the UI calls
+├── officina/              the Officina tab's engine (§Officina); Qt-free, never imported by core or cli
+│   ├── __init__.py        empty: importing the package loads nothing heavy
+│   ├── model.py           Workspace, Initiative (+ re-exports Case, Version): initiatives and cases on disk
+│   ├── model_case.py      Case and its caso.json (load, save merge, reopen after acceptance)
+│   ├── model_versions.py  Version: reading/writing TARGET, AS-IS and TO-BE files and metas
+│   ├── model_io.py        atomic writes (unique temp file), tolerant and strict JSON reads
+│   ├── links.py           upload links (SAS): find_links, remove_links, signed_links, mask, mask_text
+│   ├── generator.py       resolve_headers, prepare_payload, send, sniff, SendResult, HeaderError
+│   ├── service.py         OfficinaService (behind ui/contracts.OfficinaApi): workspace, generate, delivery
+│   ├── service_compare.py CompareMixin (compare, render_path, the Edge print cache), CompareError
+│   ├── delivery.py        build_plan/plan_delivery, deliver/run_delivery, safe_component
+│   ├── pdf.py             THE ONLY pypdfium2 importer: read_chars, page_sizes, page_count, render_page
+│   └── compare/
+│       ├── extract_pdf.py Word, DocText, extract (pypdfium2 loaded inside extract())
+│       ├── textdiff.py    Difference, TextComparison, normalise, compare_text
+│       ├── sanitise.py    sanitise_html (allow-list) + CSP
+│       └── edge.py        find_edge, html_to_pdf (Microsoft Edge headless)
+├── THIRD-PARTY-NOTICES.md licences of the bundled third-party components (§Packaging)
 └── ui/                    the only package allowed to import PySide6
 ```
 
-Dependency direction: `ui -> jobs/search/config/scheduler/extract -> core internals`.
-`cli.py` is the only module that knows both.
+Dependency direction: `ui -> jobs/search/config/scheduler/extract -> core internals`, and
+`ui -> officina.service -> officina.* -> core.config/fsutil/index.search`.
+`cli.py` is the only module that knows both core and ui; it never imports `officina` itself.
 
 ## Locations
 
@@ -140,7 +162,15 @@ the CLI `--dry-run` listing and `sync.log` word the same file the same way.
   "index": {"parse_json": true},
   "schedule": {"start_time": "09:00", "repeat_every_h": 1, "repeat_for_h": 9, "run_at_logon": true},
   "log_level": "INFO",
-  "folder_envs": {"D:\\old-logs\\misc": "coll", "D:\\old-logs\\junk": "__ignora__"}
+  "folder_envs": {"D:\\old-logs\\misc": "coll", "D:\\old-logs\\junk": "__ignora__"},
+  "officina": {
+    "root": "C:\\Users\\<u>\\Officina",
+    "generators": [ {"name": "svil", "url": "https://<host>/<path>/documentGenerator", "enabled": true} ],
+    "default_generator": "svil",
+    "postman_token": "qtRequestory",
+    "header_profile": {"service_number": "service_number", "office_id": "office_id", "branch_id": "branch_id"},
+    "timeout_s": 120
+  }
 }
 ```
 ```python
@@ -172,7 +202,39 @@ def import_environments_file(path) -> list[Environment]   # JSON list [{"name","
 def find_sidecar_environments(exe_dir) -> Path | None     # environments.json next to the exe
 def detect_editor() -> Path | None   # Notepad++ in ProgramFiles / ProgramFiles(x86) / PATH
 CONFIG_VERSION = 1; MIGRATIONS: dict[int, Callable[[dict], dict]] = {}
+
+# the Officina block (generators are NOT the log environments: those are only read)
+@dataclass class GeneratorEndpoint: name: str; url: str; enabled: bool = True
+@dataclass class OfficinaSettings:
+    root: Path | None = None                 # None = not chosen yet (the tab shows its chooser)
+    generators: list[GeneratorEndpoint] = [] # ships empty: no hostname in the repo
+    default_generator: str = "svil"
+    postman_token: str = "qtRequestory"      # non-empty: keeps test calls out of the nginx logs
+    header_profile: dict[str, str] = {"service_number": ..., "office_id": ..., "branch_id": ...}  # placeholders
+    timeout_s: int = 120                     # OFFICINA_TIMEOUT_RANGE = (1, 600)
+    def generator(self, name) -> GeneratorEndpoint        # KeyError when unknown
+    def enabled_generators(self) -> list[GeneratorEndpoint]
+Config.officina: OfficinaSettings                          # the last field; a missing block = defaults
+# shared validators: validate(), Impostazioni (inline, per row) and the generator client use the SAME functions
+def is_prod_like(text) -> bool                           # "prod", or "prd" as a token, after NFKC + casefold, raw and percent-decoded
+def generator_url_problem(url, *, allow_loopback_http=False) -> str | None   # prod, non-ASCII, unreadable host/port,
+                                                         # no host, not https (http only to loopback, for tests)
+def generator_problems(generators) -> list[list[str]]    # per row: empty/prod-like name, URL problem, duplicate name (casefold)
+def default_generator_problem(o) -> str | None           # generators configured but the default is not an enabled one
+def postman_token_problem(token) -> str | None           # empty or blank
+HTTP_CLIENT_HEADERS: frozenset[str]                      # Host, Content-Length, Transfer-Encoding, Connection, …
+def header_name_problem(name) / header_value_problem(name, value) -> str | None   # RFC token, not a client header; no CR/LF, latin-1
+def header_problems(rows) -> list[list[str]]             # per row + case-insensitive duplicates
+def officina_root_errors(cfg) -> list[str]               # absolute; not the mirror / output folder, not inside, not containing
+def officina_errors(cfg) -> list[str]                    # all of the above, Italian; part of validate()
 ```
+The Officina block is parsed with the file's usual leniency (a non-object block, bad
+generator items, non-string profile pairs, wrong scalar types: warned and defaulted;
+unknown keys warned). `officina_errors` never quotes a generator URL (it could carry a
+signature, and the messages reach the error list); the generator name identifies the row.
+`officina_root_errors` keeps payloads out of the log mirror (nothing from the Officina ever
+goes there) and out of the output folder, which `extract.housekeeping` prunes by age.
+
 `mirror_root`: a *missing* key defaults to `%USERPROFILE%\qtRequestory\logs`, but a key that
 is present and empty is **kept empty**, never silently defaulted (that once pointed a
 hand-edited config at the live mirror). `validate` then reports "La cartella dei log non è
@@ -764,6 +826,299 @@ editor unless `--no-open`, exit 1 when nothing matches). `--task status` exits 1
 is registered. Qt is imported ONLY inside the GUI branch (`tests/test_cli.py` checks it in a
 subprocess).
 
+## Officina (`qtrequestory.officina`) — phase 1
+
+The engine of the Officina tab (README §Officina, DESIGN-ui §Officina): initiatives and
+cases on disk, generation against a document generator with safe headers and upload links,
+a word-level text comparison, and the testers' delivery folder. Phase 1 compares **text
+only**; the rest of the comparison design (alignment, three-way verdict, tolerance
+profiles, images, DOM diff) is in BACKLOG §Officina. Qt-free throughout: the UI turns the
+rendered bytes into `QImage`s.
+
+### Lazy boundary and PDFium (`officina/pdf.py`)
+
+- `officina/pdf.py` is the **only** module that imports `pypdfium2`; `officina/__init__.py`
+  is empty; `compare/extract_pdf.extract()` and the viewer's render job import
+  `officina.pdf` inside the function. So `import qtrequestory.cli` (the hourly `--sync`),
+  `import qtrequestory.officina`, `officina.service`, `ui.contracts`, `officina_viewer` and
+  `officina_page` never load pypdfium2 (`tests/test_officina_boundary.py` and subprocess
+  tests in the officina/UI test files). `CoreServices.officina` is built on first access
+  (`officina_factory`), and the UI reaches `officina_page` only through the page factory.
+- Functions: `read_chars(path) -> list[PageChars]` (per page: displayed size, image count,
+  characters with a `text_box` in the text's own unrotated space — used to group words and
+  lines — and a `display_box` in the displayed page, top-left origin, CropBox and /Rotate
+  applied through `FPDF_PageToDevice`; PDFium's line-end hyphen U+0002 becomes `-`, a glyph
+  without Unicode U+FFFD); `page_sizes`, `page_count`; `render_page(path, page, scale) ->
+  RenderedPage` (BGRx bytes, displayed orientation, white fill). A /Rotate 180 page is read
+  with its rotation set to 0 **in memory** (PDFium reads upside-down text right-to-left) and
+  restored in `finally`; the file is never saved. `PdfReadError(ValueError)` wraps
+  PDFium's errors in Italian; a missing file stays `FileNotFoundError`.
+- **One process-wide `RLock` around every PDFium call** (render, extraction, sizes): PDFium
+  is not thread-safe, and the viewer's render threads could otherwise meet an extraction
+  running in a worker. Rendering is therefore never parallel; the pools only keep the UI
+  responsive.
+
+### Model (`officina/model.py`)
+
+```
+<Officina root>\
+  <Iniziativa>\                      folder-safe name; the display name is in iniziativa.json
+    iniziativa.json                  name, created, header_defaults, noise_rules, delivery {last_destination, last_at}, notes
+    casi\<case-id>\                  case-id = <KEY> or <KEY>__<variant-slug>
+      caso.json                      key, variant, env, headers, drop_postman_token, correlation(+value),
+                                     link_policy, status, notes, source_fdi, history [{at, note}]
+      payload.json                   (payload.original.json written on the first edit)
+      target\<original name>         + target.meta.json {original_name, …}
+      asis\asis.pdf|html + asis.meta.json      (asis.previous-<n>.* kept on replace)
+      tobe\v001.pdf|html + v001.meta.json, v002…
+      cache\                         Edge prints of HTML, temporary copies (safe to delete)
+```
+- `Workspace(root)`: `initiatives()`, `create_initiative(name)` (refuses duplicates),
+  `load(initiative_id)`, `add_case(ini, key, variant, payload, *, env, source_fdi)`, `save_case`,
+  `payload` / `save_payload`, `set_target(case, src)` (copy, original name kept; a second
+  call replaces), `add_version(case, "asis"|"tobe", content, doc_type, meta, *,
+  replace_asis_note=None)`, `last_delivery_destination` / `remember_delivery_destination`.
+- **An initiative is its folder**: `Initiative.id` is the folder's name and the only thing
+  `load()` takes (one plain folder name; never looked up by display name). `name` (from
+  `iniziativa.json`, else the folder) is display only: a folder copied in Explorer keeps
+  the original's name and is still another initiative. The UI keys everything on the id
+  (list rows, queue, failures, delivery folder).
+- `Case` (`id, key, variant, env, headers, drop_postman_token, correlation: new|source|fixed,
+  correlation_value, link_policy: remove|keep_if_expired, status: open|accepted, notes,
+  folder, source_fdi, load_error, accepted_version, reopened, load_notes`) reads its slots
+  from disk on every call: `target()`, `asis()`, `tobe_versions()` (ascending),
+  `latest_tobe()`, `history`. A new case has `link_policy="remove"`, `correlation="new"`,
+  `status="open"`. `Version(kind, number, path, doc_type, created, meta, missing, broken)`:
+  number 0 for target/AS-IS, 1… for TO-BE.
+- **Acceptance is of a version**: `mark_accepted()` records `accepted_version` (the latest
+  TO-BE's number); `add_version` of a new AS-IS or TO-BE on an accepted case sets it back to
+  `open` with `reopened_after_acceptance: true` (`Case.reopened`; `accepted_version` kept for
+  the record); `acceptance_is_current()` is what delivery preselects on.
+- Every write is atomic (temp file + `fsutil.replace_with_retry`), including the copy of a
+  target (committed before its meta). Names: `\ / : * ? " < > |` replaced, trailing dots
+  and spaces stripped, Windows device names (`CON`, `COM1`…) escaped, for initiatives and
+  case ids alike; accents and spaces stay readable.
+- The AS-IS is a baseline: `add_version("asis")` raises `AsisAlreadyExistsError` when one
+  exists and no note is given; with a note the old one becomes `asis.previous-<n>.*` and the
+  note is appended to `caso.json` `history`. Nothing ever deletes a TO-BE version.
+- Loading never raises for what the user can do in Explorer: a corrupt `caso.json` gives a
+  case with defaults and `load_error`, a corrupt `iniziativa.json` an initiative with
+  `load_error` (header defaults unknown: generation is refused); a version file deleted on
+  disk gives `Version.missing=True` (Review Focus 4). Hand-edited metadata is never trusted
+  to build a path: a target `original_name` that is not one safe file name gives
+  `Version.broken` (also refused by `render_path`, `compare` and delivery), a `doc_type`
+  other than pdf/html falls back to the content file on disk, a null header value is dropped
+  with a line in `load_notes`, and `drop_postman_token` is only the JSON `true`.
+- **Writing never merges into what it cannot read**: `save_case`, the AS-IS history note, the
+  reopen and `remember_delivery_destination` raise `ValueError` (nothing written) for an
+  unreadable `caso.json` / `iniziativa.json` — a merge into `{}` would wipe env, headers,
+  source FDI, name or header defaults. Every write goes through a unique temporary file in
+  the same folder (`tempfile.mkstemp`), so two writers never share one.
+- Initiative header defaults exist in the model (`header_defaults`) but have no editor in the
+  UI yet; noise rules are stored but unused in phase 1.
+
+### Upload links (`officina/links.py`)
+
+A payload carries `{"key": "attachmentId"}` / `{"key": "attachmentUrl", "value": <SAS URL>}`
+attributes in `documents[].attributes[]` and in nested
+`dossierItems[].childItems[].documents[].attributes[]`. The SAS URL is a **write**
+permission on a real customer's blob, so replaying a still-valid one would overwrite a real
+document.
+- `find_links(payload)` finds every such attribute at any depth (key compared
+  case-insensitively) with its JSON path, expiry (`se=`) and write permission (`sp=`).
+  A missing, unreadable or **repeated** `se` means "not expired"; a repeated `sp` means
+  writable; a malformed URL is treated as valid (so refused). A link counts as expired only
+  when `expires + CLOCK_SKEW (5 min) <= now`. `UploadLink.url` is out of `repr`;
+  `.masked` is the safe form.
+- `remove_links(payload)` returns a deep copy without the `attachmentUrl`/`attachmentId`
+  attributes (policy **Rimuovi**, the default: the probe showed the generator still returns
+  the document in the body).
+- `signed_links(payload)` scans **every string** of the payload (decoded up to four rounds:
+  HTML entities, JSON `\uXXXX` / `\/`, percent-encoding) for `sig=`, protocol-relative and
+  scheme-less forms included — the defence in depth behind both policies.
+- `mask(url)` keeps scheme, host, port and path and turns any query into `sig=***` (userinfo
+  and fragment dropped; an unreadable URL becomes `<url non leggibile>`, never an
+  exception); `mask_text` / `mask_bytes` mask every URL in free text and then any `sig`
+  followed by `=`, `%3D`, `&#61;`, `&#x3d;` or `&equals;`.
+
+### Generator client (`officina/generator.py`)
+
+- `resolve_headers(case, ini, settings, *, now_ms, new_uuid, source_fdi)`. **Precedence,
+  the later layer winning: automatic < profile (Impostazioni) < initiative defaults < case
+  overrides.** Automatic: `current_timestamp` (now, epoch ms), `template_key` (the case
+  key), `correlation_id` (a new uuid4 — `new_uuid` is called only in this mode —, the source
+  FDI, or the fixed value), `Postman-Token` (the configured default). The case winning over
+  the automatic values is deliberate: headers are fully editable (e.g. a fixed
+  `current_timestamp`). Names merge case-insensitively; a header whose final value is empty
+  is not sent, except `Postman-Token`, which is put back with its canonical name unless
+  `case.drop_postman_token` — the only way to drop it. A missing `correlation_id` (mode
+  "source" without an FDI, "fixed" without a value, and no layer setting it) and a bad name
+  or value (the shared `header_name_problem` / `header_value_problem`: RFC token, not one of
+  `HTTP_CLIENT_HEADERS`, no CR/LF, latin-1) raise `HeaderError`, whose message names the
+  layer ("intestazioni (caso): …").
+- `prepare_payload(payload, policy, *, now) -> (payload | None, reason)`: `remove` →
+  `remove_links`; `keep_if_expired` → unchanged only if every link is provably expired; any
+  other policy is refused. Then, whatever the policy, a still-valid signed URL anywhere in the
+  payload (`signed_links`) refuses the send; the reason names the JSON path and the masked
+  URL. The input is never mutated.
+- `send(url, payload, headers, *, timeout_s, opener=None) -> SendResult(ok, status, doc_type,
+  content, duration_ms, reason, headers_sent)`. Never raises. Before any call the URL goes
+  through `generator_url_problem(url, allow_loopback_http=True)` (plain http only to
+  127.0.0.1/localhost/::1, for the tests' fake server). The default opener **refuses
+  redirects** (a 3xx is a failed run). The body is read against an overall deadline (the
+  socket timeout shrinks to the time left, so a trickling server cannot stretch it) and a
+  200 MB cap. The type is **sniffed** from the bytes — the server sends no Content-Type:
+  `%PDF-` at the start (at most 8 BOM/whitespace bytes before it) → pdf; a body starting
+  with `<` whose first KB holds `<!doctype html` or `<html` → html. Failed runs: HTTP ≥ 400,
+  not a document ("la risposta non è un PDF né un HTML"), HTML under 512 bytes ("risposta
+  HTML sospetta: troppo corta") — with the first 4 KB of the body, masked, as `content` —
+  and timeout / network error / refused URL with empty content. `reason` is always masked;
+  `headers_sent` is `shown_headers(headers)`: credential headers `***`, URLs masked.
+- urllib sends header names title-cased (`Template_Key`); HTTP names are case-insensitive
+  and the probe went out the same way.
+
+### Service (`officina/service.py`, behind `ui/contracts.OfficinaApi`)
+
+`OfficinaService(config_source, *, index=None, opener=None, clock, new_uuid,
+html_to_pdf)` reads `Config.officina` through the callable on **every** call, so a save in
+Impostazioni is seen at once. `workspace_root()` is None when `root` is unset, blank or
+relative; then `initiatives()` is empty and writes raise `ValueError`.
+- `case_from_hit(ini, hit, variant)`: the body from `IndexApi.read_body(hit)` (must be a JSON
+  object), key and `source_fdi` from the hit, env = the default generator; a call no longer
+  in the local log is `ValueError("…ripetere la ricerca")`. `case_from_file(ini, path, key,
+  variant)`: a JSON object file (BOM allowed), non-blank key, no source FDI.
+- `generate(ini, case, kind, *, replace_asis_note=None, cancel=None) -> (Version | None,
+  SendResult)` refuses as early as possible, in this order, so nothing leaves the machine
+  when it should not: no root → the case env must be a configured, **enabled**, not
+  prod-like generator with a usable URL → an existing AS-IS without a note →
+  `resolve_headers` → an empty payload → `prepare_payload` → the cancel token → `send` →
+  the **expected type** (the target's type, else the AS-IS's — for a new AS-IS only the
+  target's; with neither, pdf or html): an HTML answer for a PDF case is almost always a
+  gateway error page → only then `Workspace.add_version`, with meta `env`, `generator`
+  (masked URL), `status`, `duration_ms`, `bytes`, `sent_at`, `headers_sent`,
+  `link_policy`, `links_removed` — never the payload. Every refusal or failure is
+  `(None, SendResult(ok=False, reason=<masked Italian>))` and writes nothing; a save error
+  after a good answer is "documento ricevuto ma non salvato: …". A call already on the wire
+  cannot be interrupted: `cancel` is checked just before sending.
+- Logging carries only case id, slot, env name, status, duration, version number, doc type
+  and the reason with every link reduced to its host (`links.mask_text_for_log`) — never the
+  payload, the document, the headers or a link's path (a caplog test checks it). The reason
+  returned to the UI keeps the masked link (`…?sig=***`) so the user sees which one.
+- `generate` also refuses an initiative with `load_error` and a case with `load_error`.
+- `compare(left, right) -> TextComparison`: each file is read once and hashed; a PDF is
+  extracted from a private copy of exactly those bytes (in `cache\`), an HTML side is first
+  printed by Edge. Extractions (LRU 16) and results (LRU 64, keyed by both hashes and
+  labels) are cached **in memory**, so an identical regenerated TO-BE costs two reads and
+  two hashes. `right_label` names the right side ("TO-BE"/"AS-IS") in the "non ha testo
+  estraibile" note. A comparison that cannot be made (file gone, unreadable PDF, Edge missing
+  or failing, no cache folder) raises `CompareError` (Italian): not a note, because a note
+  would be cached and read like a result, while these problems are fixable and must be
+  retried. A side without a text layer IS a result (Review Focus 2).
+- `render_path(case, version) -> Path`: the PDF the viewer shows — the file itself, or the
+  cached Edge print of an HTML.
+- **HTML print cache**: `<case>\cache\html-<sha256[:32]>.pdf`. The hashed bytes are copied to
+  a private file, printed to a private name, checked (`%PDF-`, over 1 KB, `%%EOF` in the last
+  KB) and renamed atomically; a lock per final name serialises check-and-convert (the board
+  and the case view convert the same HTML once); a cached file that fails the check is
+  printed again. Nothing derived is ever written into `target\`, `asis\` or `tobe\`.
+- `delivery_plan`, `delivery_conflicts`, `deliver` (the delivery folder is named after
+  `Initiative.id`; remembers the destination in `iniziativa.json`, or says why not in
+  `DeliveryReport.remember_problem`; logs counts only, never file names — a target name may
+  be a customer's)
+  and `last_delivery_destination` wrap `officina/delivery.py`.
+
+### Text comparison (`officina/compare/extract_pdf.py`, `textdiff.py`)
+
+- `extract(path) -> DocText(words, page_sizes, has_text)`; `Word(text, page, x0, y0, x1, y1)`
+  in points of the displayed page, origin top-left. Characters become words on whitespace,
+  a horizontal gap over 0.25 × the glyph height, a line change or a jump back to the left;
+  words are clustered into lines by vertical centre and read top to bottom, left to right;
+  characters whose centre is off the displayed page are dropped (cropped or clipped text).
+  `has_text` is False with no word at all, or for a "scanned" document: every page under
+  5 words and at least one page with an image.
+- `compare_text(left, right, *, right_label="TO-BE") -> TextComparison(differences,
+  left_has_text, right_has_text, equal, note)`: `difflib.SequenceMatcher(autojunk=False)`
+  over the **whole document** as one sequence, page-agnostic (reflow onto another page is
+  not a difference); replace/delete/insert → `changed`/`removed`/`added`, ids from 1. The
+  comparison units are normalised (NFKC, soft hyphens and zero-width characters removed,
+  quotes and dashes unified, case kept); a word ending in `-`, U+2010 or a soft hyphen at a
+  line end, followed by a lowercase word, is joined with it (never a dash); a
+  punctuation-only token sticks to its neighbour. A `Difference` keeps the **original**
+  `Word`s and boxes of both sides, which the viewer highlights. A side without text gives
+  `equal=False`, no differences and a note. Deterministic (a test runs it twice); two
+  10-page PDFs compare in about 1 s.
+
+### HTML → PDF with Edge, sandboxed (`officina/compare/sanitise.py`, `edge.py`)
+
+An HTML case (an email body) is compared, and shown, through its PDF print by the Microsoft
+Edge installed on Windows (`find_edge()`: Program Files (x86), Program Files, LOCALAPPDATA,
+then the App Paths registry key, read-only). Rendering must be offline and deterministic,
+and a customer HTML must not be able to reach the network, so there are three layers:
+1. **Sanitiser (an allow-list)**: `sanitise_html(bytes)` writes a sanitised copy next to the
+   output, and Edge renders that copy, never the original. A reference survives only when it
+   is relative (no scheme, no leading `/` or `\`), `data:` (not in frames/plugins), a
+   fragment or empty; everything else — http(s), `//host`, `cid:`, `javascript:`,
+   `file://host`, UNC `\\host\share` (SMB would leak NTLM credentials) — is blanked (`href`
+   on `a`/`area` becomes `#`). Values are tested after HTML-entity decoding and CSS
+   unescaping. `<script>`, `on*` handlers, `srcdoc`, `<base>`, `http-equiv` metas other than
+   content-type/content-language/x-ua-compatible and CSS `@import` are removed; CSS
+   `url(…)` / `image-set(…)` are checked in `<style>` and `style=""`; a `srcset` with one bad
+   candidate is blanked. The document's own encoding (BOM, `<meta charset>`, else UTF-8,
+   cp1252, latin-1) is kept.
+2. **CSP**: a `<meta http-equiv="Content-Security-Policy">` first in `<head>` (after the
+   doctype when there is no head): `default-src 'none'; img-src data:; style-src
+   'unsafe-inline'; font-src data:; script-src 'none'; object-src 'none'; frame-src 'none';
+   worker-src 'none'; base-uri 'none'; form-action 'none'`. It blocks every fetch even if the
+   sanitiser missed a reference, and switches JavaScript off — the
+   `--blink-settings=scriptEnabled=false` switch makes `--print-to-pdf` write nothing
+   (verified), so it is deliberately not passed (a test checks it). Relative references do
+   not load either: harmless, the copy lives in `cache\`, away from the original's files.
+3. **Edge itself**: a throw-away `--user-data-dir` per run (`qtr-edge-*` in the temp folder;
+   ones older than a day, left by a crash, are swept), a dead proxy
+   (`--proxy-server=http://127.0.0.1:9`) and a resolver that resolves nothing
+   (`--host-resolver-rules=MAP * ~NOTFOUND`), extensions, sync, background networking and
+   component updates off, no print header/footer. The proxy does not cover SMB — layers 1
+   and 2 do.
+
+The exit code is not trusted (a known regression makes `--headless=new` exit 0 without a
+valid PDF): any stale output is deleted first, the output must start with `%PDF-` and exceed
+1 KB, and one retry runs with `--headless=old`; on timeout only our own process tree is
+killed (`taskkill /T`); on failure no output file is left. A fresh profile costs about
+3.5 s per print; the service allows 60 s (`EDGE_TIMEOUT_S`).
+
+### Delivery (`officina/delivery.py`)
+
+- `build_plan(ini, case_ids) -> DeliveryPlan(items, missing)`; `plan_delivery` returns the
+  items. Layout under `<destination>\<Iniziativa>\`: `<KEY>\<KEY>_ASIS.<ext>`,
+  `<KEY>\<KEY>_TOBE.<ext>` (the latest TO-BE) and `<KEY>\<target original name>`. Several
+  **chosen** cases with one key share the folder as `<KEY>_<variant>_ASIS/TOBE.<ext>`; their
+  targets keep their names, and equal names get ` (<variant>)` (variant capped at 40
+  characters) before the extension; any remaining collision (case-insensitive) gets ` (2)`.
+  A missing slot is listed as `MissingSlot` with reason `absent`, `gone` (deleted on disk) or
+  `outside` (the meta points outside the case folder) — never invented.
+- Path safety: keys, variants, target names and the initiative name each become exactly
+  ONE component through `safe_component` (invalid and control characters → `_`, trailing
+  dots/spaces stripped, `.`/`..`/empty → `_`, device names escaped, at most 120 characters
+  with the extension kept); every destination is re-checked to lie inside
+  `<destination>\<Iniziativa>` (lexically, and with `real_is_within` after `mkdir`); a
+  source must lie inside its case folder.
+- `deliver(items, destination, ini_name, *, on_conflict, make_zip, cancel) ->
+  DeliveryReport(delivered, skipped, failed, renamed, zip_path, zip_left_out, cancelled,
+  folder_exists)` never raises for a single file; `run_delivery` wraps it (returns the
+  written paths, raises `DeliveryError(report)`). All sources are checked before the first
+  copy. Each file is copied to `.<name>.<12hex>.part` in its final folder and committed with
+  `os.rename` (which on Windows refuses to overwrite) or, only after "replace",
+  `replace_with_retry`; "keep_both" → ` (2)`, ` (3)`…; "skip" drops the temp file. A file
+  that appears between the check and the rename is asked about again. A failure in the
+  middle is recorded per file and the others continue; `cancel` is checked before each file.
+  `find_conflicts` lists the existing files (zip included) for the UI to ask first.
+- **Zip** (optional): `<destination>\<Iniziativa>.zip`, ZIP_DEFLATED, entries relative to
+  `<Iniziativa>` with forward slashes, holding exactly **this** delivery (the files written
+  plus the existing files kept with "Salta") — never an earlier delivery's leftovers. A
+  symlink, or a file reached through one, is never read (listed in `zip_left_out`). It is
+  written through a temp file like the documents, and only when every document was
+  delivered: a zip of an incomplete delivery would travel on its own.
+
 ## Packaging (`qtRequestory.spec`, `scripts/build.ps1`)
 
 One windowed onefile exe, no installer: the colleagues receive it over chat and run
@@ -817,7 +1172,27 @@ non-reproducible; Python's own pair stays, `urllib` needs it for the real HTTPS 
 guard in `ui/app.py`) and `PySide6.QtSvg` (`Qt6Svg.dll` backs the `imageformats/qsvg.dll`
 plugin that renders every icon).
 
-Measured: 39.81 MB before the two binary filters, **30.18 MB** after. Qt DLLs shipped:
+**The Officina and pypdfium2.** `qtrequestory.officina` is collected with
+`collect_submodules("qtrequestory.officina")` (its UI page is reached through the same
+dynamic page factory as the others), and `collect_all("pypdfium2")` brings pypdfium2's data
+files, hidden imports and its `pypdfium2-<version>.dist-info` folder — which holds the
+licence texts. `pdfium.dll` (about 5.4 MB) lives in the separate `pypdfium2_raw` package
+and is collected by pyinstaller-hooks-contrib's `hook-pypdfium2_raw`. The exe has not been
+re-measured since pypdfium2 was added. `tests/test_packaging.py` checks the spec text for
+both collections.
+
+**Third-party licences.** `src/qtrequestory/THIRD-PARTY-NOTICES.md` names every bundled
+third-party component and its licence: pypdfium2 (`Apache-2.0 OR BSD-3-Clause`), PDFium
+(`(Apache-2.0 OR BSD-3-Clause) AND LicenseRef-PdfiumThirdParty`: libpng, LibTIFF, AGG,
+FreeType, Little CMS, OpenJPEG, zlib, libjpeg-turbo, ICU), PySide6/Qt (LGPL-3.0, unmodified
+DLLs), the Fluent UI icons (MIT, `ui/icons/LICENSE.md`), CPython and its OpenSSL. It is
+bundled as `qtrequestory/THIRD-PARTY-NOTICES.md` (spec `datas`) and declared as package
+data in `pyproject.toml`; the full pypdfium2/PDFium texts ship in the bundled dist-info.
+`tests/test_packaging.py` checks the notice's content and the spec entry. Only permissive
+PDF libraries are allowed: no PyMuPDF (AGPL), no Ghostscript-based tools (AGPL), no GPL
+layout tools.
+
+Measured (before the Officina): 39.81 MB before the two binary filters, **30.18 MB** after. Qt DLLs shipped:
 `Qt6Core`, `Qt6Gui`, `Qt6Widgets`, `Qt6Network`, `Qt6Svg` — nothing else. Start-up is
 **~7.4 s cold, ~4.9 s warm** (`--version`): onefile unpacks the whole 27 MB payload into
 `%TEMP%` on *every* run, hourly scheduled `--sync` included, and the AV scans it. That is
@@ -856,7 +1231,8 @@ Archive import tests build every layout synthetically in `tmp_path` (`tests/test
 `tests/test_import_safety.py` uses a real `mklink /J` junction in a temp folder with the
 shell delete mocked. The real Recycle Bin is never called by the suite.
 
-`tests/test_no_qt_in_core.py` walks `core/` and asserts no `PySide6|PyQt|tkinter` import.
+`tests/test_no_qt_in_core.py` walks `core/` and asserts no `PySide6|PyQt|tkinter` import;
+it also walks `officina/` for GUI imports and `core/` for any `qtrequestory.officina` import.
 `tests/fakes/fake_core.py` implements the facade in memory for the UI tests;
 `tests/test_fake_core.py` runs the same calls against the real facade on temp paths and the
 fake (`run(None)` skips disabled envs, unknown env raises, `register` without an exe
@@ -864,3 +1240,23 @@ fails, ordering of `list_template_keys`, `plan(envs)`, retention, `coverage_days
 mirror with empty files and a real state file, the five archive verdicts on one synthetic
 tree…) so the two cannot drift. `FakeArchiveApi` runs the real `discover`/`run_import` on
 its temp tree and simulates the Recycle Bin (it unlinks only files under its own root).
+
+**Officina tests** (`tests/officina/`, `tests/ui/test_officina_*.py`, `tests/ui/test_settings_officina.py`),
+synthetic only (`MOD_TEST_*` keys, `example.invalid` URLs, made-up signatures):
+- `tests/officina/pdfgen.py` builds PDFs with `QPdfWriter` + `QTextDocument` from HTML
+  snippets (controlled differences, reflow, hyphenation, image-only "scans"); rotated and
+  cropped pages are made with pypdfium2 in the test itself. Three traps it works around: the
+  offscreen platform has **no fonts** (the `pdfs` fixture registers Arial for the test and
+  removes it afterwards), `QTextDocument.print_()` adds page numbers (pages are drawn by
+  hand), and writer margins let the next page's lines bleed into the text layer (zero writer
+  margins, root-frame margins instead).
+- The generator and the service are tested against a local `ThreadingHTTPServer` on
+  127.0.0.1 that sends no Content-Type and can answer PDF, HTML, JSON, 3xx, 500, slowly,
+  half a body or a trickle. No test ever contacts a real endpoint.
+- The real-Edge test is skipped when Edge is missing; a fake `msedge.cmd` covers the
+  failure and retry path.
+- `FakeOfficinaApi` (`tests/fakes/fake_core.py`) wraps the **real** `OfficinaService` on real
+  files and replaces only the outside world: an in-process HTTP opener (`canned_pdf(text)`,
+  a hand-built one-page PDF; per-case scripting with `set_response_for` / `set_responder`)
+  and a canned Edge print. `tests/test_fake_core.py` compares real and fake on generation,
+  refusals, file layout, headers sent and delivery.

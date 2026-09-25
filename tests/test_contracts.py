@@ -55,6 +55,7 @@ from qtrequestory.ui.contracts import (
     EnvStatus,
     ExtractApi,
     IndexApi,
+    OfficinaApi,
     SchedulerApi,
     SyncApi,
 )
@@ -64,7 +65,7 @@ from .conftest import FDI_A, FDI_B, KEY_CTE, KEY_SINT, StubServer, autoindex_htm
 
 D18, D16 = date(2026, 9, 18), date(2026, 9, 16)
 
-PROTOCOLS = (ConfigApi, SyncApi, SchedulerApi, IndexApi, ExtractApi, ArchiveApi)
+PROTOCOLS = (ConfigApi, SyncApi, SchedulerApi, IndexApi, ExtractApi, ArchiveApi, OfficinaApi)
 
 
 # ---------------------------------------------------------------- helpers ---
@@ -126,7 +127,8 @@ def test_contracts_and_fakes_do_not_import_qt():
 @pytest.mark.parametrize("proto", PROTOCOLS)
 def test_real_and_fake_services_satisfy_the_protocols(proto, real_services: CoreServices, fake_services: CoreServices):
     attr = {ConfigApi: "config", SyncApi: "sync", SchedulerApi: "scheduler",
-            IndexApi: "index", ExtractApi: "extract", ArchiveApi: "archive"}[proto]
+            IndexApi: "index", ExtractApi: "extract", ArchiveApi: "archive",
+            OfficinaApi: "officina"}[proto]
     real, fake = getattr(real_services, attr), getattr(fake_services, attr)
     assert isinstance(real, proto), f"{type(real).__name__} does not satisfy {proto.__name__}"
     assert isinstance(fake, proto), f"{type(fake).__name__} does not satisfy {proto.__name__}"
@@ -137,7 +139,8 @@ def test_signatures_match_the_protocol_exactly(proto, real_services: CoreService
     """Same parameter names, kinds and defaults everywhere: a UI call site written
     against the fake cannot break when the real object is plugged in."""
     attr = {ConfigApi: "config", SyncApi: "sync", SchedulerApi: "scheduler",
-            IndexApi: "index", ExtractApi: "extract", ArchiveApi: "archive"}[proto]
+            IndexApi: "index", ExtractApi: "extract", ArchiveApi: "archive",
+            OfficinaApi: "officina"}[proto]
     for name in _members(proto):
         expected = _params(getattr(proto, name))
         for impl in (getattr(real_services, attr), getattr(fake_services, attr)):

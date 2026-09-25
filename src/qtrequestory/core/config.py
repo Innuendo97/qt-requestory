@@ -20,11 +20,13 @@ import logging
 import os
 import re
 import shutil
-from collections.abc import Callable, Iterable
+import unicodedata
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import unquote, urlsplit
 
 from qtrequestory.core import paths
 from qtrequestory.core.fsutil import is_within
@@ -118,6 +120,54 @@ class ScheduleSettings:
 
 
 @dataclass
+class GeneratorEndpoint:
+    """An Inspire Scaler ``documentGenerator`` Officina may call (spec §5).
+
+    Separate from :class:`Environment` on purpose: the log environments are
+    read-only mirrors, a generator is something the app POSTs payloads to.
+    ``officina_errors`` refuses any name or URL mentioning ``prod`` and any URL
+    that is not https — PROD is never configurable (spec §9).
+    """
+
+    name: str
+    url: str
+    enabled: bool = True
+
+
+def _default_header_profile() -> dict[str, str]:
+    # Placeholders, not real values: this repository is public. The user fills
+    # them in Impostazioni with the values of the team's Postman collections.
+    return {"service_number": "service_number", "office_id": "office_id", "branch_id": "branch_id"}
+
+
+@dataclass
+class OfficinaSettings:
+    """The Officina tab's settings (spec §5, §9).
+
+    ``generators`` ships empty like ``environments``: no hostname in a public
+    repo. ``postman_token`` is non-empty by default so that test calls stay out
+    of the nginx logs; a case drops it only through an explicit toggle.
+    ``header_profile`` maps a header name to its value.
+    """
+
+    root: Path | None = None  # the Officina folder; None = not chosen yet
+    generators: list[GeneratorEndpoint] = field(default_factory=list)
+    default_generator: str = "svil"
+    postman_token: str = "qtRequestory"
+    header_profile: dict[str, str] = field(default_factory=_default_header_profile)
+    timeout_s: int = 120
+
+    def generator(self, name: str) -> GeneratorEndpoint:
+        for g in self.generators:
+            if g.name == name:
+                return g
+        raise KeyError(name)
+
+    def enabled_generators(self) -> list[GeneratorEndpoint]:
+        return [g for g in self.generators if g.enabled]
+
+
+@dataclass
 class Config:
     schema_version: int
     mirror_root: Path
@@ -136,6 +186,7 @@ class Config:
     #: folder path, relative to the scanned root or absolute (see
     #: ``core/archive.py``).
     folder_envs: dict[str, str] = field(default_factory=dict)
+    officina: OfficinaSettings = field(default_factory=OfficinaSettings)
 
     @property
     def _hidden_dir(self) -> Path:
@@ -210,6 +261,18 @@ def _to_raw(cfg: Config) -> dict[str, Any]:
         "schedule": dataclasses.asdict(cfg.schedule),
         "log_level": cfg.log_level,
         "folder_envs": dict(cfg.folder_envs),
+        "officina": _officina_to_raw(cfg.officina),
+    }
+
+
+def _officina_to_raw(o: OfficinaSettings) -> dict[str, Any]:
+    return {
+        "root": str(o.root) if o.root is not None else None,
+        "generators": [dataclasses.asdict(g) for g in o.generators],
+        "default_generator": o.default_generator,
+        "postman_token": o.postman_token,
+        "header_profile": dict(o.header_profile),
+        "timeout_s": o.timeout_s,
     }
 
 
@@ -354,6 +417,64 @@ def _folder_envs_from_raw(raw: Any) -> dict[str, str]:
     return good
 
 
+def _generators_from_raw(raw: Any) -> list[GeneratorEndpoint]:
+    """Lenient like ``_environments_from_raw``: a bad item is skipped, not fatal.
+
+    Only the *shape* is checked here. A ``prod`` or plain-http generator is
+    loaded as written so that ``validate`` can name it to the user; the
+    generator client refuses to call it anyway.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        log.warning("config: valore non valido per officina.generators (%r), atteso un elenco", raw)
+        return []
+    gens: list[GeneratorEndpoint] = []
+    for i, item in enumerate(raw):
+        try:
+            env = _environment_from_item(item, i)
+        except ValueError as exc:
+            log.warning("config: generatore ignorato: %s",
+                        str(exc).replace("environments[", "officina.generators["))
+            continue
+        gens.append(GeneratorEndpoint(name=env.name, url=env.url, enabled=env.enabled))
+    return gens
+
+
+def _str_map_from_raw(raw: Any, where: str, fallback: dict[str, str]) -> dict[str, str]:
+    """A ``{str: str}`` object; non-string pairs are dropped with a warning."""
+    if raw is None:
+        return fallback
+    if not isinstance(raw, dict):
+        log.warning("config: valore non valido per %s (%r), atteso un oggetto", where, raw)
+        return fallback
+    good = {k: v for k, v in raw.items() if isinstance(k, str) and k and isinstance(v, str)}
+    if len(good) != len(raw):
+        log.warning("config: %s: voci non valide ignorate: %s",
+                    where, ", ".join(repr(k) for k in raw if k not in good))
+    return good
+
+
+def _officina_from_raw(raw: Any) -> OfficinaSettings:
+    d = OfficinaSettings()
+    if raw is None:
+        return d
+    if not isinstance(raw, dict):
+        log.warning("config: valore non valido per officina (%r), atteso un oggetto", raw)
+        return d
+    _warn_unknown(raw, [f.name for f in dataclasses.fields(OfficinaSettings)], "officina")
+    return OfficinaSettings(
+        root=_optional_path(raw.get("root"), "officina.root"),
+        generators=_generators_from_raw(raw.get("generators")),
+        default_generator=_coerce(raw.get("default_generator"), d.default_generator,
+                                  "officina.default_generator"),
+        postman_token=_coerce(raw.get("postman_token"), d.postman_token, "officina.postman_token"),
+        header_profile=_str_map_from_raw(raw.get("header_profile"), "officina.header_profile",
+                                         d.header_profile),
+        timeout_s=_coerce(raw.get("timeout_s"), d.timeout_s, "officina.timeout_s"),
+    )
+
+
 def _from_raw(raw: dict[str, Any]) -> Config:
     d = default_config()
     _warn_unknown(raw, [f.name for f in dataclasses.fields(Config)], "config.json")
@@ -373,6 +494,7 @@ def _from_raw(raw: dict[str, Any]) -> Config:
         schedule=_settings_from_raw(ScheduleSettings, raw.get("schedule"), "schedule"),
         log_level=_coerce(raw.get("log_level"), d.log_level, "log_level"),
         folder_envs=_folder_envs_from_raw(raw.get("folder_envs")),
+        officina=_officina_from_raw(raw.get("officina")),
     )
 
 
@@ -528,6 +650,7 @@ def validate(cfg: Config) -> list[str]:
         errors.append(bad_level)
     errors.extend(_schedule_errors(cfg.schedule))
     errors.extend(output_dir_errors(cfg))
+    errors.extend(officina_errors(cfg))
     return errors
 
 
@@ -543,6 +666,202 @@ def output_dir_errors(cfg: Config) -> list[str]:
             "stare dentro di essa o contenerla: i file estratti vecchi vengono cancellati "
             "automaticamente"
         ]
+    return []
+
+
+#: RFC 7230 ``token``: what an HTTP header name may contain.
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+#: Seconds; above ten minutes a hung generator would just block the batch.
+OFFICINA_TIMEOUT_RANGE = (1, 600)
+
+
+#: "prd" is PROD's other usual abbreviation; as a token only (not inside a
+#: word such as "prdx"), so ordinary names are not caught.
+_PRD_TOKEN = re.compile("(?<![a-z])prd(?![a-z])")
+
+
+def is_prod_like(text: str) -> bool:
+    """True when a generator name or URL mentions ``prod`` in any case, or
+    ``prd`` as a token (not next to another letter: "svil-prd", "prd01").
+
+    Deliberately blunt (``product`` matches too): PROD must never be
+    reachable from Officina, and a false positive only asks the user to pick
+    another name. Shared with the generator client, which refuses such a URL
+    even if a hand-edited config got past ``validate``.
+
+    NFKC + casefold first, so fullwidth or compatibility look-alikes
+    ("ｐｒｏｄ", which IDNA would turn into "prod") are caught too, and
+    the percent-decoded form is checked as well.
+    """
+    for candidate in (text, unquote(text)):
+        folded = unicodedata.normalize("NFKC", candidate).casefold()
+        if "prod" in folded or _PRD_TOKEN.search(folded):
+            return True
+    return False
+
+
+#: Hosts plain http is tolerated for — only by the client, for local fakes.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def generator_url_problem(url: str, *, allow_loopback_http: bool = False) -> str | None:
+    """Why ``url`` must never be called as a generator, or None.
+
+    Shared by :func:`officina_errors` and the generator client, so that a
+    hand-edited config can never get further than ``validate`` would let it:
+    no ``prod`` anywhere, ASCII only (no internationalised look-alike host),
+    https, a readable host and port. ``allow_loopback_http`` is for the
+    client's tests against a local fake server only.
+    """
+    if is_prod_like(url):
+        return "l'URL non può contenere 'prod' o 'prd' (la produzione non è mai configurabile)"
+    if not url.isascii():
+        return "l'URL può contenere solo caratteri ASCII"
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return "l'URL non è leggibile (host o porta non validi)"
+    scheme = parts.scheme.lower()
+    if scheme == "http" and allow_loopback_http and host in LOOPBACK_HOSTS:
+        return None
+    if scheme != "https":
+        return "l'URL deve iniziare con https://"
+    if not host:
+        return "l'URL deve indicare un host"
+    return None
+
+
+#: Header names the HTTP client computes itself (Host, Content-Length) or that
+#: only mean something to one hop of the connection (RFC 9110 §7.6.1): set by
+#: hand they would corrupt the request, so neither the Impostazioni profile nor
+#: a case may carry them.
+HTTP_CLIENT_HEADERS = frozenset({
+    "host", "content-length", "transfer-encoding", "connection", "keep-alive",
+    "proxy-connection", "te", "trailer", "upgrade", "proxy-authenticate",
+    "proxy-authorization", "expect",
+})
+
+
+def header_name_problem(name: str) -> str | None:
+    """Why ``name`` cannot be sent as a header, or None. Shared by
+    :func:`officina_errors` (the profile), the generator client (every layer)
+    and Impostazioni (inline, per row)."""
+    if not name.strip():
+        return "manca il nome dell'intestazione"
+    if not _HEADER_NAME_RE.match(name):
+        return f"'{name}' non è un nome di intestazione valido"
+    if name.lower() in HTTP_CLIENT_HEADERS:
+        return f"'{name}' è gestita dal client HTTP e non si può impostare"
+    return None
+
+
+def header_value_problem(name: str, value: str) -> str | None:
+    """Why ``value`` cannot be sent as the value of header ``name``, or None."""
+    if "\r" in value or "\n" in value:
+        return f"il valore dell'intestazione '{name}' non può andare a capo"
+    try:
+        value.encode("latin-1")  # what http.client will encode it with
+    except UnicodeEncodeError:
+        return (f"il valore dell'intestazione '{name}' contiene caratteri non ammessi "
+                "(solo lettere accentate europee, niente simboli o emoji)")
+    return None
+
+
+def header_problems(rows: Sequence[tuple[str, str]]) -> list[list[str]]:
+    """The problems of each ``(name, value)`` row, in row order.
+
+    A list of rows rather than a dict because a table can hold what a dict
+    cannot: a value without a name, or the same name twice in a different case
+    (HTTP names are case-insensitive, so the second would silently win).
+    """
+    seen: set[str] = set()
+    result: list[list[str]] = []
+    for name, value in rows:
+        found = [p for p in (header_name_problem(name), header_value_problem(name, value)) if p]
+        key = name.strip().lower()
+        if key and key in seen:
+            found.append(f"'{name}' è duplicata (il confronto ignora maiuscole/minuscole)")
+        seen.add(key)
+        result.append(found)
+    return result
+
+
+def generator_problems(generators: Sequence[GeneratorEndpoint]) -> list[list[str]]:
+    """The problems of each generator, in row order (Italian, without the row's
+    name, and never quoting the URL: it may carry a signature)."""
+    seen: set[str] = set()
+    result: list[list[str]] = []
+    for g in generators:
+        found: list[str] = []
+        if not g.name.strip():
+            found.append("manca il nome del generatore")
+        if is_prod_like(g.name):
+            found.append("il nome non può contenere 'prod' o 'prd' (la produzione non è mai "
+                         "configurabile)")
+        problem = generator_url_problem(g.url)
+        if problem:
+            found.append(problem)
+        key = g.name.strip().lower()
+        if key and key in seen:
+            found.append("nome duplicato (il confronto ignora maiuscole/minuscole)")
+        seen.add(key)
+        result.append(found)
+    return result
+
+
+def default_generator_problem(o: OfficinaSettings) -> str | None:
+    """The default generator must be one of the enabled ones (when any exists)."""
+    if o.generators and o.default_generator not in {g.name for g in o.enabled_generators()}:
+        if not o.default_generator:
+            return "scegli il generatore predefinito tra quelli attivi"
+        return f"il generatore predefinito '{o.default_generator}' non è tra quelli attivi"
+    return None
+
+
+def postman_token_problem(token: str) -> str | None:
+    if not token.strip():
+        return ("Postman-Token non può essere vuoto "
+                "(per toglierlo si usa l'opzione del singolo caso)")
+    return None
+
+
+def officina_errors(cfg: Config) -> list[str]:
+    """The Officina block's problems, in Italian; part of :func:`validate`."""
+    o = cfg.officina
+    errors: list[str] = []
+    for n, (g, problems) in enumerate(zip(o.generators, generator_problems(o.generators)), 1):
+        label = f"generatore '{g.name}'" if g.name.strip() else f"generatore n. {n}"
+        errors.extend(f"{label}: {p}" for p in problems)
+    for problem in (default_generator_problem(o), postman_token_problem(o.postman_token)):
+        if problem:
+            errors.append(problem)
+    for problems in header_problems(list(o.header_profile.items())):
+        errors.extend(f"profilo intestazioni: {p}" for p in problems)
+    low, high = OFFICINA_TIMEOUT_RANGE
+    if not low <= o.timeout_s <= high:
+        errors.append(f"officina.timeout_s deve essere tra {low} e {high} secondi (trovato {o.timeout_s})")
+    errors.extend(officina_root_errors(cfg))
+    return errors
+
+
+def officina_root_errors(cfg: Config) -> list[str]:
+    """Payloads and documents stay out of the log mirror (spec §9) and out of
+    the output folder, which ``extract.housekeeping`` prunes by age."""
+    root = cfg.officina.root
+    if root is None:
+        return []
+    if not root.is_absolute():
+        return [f"La cartella dell'Officina deve essere un percorso completo (trovato '{root}')"]
+    for other, what in ((cfg.mirror_root, "dei log"), (cfg.resolved_output_dir, "dei file estratti")):
+        if not other.is_absolute():
+            continue  # already reported by its own check
+        if is_within(root, other) or is_within(other, root):
+            return [
+                f"La cartella dell'Officina ('{root}') non può coincidere con la cartella {what}, "
+                "stare dentro di essa o contenerla"
+            ]
     return []
 
 

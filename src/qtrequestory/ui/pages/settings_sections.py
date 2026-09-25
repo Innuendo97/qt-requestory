@@ -1,4 +1,4 @@
-"""The seven sections of the Impostazioni page, one builder each.
+"""The eight sections of the Impostazioni page, one builder each.
 
 Every builder takes the :class:`~qtrequestory.ui.pages.settings_page.SettingsPage`
 being built, creates its section's widgets *as attributes of that page* (the
@@ -27,6 +27,7 @@ from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import REPEAT_EVERY_RANGE, REPEAT_FOR_RANGE
 from qtrequestory.ui.env_table import EnvTable
 from qtrequestory.ui.pages.archive_summary import ArchiveSummary
+from qtrequestory.ui.pages.settings_officina import OfficinaSection
 from qtrequestory.ui.pages.settings_widgets import (
     ElidedLabel,
     PathField,
@@ -218,6 +219,13 @@ def search(page: SettingsPage) -> QWidget:
     return _section(card)
 
 
+def officina(page: SettingsPage) -> QWidget:
+    """Three cards of their own (``settings_officina``): the section is the widget."""
+    page.officina_section = OfficinaSection(page.browse_folder)
+    page.officina_section.changed.connect(page.on_edited)
+    return page.officina_section
+
+
 def editor(page: SettingsPage) -> QWidget:
     card, form = form_card(strings.SETTINGS_SECTION_EDITOR)
     page.editor_path = PathField(strings.SETTINGS_EDITOR_NONE)
@@ -252,6 +260,7 @@ BUILDERS = (
     ("environments", strings.SETTINGS_SECTION_ENVIRONMENTS, environments),
     ("automation", strings.SETTINGS_SECTION_AUTOMATION, automation),
     ("search", strings.SETTINGS_SECTION_SEARCH, search),
+    ("officina", strings.SETTINGS_SECTION_OFFICINA, officina),
     ("editor", strings.SETTINGS_SECTION_EDITOR, editor),
     ("advanced", strings.SETTINGS_SECTION_ADVANCED, advanced),
 )

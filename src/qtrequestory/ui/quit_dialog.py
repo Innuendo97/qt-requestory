@@ -9,12 +9,20 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox, QPushButton, QWidget
 
 from qtrequestory.ui import strings
+from qtrequestory.ui.workers import (
+    OFFICINA_COMPARE_JOB,
+    OFFICINA_DELIVERY_JOB,
+    OFFICINA_GENERATE_JOBS,
+    OFFICINA_SUMMARY_JOB,
+)
 
 __all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_job", "job_label"]
 
 #: What the quit question adds under the main text, per job.
 QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO,
-             "import": strings.QUIT_IMPORT_INFO, "recycle": strings.QUIT_RECYCLE_INFO}
+             "import": strings.QUIT_IMPORT_INFO, "recycle": strings.QUIT_RECYCLE_INFO,
+             **{lane: strings.OFFICINA_QUIT_INFO for lane in OFFICINA_GENERATE_JOBS},
+             OFFICINA_DELIVERY_JOB: strings.OFFICINA_DELIVERY_QUIT_INFO}
 
 #: ``JobRunner`` name -> what to call that operation in front of the user. The
 #: names are identifiers chosen by the pages ("check-envs", "search_plan",
@@ -41,6 +49,11 @@ JOB_LABELS = {
     "import-scan": strings.JOB_IMPORT_SCAN,
     "import": strings.JOB_IMPORT,
     "recycle": strings.JOB_RECYCLE,
+    # every lane reads the same: the user sees one operation, not three
+    **{lane: strings.OFFICINA_JOB_GENERATE for lane in OFFICINA_GENERATE_JOBS},
+    OFFICINA_COMPARE_JOB: strings.OFFICINA_JOB_COMPARE,
+    OFFICINA_SUMMARY_JOB: strings.OFFICINA_JOB_SUMMARY,
+    OFFICINA_DELIVERY_JOB: strings.OFFICINA_JOB_DELIVERY,
 }
 
 

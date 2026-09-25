@@ -56,12 +56,13 @@ def _answer_leave(monkeypatch, label: str) -> list[QMessageBox]:
 
 def test_the_sections_are_listed_in_order_with_aspetto_first(page):
     assert SECTION_KEYS == (
-        "appearance", "archive", "environments", "automation", "search", "editor", "advanced",
+        "appearance", "archive", "environments", "automation", "search", "officina", "editor",
+        "advanced",
     )
     labels = [page.nav.item(i).text() for i in range(page.nav.count())]
     assert labels == [
         "Aspetto", "Archivio", "Ambienti", "Sincronizzazione automatica", "Ricerca",
-        "Editor esterno", "Avanzate",
+        "Officina", "Editor esterno", "Avanzate",
     ]
     assert page.current_section() == "appearance", "the theme selector is the first thing seen"
 
@@ -72,6 +73,14 @@ def test_show_section_switches_the_list_and_the_stack(page):
     assert page.nav.currentRow() == SECTION_KEYS.index("automation")
     assert page.sections.currentWidget() is page.section_widgets["automation"]
     assert page.section_widgets["automation"].isAncestorOf(page.schedule_start)
+
+
+def test_show_section_opens_officina(page):
+    page.show_section("officina")
+    assert page.current_section() == "officina"
+    assert page.nav.currentItem().text() == "Officina"
+    assert page.sections.currentWidget() is page.section_widgets["officina"]
+    assert page.section_widgets["officina"].isAncestorOf(page.officina_section.generators)
 
 
 def test_show_section_ignores_an_unknown_key(page):
@@ -91,6 +100,7 @@ def test_clicking_a_section_in_the_list_shows_it(page):
     ("archive", "rebuild_button"),
     ("environments", "env_table"),
     ("search", "window_buttons"),
+    ("officina", "officina_section"),
     ("editor", "editor_path"),
     ("advanced", "wizard_button"),
 ])

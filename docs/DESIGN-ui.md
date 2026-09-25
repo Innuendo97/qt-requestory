@@ -18,7 +18,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 
 ```
 +--------------------------------------------------------------------------------------+
-| [icon] qtRequestory   Ricerca  Sincronizzazione    (● coll oggi 11:24 · ● svil mai)  ⚙  ⓘ |
+| [icon] qtRequestory   Ricerca  Sincronizzazione  Officina  (● coll oggi 11:24 · ● svil mai) ⚙ ⓘ |
 |                       ‾‾‾‾‾‾‾                                                        |
 +--------------------------------------------------------------------------------------+
 |                                   page                                               |
@@ -30,8 +30,8 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 - Pages are registered in one list in `ui/main_window.py`:
   `PAGES = [PageSpec(key, label, icon, factory, placement)]`, `placement` = `"tab"` (labelled
   tab with icon, accent underline when current) or `"icon"` (icon button on the right,
-  label + shortcut as tooltip: "Impostazioni (Ctrl+,)"). Order: Ricerca, Sincronizzazione
-  (tabs), Impostazioni ⚙, Info ⓘ (icons). A future page = one tuple + one widget. **No
+  label + shortcut as tooltip: "Impostazioni (Ctrl+,)"). Order: Ricerca, Sincronizzazione,
+  Officina (tabs), Impostazioni ⚙, Info ⓘ (icons). A future page = one tuple + one widget. **No
   disabled placeholders.** A page module that fails to import degrades to a label "La
   pagina «…» non è disponibile in questa versione." — the shell always starts.
 - Default page: **Ricerca**, focus in the omnibox (`initial_focus()`).
@@ -79,7 +79,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 
 | Keys | Where | Action |
 |---|---|---|
-| Ctrl+1 / Ctrl+2 | window | Ricerca / Sincronizzazione |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 | window | Ricerca / Sincronizzazione / Officina |
 | Ctrl+, | window | Impostazioni |
 | F1 | window | Info |
 | Ctrl+Shift+S | window | Sincronizza ora (switches to Sincronizzazione) |
@@ -98,6 +98,10 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 | Backspace (empty) | omnibox | remove the last chip |
 | Esc | omnibox | clear the text, then the chips |
 | Down (empty) | omnibox | recent searches |
+| Enter / double-click | Officina list, board | open the initiative / the case |
+| F5 | Officina case | Rigenera TO-BE (the same `GenerationQueue` as the board) |
+| Enter / click | Officina differences list | focus the difference in both viewers |
+| Ctrl+wheel | Officina viewer | zoom (the other viewer follows while in sync) |
 
 The Ricerca shortcuts are `QShortcut`s on the **page** (`WidgetWithChildrenShortcut`,
 `ui/pages/search_actions.py`), so they work with the focus on the results table; the
@@ -106,6 +110,9 @@ neither). A text field keeps its own Ctrl+C: `QLineEdit` and the body editor cla
 `ShortcutOverride` — in the body a selection is copied, no selection means the whole body.
 Enter is not a page shortcut on purpose: it would steal Enter = [Cerca] from the bar. The
 context menu shows the same shortcuts (display only).
+The Officina's F5 is a `WidgetWithChildrenShortcut` on the case workbench (so it never fires
+on the board or on Ricerca's own F5), and opening a case puts the focus inside it so F5 works
+at once. The board's Enter is a `WidgetShortcut` on its table.
 
 ## First-run wizard (`QWizard`, 3 pages)
 
@@ -386,6 +393,181 @@ starts the sync on Sincronizzazione if requested.
 - After a sync, index, import or recycle job the page refreshes coverage, keys and the
   backlog banner (`on_data_changed`) and **keeps** the current results and period.
 
+## Officina tab (phase 1)
+
+The template developer's workbench (README §Officina): initiatives of cases, each case
+brought from its AS-IS to the customer's TARGET through TO-BE versions, then delivered to
+the testers. The page reaches the Officina **only** through `services.officina`
+(`OfficinaApi` in `ui/contracts.py`, DESIGN-core §Officina), plus one lazy call to
+`officina.pdf.page_sizes` inside a worker. Importing any `officina_*` UI module never loads
+PDFium (subprocess tests); `officina_page` is reached only through the page factory.
+
+**Structure** — `officina_page.OfficinaPage` (the controller, with the user actions in the
+`officina_actions.CaseActionsMixin`) is a `QStackedWidget` with four screens:
+
+```
+chooser ──► list ──► board ──► case
+(no folder)  Iniziative  ‹ Iniziative   ‹ <Iniziativa>
+```
+
+- **Chooser** (`officina_list.RootChooser`) while `workspace_root()` is None: why the folder
+  matters (real customer data, local, outside any repository) + [Scegli cartella…]. The
+  folder is checked with `officina_root_errors` first (inside or around the log mirror or
+  the output folder → refused, the reason in the chooser's banner, nothing created or
+  saved), then created and saved as `officina.root` through `services.config.save`; the page
+  emits `config_changed`. A OneDrive path is accepted with a warn toast and a persistent warn
+  banner on the list; a save error stays on the chooser as a sentence.
+- **List** (`InitiativeList`): Iniziativa · Casi · Accettati ("n su m") · Ultima attività
+  ("oggi 10:42"); [Nuova iniziativa] [Apri] [Apri cartella] [Cambia cartella…]; the folder
+  path above. Enter or double-click opens. Each row carries `Initiative.id` (the folder),
+  never the name: two initiatives with one name (a folder copied in Explorer) read
+  "Banco (Banco - Copia)" and open their own folder; the queue, the failure reasons and
+  the "Aggiungi all'Officina…" choice are keyed on the id too.
+- **Board** (`officina_board.Board`), one row per case:
+  - *Caso*: the key (bold) and the variant (muted) in `MiddleElidedLabel`s
+    (`officina_widgets.py`: elided in the **middle**, never at the end — keys differ at both
+    ends — full text in the tooltip); columns are fitted from the cell widgets on show and on
+    font/style/DPI/theme changes;
+  - *Documenti*: T / A / `vN` tiles, "—" for an empty slot, a `bad` tile when the file is gone
+    from disk;
+  - *TO-BE contro target*: pill "uguale" / "N differenze" / "senza testo" / "confronto non
+    riuscito" / "manca il target" / "manca il TO-BE", computed by the `officina-summary` job;
+  - *Ultima generazione*: "oggi 11:05 · svil", "AS-IS …", "in coda…" / "Generazione su
+    svil…" (the case's generator), the masked failure reason in `bad`, or "annullata prima
+    dell'invio" (muted);
+  - *Stato*: aperto / accettato / *da ricontrollare* (warn: a new version after the
+    acceptance) / accettato in warn (the latest TO-BE is not the accepted one) / caso.json
+    illeggibile.
+  A warn banner under the toolbar shows an unreadable `iniziativa.json` (then [Genera AS-IS
+  mancanti] and [Rigenera TO-BE selezionati] are disabled: the header defaults are unknown)
+  or what loading left out (a null header default). [Rigenera TO-BE selezionati] is also
+  disabled while the selection holds a case with an unreadable `caso.json`. Leaving the
+  board (list or case) cancels its `officina-summary` job.
+  Toolbar: [+ Caso da ricerca] (switches to Ricerca with a hint toast), [+ Caso da file…],
+  [Genera AS-IS mancanti], [Rigenera TO-BE selezionati], [Consegna…], [Apri cartella]; a
+  "Generazione: n di m" line with [Annulla generazioni] shown only on the board of an
+  initiative that has cases in the queue.
+- **Case workbench** (`officina_case.CaseView`, `officina_diffs.py`): the header shows the
+  case's generator ("Generatore: svil"); toolbar [Rigenera TO-BE (F5)] [Genera AS-IS |
+  Rigenera AS-IS…] [Target…] [Payload e header…] [Segna accettato | Riapri] + a busy label
+  "Generazione su svil…"; everything that changes the case (payload, target, status) is
+  disabled while it is queued or running. A case with an unreadable `caso.json` can be
+  looked at only: editor, accept and generations disabled (saving would wipe the file);
+  the generations are disabled too while the initiative's `iniziativa.json` is unreadable.
+  Below: a warn banner for a failed generation ("Generazione non riuscita (HTTP 502):
+  <masked reason>") and a notice for a damaged `caso.json`, or "Nuova versione dopo
+  l'accettazione: da ricontrollare." after a new AS-IS/TO-BE reopened an accepted case. A splitter, 5 : 5 : 2
+  on first show: `DocSide` TARGET | `DocSide` generated document with the `VersionSwitch`
+  (AS-IS | v1…vn, the newest five, older ones in a "…" menu) | `DiffPanel` (count + one item
+  per difference, "pag. 1 · cambiato" / "«a» → «b»", elided with "…"). An item (click or
+  Enter) or a highlight click focuses the difference in **both** views. The documents and
+  the comparison are prepared in the `officina-compare` job (`render_path` + `page_sizes` +
+  `compare`); a `CompareError` or any worker failure is a sentence ("Confronto non riuscito:
+  …"), never a stuck "Preparazione…". After a successful generation the right side switches
+  to the new version and the comparison refreshes by itself.
+  - Regenerating an existing AS-IS asks for a mandatory note (`QInputDialog`
+    multi-line); blank or Cancel sends nothing.
+  - "Segna accettato" asks for confirmation while the document on screen still has text
+    differences — a phase-1 stand-in for the phase-2 verdict; it does not block. It
+    accepts the latest TO-BE (`accepted_version` in `caso.json`).
+- **Adding a case** (`officina_add.AddCaseDialog`): Ricerca's row menu "Aggiungi
+  all'Officina…" (wrench icon, lazy import) and "+ Caso da file…" share one dialog:
+  Iniziativa (existing or "Nuova iniziativa…" + its name), File JSON + [Sfoglia…] (file flow
+  only), Template key (read-only for a hit; for a file prefilled from
+  `documents[0].template.templateKey` and editable), Variante. Every refusal (duplicate key+variant, initiative gone, a call no longer in the
+  local log, no Officina folder) is a status-bar sentence; success is a toast.
+- **Payload e header** (`officina_editor.PayloadHeaderDialog`): tab *Payload* (a JSON editor
+  with live validation — Save refused until it is a JSON object — and [Formatta]); tab
+  *Header e invio*: Generatore (the enabled generators, the case's own value kept even when
+  it is not among them), correlation_id (nuovo a ogni invio / FDI della chiamata di origine,
+  offered only with a known FDI / valore fisso + value), Link di upload (Rimuovi
+  (consigliato) / Lascia solo se tutti scaduti), [ ] Non inviare Postman-Token, and the
+  case's header table, checked with the core's `header_problems`. The hint spells out the
+  precedence: automatic < profile (Impostazioni) < initiative < case. It reads
+  `config.load()` whenever it opens and saves through `save_case`, and `save_payload` only
+  when the payload changed.
+
+**Generation queue** (`officina_jobs.GenerationQueue`): every AS-IS/TO-BE — a single F5 or
+a batch — goes through it. Each case is one `JobRunner` job on one of the three **lanes**
+`officina-generate`, `officina-generate-2`, `officina-generate-3` (`JobRunner` keeps one
+live job per name, so three names = three cases on the wire at once). The lanes are
+`EXCLUSIVE`, never superseded (a superseded job's document would still be written, its
+result silenced), and a lane is free again only after its `finished` has been **delivered**.
+A failed case (a failed `SendResult`, or an unexpected error turned into one, masked) never
+stops the others. [Annulla generazioni] drops the waiting cases and sets the cancel token of
+the running ones; `generate` checks it just before sending, so a call already on the wire
+runs to its end. A case already queued is not queued twice (the status bar names it).
+Failure reasons live in memory per (initiative, case id), until the next success or a
+restart. Other Officina jobs: `officina-compare` (the workbench), `officina-summary` (the
+board's pills, a separate name so the workbench never supersedes them), `officina-delivery`
+(exclusive). All are in `JOB_NAMES` with Italian labels in `quit_dialog`.
+
+**Viewer** (`officina_viewer.DocView`, `officina_render.PageRenderer`,
+`officina_sync.SyncController`, `officina_overlays.py`):
+- `DocView` is a `QGraphicsView` (not QPdfView: that needs PySide6-Addons and has no
+  overlay API). The scene is in PDF points of the *displayed* page (CropBox and /Rotate
+  applied — the space of the extracted Word boxes), pages stacked with a 12 pt gap, the
+  vertical scroll bar always on (so fit-width does not oscillate), hand-drag scrolling,
+  Ctrl+wheel zoom. Zoom 1.0 = printed size (96/72 px per pt); both views open at
+  `fit_width`, and a fit mode is re-applied on resize.
+- **Only visible pages are rendered** (Review Focus 3): each page starts as a `surface2`
+  placeholder "Pagina N"; the visible pages plus one before and after (`PREFETCH`) are
+  requested on a coalescing timer, and pages more than `KEEP` = 3 pages away give their image
+  back. Render scale = zoom × px-per-pt × devicePixelRatio (HiDPI), snapped to buckets of
+  2^(1/6), capped at 4 px/pt; the lower-resolution image stays until the sharper one arrives.
+  After a zoom change rendering waits 150 ms (`ZOOM_SETTLE_MS`) so a Ctrl+wheel burst renders
+  only the final scale. A failed page is retried once after 500 ms, then shows "Impossibile
+  mostrare la pagina N: …" in `bad`.
+- `PageRenderer(pool, cache_pages=24, cache_bytes=256 MB)`: dedups in-flight requests; an
+  LRU keyed by (doc_id, file identity, page, bucket) bounded by **both** 24 images and a
+  **256 MB byte budget** (the newest image is always kept, and a page's older buckets are
+  dropped when a new one arrives); `forget(doc_id, keep, keep_scale)` takes queued jobs back
+  (`QThreadPool.tryTake`) after a scroll or a zoom. A new file under the same doc_id (path,
+  size or mtime) drops the old images. The two views use distinct doc_ids
+  (`officina-target`, `officina-generated`); each `DocView` owns a one-thread pool. The
+  worker imports `officina.pdf` lazily and gets 32-bit BGRx bytes (`QImage.Format_RGB32`)
+  from the Qt-free `render_page`.
+- **PDFium lock**: PDFium is not thread-safe, so every call into it — rendering, text
+  extraction, page sizes — runs under one process-wide `RLock` in `officina.pdf`. The pools
+  keep the GUI responsive but never render in parallel. On Windows the render thread may
+  hold a PDF open for a moment (a test that deletes a version retries).
+- **Overlays**: a difference is one `HighlightItem` per run of words on a line, filled with
+  the kind's soft token and outlined with its strong one — added `ok_bg`/`ok`, removed
+  `bad_bg`/`bad`, changed `warn_bg`/`warn` (and "moved" `selection`/`accent`, ready for
+  phase 2). The fill is painted in *multiply* mode so black text stays black; in dark mode the
+  soft tokens are dark and are drawn translucent (alpha 110) over the white page.
+  `focus_difference` rings the difference in `accent` and scrolls only when it is not
+  already fully visible. A click emits `difference_clicked` on release, only if the mouse
+  moved less than the drag distance. Everything re-derives on `theme.signals.changed`.
+- `SyncController(left, right)` keeps scroll (by **relative page position**: page index +
+  fraction of the page, so documents with different page lengths still show the same page
+  side by side; a view past the other's last page puts the other at its end) and zoom (fit
+  mode or factor) in step; `set_enabled(False)` lets them move freely and re-enabling
+  aligns zoom, then position. It disconnects itself when either view is destroyed.
+
+**Delivery dialog** (`officina_delivery.DeliveryDialog`, opened by [Consegna…]): a checkable
+case list with the cases accepted as of their latest TO-BE preselected and a warn line
+naming the chosen ones that are not accepted, or whose latest TO-BE is not the accepted one; Cartella di destinazione (prefilled with the initiative's last one, [Sfoglia…]);
+[x] Crea anche lo zip; a preview tree (root elided on the left so the initiative stays
+visible, key folders and files, the missing slots greyed under their folder, the zip line
+last). [Consegna] is enabled only with a destination and at least one file. The
+`officina-delivery` job first lists the conflicts (the destination may be a synced folder,
+so off the GUI thread); on its **`finished`** each conflict is asked on the GUI thread
+(Sostituisci / Mantieni entrambi / Salta + "Applica a tutti (n)"; Esc = Salta); then the same
+job name runs `deliver` with the answers — a file nobody was asked about is kept next to the
+new one, never overwritten. During the copy the button reads [Interrompi] and the dialog
+cannot be closed. The summary page: completata / incompleta / interrotta, files and folder,
+the zip (or why it was not made), renamed, skipped, missing and failed files, [Apri
+cartella] [Chiudi].
+
+**Shell hooks**: `config_changed` (the chosen folder), `on_config_changed` (refresh; a new
+folder goes back to the list), `on_quit()` (drop the waiting cases), `is_writing()` (asked
+by Impostazioni before a folder change). Strings: `ui/strings/officina.py`. Screenshot
+scenes in `scripts/dev/shoot.py`, on the fake core: `officina-cartella`, `-iniziative`,
+`-bacheca`, `-caso`, `-payload-header`, `-aggiungi`, `-visore`, `-visore-pagina`,
+`-consegna`, `-consegna-riepilogo`, and `impostazioni-officina*` /
+`impostazioni-salva-bloccato` for the settings section.
+
 ## Impostazioni page
 
 Title, a section list on the left (styled like the app's navigation), one section at a time
@@ -418,8 +600,35 @@ tooltip) + [Sfoglia…] + an [Apri cartella] icon — picked, not typed.
    banner "Impossibile aggiornare l'attività pianificata: …" with [Riprova].
 5. **Ricerca** — Periodo predefinito 7 gg / 30 gg / 90 gg; Template key esatta / contiene
    (`search/key_mode`).
-6. **Editor esterno** — Notepad++ path, [Sfoglia…] [Rileva].
-7. **Avanzate** — File di configurazione (path + [Apri cartella]), [Riesegui configurazione iniziale].
+6. **Officina** (`settings_officina.py`, tables in `settings_officina_tables.py`) — three
+   cards over `Config.officina`:
+   - *Officina*: Cartella dell'Officina (a `PathField`; a live warn line when it is in
+     OneDrive — `officina_dialogs.in_onedrive` — or on a network path — `on_network`, UNC or
+     a mapped drive; never blocking), Timeout di generazione (secondi) (a spin box bounded
+     by `OFFICINA_TIMEOUT_RANGE`, 1–600), Postman-Token predefinito (with why it matters:
+     nginx).
+   - *Generatori*: table [Attivo | Nome | URL | Problema] + Aggiungi / Rimuovi, and
+     "Generatore predefinito" (a combo of the **enabled** rows only). The URL cell shows
+     only scheme, host and path + `?***` (`shown_url`); the full URL lives only in the cell
+     editor. Disabling or deleting the default clears it with an inline message; re-ticking
+     the row makes it the default again; renaming the row keeps it the default.
+   - *Profilo intestazioni*: table [Nome | Valore | Problema] + Aggiungi / Rimuovi.
+   Every rule comes from the core (`generator_problems`, `default_generator_problem`,
+   `postman_token_problem`, `header_problems`, `officina_root_errors`, re-exported by
+   `ui/contracts.py`); the UI re-implements none. Problems are shown **inline**, in the row's
+   "Problema" column (`bad` colour, visible only while some row has one) or under the field.
+   While a problem exists and the config part of the form is dirty, [Salva] is disabled and
+   the unsaved bar says why — "Officina: correggi gli errori segnalati accanto alle righe"
+   — with a [Mostra] button (`show_section("officina")`); a preference-only save still
+   goes through. A save that **changes the folder** is refused while the Officina is
+   writing (`OfficinaPage.is_writing()`: queued or running generations, or a delivery;
+   `workers.officina_writing(runner)` is the fallback when the page is not built). The
+   form carries `FormValues.officina` (a deep copy, the timeout clamped by
+   `canonical_officina`, so a hand-edited value does not open the form dirty). After Salva
+   the Officina tab refreshes (`on_config_changed`) and goes quietly back to the list when
+   the folder changed; `OfficinaService` reads the config on every call.
+7. **Editor esterno** — Notepad++ path, [Sfoglia…] [Rileva].
+8. **Avanzate** — File di configurazione (path + [Apri cartella]), [Riesegui configurazione iniziale].
 
 Nothing is written until [Salva]. The **unsaved bar** — "Modifiche non salvate ·
 [Annulla] [Salva]", inverted colours, outside the scroll area — appears only while the
@@ -430,7 +639,8 @@ only writer of `config.json` except for `folder_envs`, which the import dialog w
 `save()` re-reads `folder_envs` from disk before writing (a stale form would otherwise drop
 the assignments), while `errors` and `to_config` never read the file. It emits `config_changed`, which the window broadcasts to
 every *other* page's `on_config_changed`. `show_section(key)` (`appearance`, `archive`,
-`environments`, `automation`, `search`, `editor`, `advanced`) lets other pages deep-link.
+`environments`, `automation`, `search`, `officina`, `editor`, `advanced`) lets other pages
+deep-link.
 
 ## Import (`ui/import_dialog.py`, `import_report.py`, `import_result.py`, `import_state.py`)
 
@@ -498,7 +708,8 @@ class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions
 class JobRunner(QObject): submit(name, fn, ...) -> Job | None; busy(str); job_finished(str, bool)
     # pool size = len(JOB_NAMES) + SUPERSEDED_HEADROOM (4): one thread per job name plus room
     # for superseded jobs still finishing a blocking call (read_body, one SQLite query).
-    # "sync"/"index"/"scheduler"/"import"/"recycle" are EXCLUSIVE: a second submit is refused -> busy(name);
+    # "sync"/"index"/"scheduler"/"import"/"recycle", the three "officina-generate*" lanes and
+    # "officina-delivery" are EXCLUSIVE: a second submit is refused -> busy(name);
     # every other name supersedes (the older job is cancelled and silenced by _Delivery).
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
@@ -506,7 +717,10 @@ class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core 
   constants and against `quit_dialog.JOB_LABELS`).
 - `job_finished(name, ok)` drives the refresh: after a `DATA_JOBS` job (`sync`, `index`,
   `import`, `recycle`; even a failed one) the window calls every page's optional
-  `on_data_changed()`, and closing the window while one runs asks first.
+  `on_data_changed()`, and closing the window while one runs asks first. `QUIT_JOBS` =
+  `DATA_JOBS` + the Officina's generation lanes + `officina-delivery`: closing asks **once**
+  for all of them, then calls every page's optional `on_quit()` (the Officina drops its
+  waiting cases) and cancels them.
 - Progress coalesced to ~10/s. Widgets never touched from workers.
 - Which thread runs what (measured in `tests/ui/test_workers.py`, not assumed): `QtEventSink.
   __call__` — the `FileProgress` throttling included — runs on the **worker**; everything after
@@ -604,7 +818,7 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   paths, the registro.
 - **Icons**: Fluent UI System Icons (MIT, `ui/icons/LICENSE.md`) as embedded SVG, tinted
   per theme: search, arrow-sync, settings, info, document-arrow-right, copy, save,
-  folder-open, calendar, dismiss, text-bullet-list-tree.
+  folder-open, calendar, dismiss, text-bullet-list-tree, wrench (the Officina tab).
 - **App icon**: a rounded blue square (gradient `#2B8AE0` → `#0B4F94`) with three log lines,
   the middle one highlighted amber (the call you were looking for), and a white magnifier;
   a hand-tuned `app-16.svg` (fewer lines, bigger lens) for 16 px. `app.ico`
@@ -620,7 +834,8 @@ to copy qtkit's style. The look is our own — not qtkit's either.
 ## Testability
 
 - `ui/strings/` is a package, one module per page (`common`, `search`, `sync`, `settings`,
-  `wizard`, `about`, `imports`), all re-exported from `qtrequestory.ui.strings`. `tests/ui/test_strings.py`
+  `wizard`, `about`, `imports`, `officina` — every Officina string prefixed `OFFICINA_`),
+  all re-exported from `qtrequestory.ui.strings`. `tests/ui/test_strings.py`
   also enforces one vocabulary: no English words in user-facing strings, the same labels
   for the same thing on every page, and no module formatting a size by hand — every size
   goes through `events.format_size` / `ui/pages/sync_format.format_size`. A test also
@@ -629,12 +844,13 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   `search/recent`) so Ricerca and Impostazioni never import each other.
 - `ui/contracts.py`: Protocols + dataclasses for everything the UI consumes from core
   (`ConfigApi`, `SyncApi`, `SchedulerApi`, `IndexApi`, `ExtractApi`, `ArchiveApi`, gathered
-  in `CoreServices`) — the core facade
+  in `CoreServices`; plus `OfficinaApi`, see §Officina) — the core facade
   satisfies them structurally; `tests/fakes/fake_core.py` implements them in memory
   (synthetic hits, scripted sync progress honouring the cancel token, fake task status,
   `set_local_days(env, days, empty=())` / `set_server_days(env, listed=(), seen=())` for the
   coverage states, the real archive discovery/import on a temp tree with a simulated
-  Recycle Bin),
+  Recycle Bin; `FakeOfficinaApi` wraps the real `OfficinaService` on real files and replaces
+  only the HTTP opener and the Edge print),
   and `tests/test_fake_core.py` checks the fake against the real facade.
 - Presenters (`SearchPresenter`, `SyncPresenter`, `SettingsPresenter`) are plain objects
   with a few Qt signals; widgets render and forward.

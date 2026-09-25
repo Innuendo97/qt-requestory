@@ -9,7 +9,7 @@ description = "Mirror, search and extract document-generator request logs (nginx
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["pypdfium2>=4.30,<5"]
 
 [project.optional-dependencies]
 ui = ["PySide6-Essentials>=6.7"]
@@ -30,6 +30,8 @@ where = ["src"]
 # regenerate it.
 [tool.setuptools.package-data]
 "qtrequestory.ui" = ["icons/*.svg", "icons/*.ico", "icons/LICENSE.md"]
+# The third-party notice (pypdfium2/PDFium, PySide6/Qt), bundled in the exe too.
+"qtrequestory" = ["THIRD-PARTY-NOTICES.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

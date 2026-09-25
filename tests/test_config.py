@@ -1,6 +1,7 @@
 """Tests for core/config.py. Everything is synthetic: no real hostnames."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -722,3 +723,240 @@ def test_validate_compares_paths_case_insensitively_on_windows(tmp_path: Path):
     cfg = _sample_config(tmp_path)
     cfg.output_dir = Path(str(tmp_path / "MIRROR" / "out"))
     assert len(validate(cfg)) == 1
+
+
+# ---------------------------------------------------------------- officina ---
+
+
+def _officina_sample(tmp_path: Path) -> cfgmod.OfficinaSettings:
+    return cfgmod.OfficinaSettings(
+        root=tmp_path / "officina",
+        generators=[
+            cfgmod.GeneratorEndpoint("svil", "https://example.invalid/rest/api/submit-job/documentGenerator"),
+            cfgmod.GeneratorEndpoint("svil2", "https://example.invalid/other", enabled=False),
+        ],
+        default_generator="svil",
+        postman_token="tok-test",
+        header_profile={"service_number": "SN-TEST", "office_id": "OFF-TEST"},
+        timeout_s=90,
+    )
+
+
+def test_officina_defaults():
+    o = default_config().officina
+    assert o == cfgmod.OfficinaSettings()
+    assert o.root is None
+    assert o.generators == []  # public repo: no hostnames shipped
+    assert o.default_generator == "svil"
+    assert o.postman_token == "qtRequestory"
+    assert o.header_profile == {"service_number": "service_number", "office_id": "office_id",
+                                "branch_id": "branch_id"}
+    assert o.timeout_s == 120
+    assert cfgmod.officina_errors(default_config()) == []
+
+
+def test_officina_settings_round_trip(tmp_path: Path):
+    path = tmp_path / "config.json"
+    cfg = _sample_config(tmp_path)
+    cfg.officina = _officina_sample(tmp_path)
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded == cfg
+    assert isinstance(loaded.officina.root, Path)
+    assert loaded.officina.generators[1].enabled is False
+    assert validate(loaded) == []
+
+
+def test_a_config_without_officina_still_loads(tmp_path: Path):
+    path = tmp_path / "config.json"
+    save_config(_sample_config(tmp_path), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["officina"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_config(path).officina == cfgmod.OfficinaSettings()
+
+
+def test_a_hand_edited_officina_block_is_lenient(tmp_path: Path, caplog):
+    path = tmp_path / "config.json"
+    save_config(_sample_config(tmp_path), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["officina"] = {
+        "root": 5,
+        "generators": [{"name": "svil", "url": "https://example.invalid/g"}, {"name": 3}, "x"],
+        "timeout_s": "abc",
+        "header_profile": {"office_id": "OFF", "bad": 3},
+        "postman_token": 7,
+        "boh": 1,
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        o = load_config(path).officina
+    assert o.root is None
+    assert o.generators == [cfgmod.GeneratorEndpoint("svil", "https://example.invalid/g")]
+    assert o.timeout_s == 120
+    assert o.header_profile == {"office_id": "OFF"}
+    assert o.postman_token == "qtRequestory"
+
+
+@pytest.mark.parametrize("gen", [
+    cfgmod.GeneratorEndpoint("PROD", "https://example.invalid/g"),
+    cfgmod.GeneratorEndpoint("svil", "https://inspire-prod.example.invalid/g"),
+    cfgmod.GeneratorEndpoint("Produzione", "https://example.invalid/g", enabled=False),
+    cfgmod.GeneratorEndpoint("svil", "https://example.invalid/Prod/g"),
+])
+def test_prod_generator_rejected(tmp_path: Path, gen):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(generators=[gen])
+    errors = validate(cfg)
+    assert any("prod" in e.lower() for e in errors), errors
+    assert cfgmod.officina_errors(cfg) == errors
+
+
+@pytest.mark.parametrize("url", ["http://example.invalid/g", "ftp://example.invalid/g", "example.invalid/g", ""])
+def test_http_generator_rejected(tmp_path: Path, url: str):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(generators=[cfgmod.GeneratorEndpoint("svil", url)])
+    errors = validate(cfg)
+    assert any("https://" in e for e in errors), errors
+
+
+def test_officina_validation_of_the_other_fields(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(
+        root=Path("relativo"),
+        generators=[cfgmod.GeneratorEndpoint("svil", "https://example.invalid/a"),
+                    cfgmod.GeneratorEndpoint("SVIL", "https://example.invalid/b")],
+        default_generator="coll",
+        postman_token="  ",
+        header_profile={"bad name": "x", "office_id": "a\r\nb"},
+        timeout_s=0,
+    )
+    errors = cfgmod.officina_errors(cfg)
+    assert len(errors) == 7, errors
+
+
+@pytest.mark.parametrize("where", ["mirror", "mirror/sub", "out", "out/officina"])
+def test_officina_root_must_stay_out_of_the_mirror_and_the_pruned_output(tmp_path: Path, where: str):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(root=tmp_path / where)
+    assert len(cfgmod.officina_errors(cfg)) == 1
+
+
+@pytest.mark.parametrize("gen", [
+    cfgmod.GeneratorEndpoint("ｐｒｏｄ", "https://example.invalid/g"),
+    cfgmod.GeneratorEndpoint("svil", "https://generator-ＰＲＯＤ.example.invalid/g"),
+])
+def test_fullwidth_prod_generator_rejected(tmp_path: Path, gen):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(generators=[gen])
+    assert any("prod" in e.lower() for e in validate(cfg))
+
+
+@pytest.mark.parametrize("url", ["https://générateur.example.invalid/g", "https:///g", "https://",
+                                 "https://example.invalid:abc/g", "https://[example.invalid/g"])
+def test_generator_url_must_be_ascii_with_a_host(tmp_path: Path, url: str):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(generators=[cfgmod.GeneratorEndpoint("svil", url)])
+    assert cfgmod.officina_errors(cfg), url
+
+
+# -- per-row Officina checks (shared by validate, the generator and Impostazioni) --
+
+def test_generator_problems_are_per_row():
+    rows = [
+        cfgmod.GeneratorEndpoint("svil", "https://example.invalid/g"),
+        cfgmod.GeneratorEndpoint("PROD", "https://example.invalid/g"),
+        cfgmod.GeneratorEndpoint("coll", "http://example.invalid/g"),
+        cfgmod.GeneratorEndpoint("SVIL", "https://example.invalid/h"),
+        cfgmod.GeneratorEndpoint("", "https://example.invalid/i"),
+    ]
+    problems = cfgmod.generator_problems(rows)
+    assert len(problems) == len(rows)
+    assert problems[0] == []
+    assert any("prod" in p for p in problems[1])
+    assert any("https://" in p for p in problems[2])
+    assert any("duplicato" in p for p in problems[3])
+    assert problems[4] and not problems[0]
+
+
+def test_generator_problems_never_repeat_the_url():
+    """The URL may carry a signature: a message about it must not quote it."""
+    rows = [cfgmod.GeneratorEndpoint("svil", "http://example.invalid/g?sig=SEGRETO")]
+    cfg = default_config()
+    cfg.officina = cfgmod.OfficinaSettings(generators=rows, default_generator="svil")
+    assert all("SEGRETO" not in p for p in cfgmod.generator_problems(rows)[0])
+    assert all("SEGRETO" not in e for e in cfgmod.officina_errors(cfg))
+
+
+def test_default_generator_problem():
+    o = cfgmod.OfficinaSettings(generators=[cfgmod.GeneratorEndpoint("svil", "https://example.invalid/g"),
+                                            cfgmod.GeneratorEndpoint("coll", "https://example.invalid/c",
+                                                                     enabled=False)])
+    assert cfgmod.default_generator_problem(dataclasses.replace(o, default_generator="svil")) is None
+    assert cfgmod.default_generator_problem(dataclasses.replace(o, default_generator="coll"))
+    assert cfgmod.default_generator_problem(dataclasses.replace(o, default_generator=""))
+    assert cfgmod.default_generator_problem(cfgmod.OfficinaSettings(default_generator="")) is None
+
+
+@pytest.mark.parametrize("name", ["", "bad name", "Host", "content-length", "Transfer-Encoding",
+                                  "Connection", "keep-alive", "TE", "Upgrade", "Trailer",
+                                  "Proxy-Authorization", "Expect", "x\r\ny"])
+def test_header_names_the_client_owns_or_that_are_malformed_are_refused(name):
+    assert cfgmod.header_name_problem(name)
+
+
+@pytest.mark.parametrize("name", ["office_id", "X-Flag", "X-Test", "Postman-Token", "template_key"])
+def test_ordinary_header_names_are_accepted(name):
+    assert cfgmod.header_name_problem(name) is None
+
+
+def test_header_value_problems():
+    assert cfgmod.header_value_problem("x", "a\nb")
+    assert cfgmod.header_value_problem("x", "a\rb")
+    assert cfgmod.header_value_problem("x", "città ✓")
+    assert cfgmod.header_value_problem("x", "città") is None
+
+
+def test_header_problems_are_per_row_with_case_insensitive_duplicates():
+    rows = [("office_id", "1"), ("", "orfano"), ("Office_ID", "2"), ("Host", "h"), ("X-Flag", "a\nb")]
+    problems = cfgmod.header_problems(rows)
+    assert problems[0] == []
+    assert problems[1] and problems[2] and problems[3] and problems[4]
+    assert any("duplicat" in p for p in problems[2])
+
+
+def test_the_profile_refuses_client_owned_headers(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(header_profile={"Content-Length": "10"})
+    assert len(cfgmod.officina_errors(cfg)) == 1
+
+
+def test_postman_token_problem():
+    assert cfgmod.postman_token_problem("  ")
+    assert cfgmod.postman_token_problem("qtRequestory") is None
+
+
+# -- "prd" is PROD too, as a token (final fix wave of Officina phase 1) --
+
+@pytest.mark.parametrize("text", [
+    "prd", "PRD", "svil-prd", "https://prd.example.invalid/g", "https://example.invalid/prd/g",
+    "https://gen-prd01.example.invalid/g", "https://example.invalid/g?env=prd", "ｐｒｄ",
+    "https://example.invalid/%70rd/g",
+])
+def test_prd_as_a_token_is_prod_like(text: str):
+    assert cfgmod.is_prod_like(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "svil", "prdx", "https://prdx.example.invalid/g", "https://example.invalid/sprd/g",
+    "coll", "https://example.invalid/leprdue/g",
+])
+def test_prd_inside_a_word_is_not_prod_like(text: str):
+    assert not cfgmod.is_prod_like(text), text
+
+
+def test_a_prd_generator_is_rejected(tmp_path: Path):
+    cfg = _sample_config(tmp_path)
+    cfg.officina = cfgmod.OfficinaSettings(
+        generators=[cfgmod.GeneratorEndpoint("svil", "https://gen-prd.example.invalid/g")])
+    assert any("prod" in e.lower() for e in validate(cfg))

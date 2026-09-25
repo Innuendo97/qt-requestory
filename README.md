@@ -89,9 +89,10 @@ Gli indirizzi degli ambienti non sono dentro il programma. Puoi darglieli così:
 
 ## Uso normale
 
-In alto ci sono le due pagine principali, **Ricerca** (`Ctrl+1`) e
-**Sincronizzazione** (`Ctrl+2`); a destra lo stato della sincronizzazione di
-ogni ambiente (cliccalo per aprire la pagina) e le icone di **Impostazioni**
+In alto ci sono le pagine principali, **Ricerca** (`Ctrl+1`),
+**Sincronizzazione** (`Ctrl+2`) e **Officina** (`Ctrl+3`, vedi
+[Officina](#officina)); a destra lo stato della sincronizzazione di ogni
+ambiente (cliccalo per aprire la pagina) e le icone di **Impostazioni**
 (`Ctrl+,`) e **Info** (`F1`).
 
 - **Sincronizzazione** — dice se la sincronizzazione automatica è attiva, se
@@ -263,6 +264,195 @@ differenze:
 
 ---
 
+## Officina
+
+L'**Officina** (`Ctrl+3`) serve a chi modifica i template: porta un documento
+dal suo stato attuale al **target**, cioè il PDF o l'HTML che il cliente ha
+fornito come riferimento. Sostituisce, per questo lavoro, Postman più un
+confronto a mano più le cartelle preparate a mano per i tester: genera i
+documenti con gli header giusti, li mette accanto al target con le differenze
+di testo evidenziate e prepara la cartella di consegna.
+
+Usala quando devi far combaciare uno o più documenti con quelli attesi dal
+cliente (una richiesta di modifica, un aggiornamento dei testi…) e poi
+consegnarli ai tester.
+
+Le parole che usa:
+
+- **Iniziativa** — un gruppo di documenti da consegnare insieme, per esempio
+  tutti i moduli toccati da una stessa richiesta. È una cartella.
+- **Caso** — un documento da portare al target: una template key, con
+  eventualmente una **variante** (es. «abilitato») quando più casi hanno la
+  stessa key con payload diversi. Ogni caso ha il suo payload e i suoi header.
+- **TARGET** — il file del cliente, tenuto con il suo nome originale.
+- **AS-IS** — il documento generato con il template di oggi, prima delle
+  modifiche. Si genera una volta e resta fermo: è la base del confronto.
+- **TO-BE** — il documento generato dopo ogni modifica, in versioni numerate
+  `v1`, `v2`, … che restano tutte.
+
+### Prima configurazione
+
+1. **Impostazioni › Officina › Cartella dell'Officina**: scegli una cartella
+   **locale**, sul tuo PC (es. `C:\Users\<tuo utente>\Officina`). Ci finiscono
+   payload e documenti con **dati reali dei clienti**: non una cartella dentro
+   un repository e, se puoi, non OneDrive né un disco di rete (sono ammessi, ma
+   il programma lo segnala). Non può coincidere con la cartella dei log o con
+   quella dei file estratti, né stare dentro di esse o contenerle. La stessa scelta si fa
+   anche dalla scheda Officina la prima volta che la apri.
+2. **Generatori**: aggiungi una riga per ogni document generator da chiamare
+   (nome, URL, attivo), per esempio `svil`. Gli indirizzi veri chiedili a chi ti
+   ha passato il programma: non stanno qui. Solo `https`; un nome o un URL che
+   contiene `prod`, o `prd` come parola a sé (es. `svil-prd`), viene rifiutato
+   (vedi [Sicurezza](#sicurezza)).
+   **Generatore predefinito**: quello usato dai casi nuovi (di solito `svil`).
+3. **Postman-Token predefinito**: già compilato; lascialo non vuoto (vedi
+   sotto).
+4. **Profilo intestazioni**: `service_number`, `office_id`, `branch_id` con i
+   valori delle collection Postman del team. Vengono inviati a ogni generazione.
+5. **Timeout di generazione**: 120 secondi di serie.
+
+### Il ciclo di lavoro
+
+1. **Crea un'iniziativa** (*Nuova iniziativa*) e aggiungi i casi:
+   - da **Ricerca**: cerca la chiamata, tasto destro sulla riga ›
+     **Aggiungi all'Officina…**, scegli l'iniziativa (o creane una) e, se serve,
+     la variante. Payload, template key e FDI vengono dalla chiamata;
+   - da un **file JSON** (*+ Caso da file…*): la key viene proposta dal payload.
+2. **Target…**: scegli il file del cliente (PDF o HTML).
+3. **Genera AS-IS** da svil, con il template com'è oggi. Sulla bacheca
+   dell'iniziativa *Genera AS-IS mancanti* lo fa per tutti i casi che non ce
+   l'hanno. L'AS-IS si può rigenerare (*Rigenera AS-IS…*) solo scrivendo una
+   nota con il motivo; quello vecchio resta conservato nella cartella del caso.
+4. **Confronta con il target**: nel caso, il target è a sinistra e il documento
+   generato a destra, con le differenze di testo evidenziate (verde = in più,
+   rosso = mancante, ambra = cambiato) e l'elenco delle differenze a destra.
+   Cliccando una differenza, nell'elenco o sulla pagina, entrambi i documenti ci
+   vanno; scorrimento e zoom (`Ctrl`+rotella) restano allineati. Sopra il
+   documento di destra scegli cosa vedere: AS-IS, `v1`, `v2`, ….
+5. **Modifica in Designer** template, master template, data master o
+   workflow, e **pubblica** su svil.
+6. **Rigenera il TO-BE** con `F5` (o *Rigenera TO-BE (F5)*): stesso payload,
+   stessi header, una nuova versione. Il confronto si aggiorna da solo. Dalla
+   bacheca, *Rigenera TO-BE selezionati* rigenera più casi insieme (al massimo
+   tre alla volta; un caso che fallisce non ferma gli altri; *Annulla
+   generazioni* toglie quelli ancora in coda).
+7. Ripeti 5–6 finché il TO-BE è uguale al target, poi **Segna accettato**. Se
+   restano differenze di testo il programma chiede conferma (non lo impedisce).
+   L'accettazione vale per **quella** versione del TO-BE: se poi arriva un nuovo
+   TO-BE o un nuovo AS-IS il caso torna aperto con l'avviso «Nuova versione
+   dopo l'accettazione: da ricontrollare» (sulla bacheca: *da ricontrollare*).
+   *Riapri* riporta il caso in lavorazione se arriva una correzione.
+
+Durante l'invio il caso e la bacheca dicono su quale generatore sta andando
+(«Generazione su svil…»); l'intestazione del caso mostra sempre il suo
+generatore.
+
+*Payload e header…* apre il payload (JSON, con controllo di validità e
+*Formatta*) e le impostazioni di invio del caso: il generatore, il
+`correlation_id` (nuovo a ogni invio, l'FDI della chiamata di origine, oppure un
+valore fisso), cosa fare dei link di upload e gli header del caso. Gli header si
+compongono in quest'ordine, e ogni livello prevale su quelli prima:
+
+1. **automatici**: `template_key` (la key del caso), `current_timestamp` (ora,
+   in millisecondi), `correlation_id`, `Postman-Token`;
+2. il **profilo** di Impostazioni;
+3. i **predefiniti dell'iniziativa** (per ora si scrivono a mano in
+   `header_defaults` dentro `iniziativa.json`);
+4. le righe del **caso**, che prevalgono su tutto: così puoi fissare, per
+   esempio, un `current_timestamp` preciso o aggiungere un header proprio dell'iniziativa.
+
+Un header con valore vuoto non viene inviato. `Postman-Token` si toglie solo
+con l'opzione esplicita *Non inviare Postman-Token*.
+
+La bacheca dell'iniziativa mostra per ogni caso quali documenti ci sono
+(T, A, `vN`; «—» se manca, in rosso se il file è sparito dal disco), il
+riassunto «TO-BE contro target» (uguale / N differenze / senza testo…),
+l'ultima generazione (o il motivo per cui è fallita) e lo stato. `Invio` o
+doppio clic apre il caso.
+
+Un'iniziativa è la sua **cartella**: se ne copi una in Esplora risorse, la
+copia è un'iniziativa a sé (nell'elenco, due iniziative con lo stesso nome
+mostrano anche la cartella, es. «Banco (Banco - Copia)»), e la consegna va in
+una cartella con il nome della sua cartella.
+
+Se `iniziativa.json` o il `caso.json` di un caso si rovinano (una modifica a
+mano sbagliata), il programma lo dice sulla bacheca o nel caso e **non li
+riscrive mai**: con `iniziativa.json` illeggibile non si genera niente (gli
+header predefiniti non sono noti); un caso con `caso.json` illeggibile si può
+guardare ma non modificare, accettare né generare. Correggi o ripristina il
+file e riapri.
+
+### La consegna ai tester
+
+*Consegna…* (sulla bacheca) copia i documenti in una cartella di destinazione,
+di solito quella condivisa con i tester. Sono già spuntati i casi accettati
+sull'ultimo TO-BE; se aggiungi casi non accettati, o il cui ultimo TO-BE non è
+quello accettato, il programma lo dice. La destinazione proposta è l'ultima
+usata per quell'iniziativa. Il risultato è:
+
+```
+<destinazione>\<Iniziativa>\
+  MOD_TEST_ESEMPIO\
+    MOD_TEST_ESEMPIO_ASIS.pdf
+    MOD_TEST_ESEMPIO_TOBE.pdf          l'ultima versione del TO-BE
+    Nome originale del cliente.pdf     il target, con il suo nome
+```
+
+- Se consegni **più varianti della stessa key**, stanno nella stessa cartella
+  come `<KEY>_<variante>_ASIS` / `<KEY>_<variante>_TOBE`; i target tengono il
+  loro nome e, se due hanno lo stesso nome, prendono ` (<variante>)` prima
+  dell'estensione. Un caso HTML consegna file `.html`.
+- Un documento che manca (es. nessun TO-BE) viene saltato ed elencato, mai
+  inventato.
+- Un file già presente nella destinazione non viene mai sovrascritto senza
+  chiedere: *Sostituisci*, *Mantieni entrambi* (il nuovo prende ` (2)`) o
+  *Salta*, con *Applica a tutti*.
+- **Crea anche lo zip** scrive anche `<destinazione>\<Iniziativa>.zip`, con i
+  soli file di questa consegna. Se la consegna non è completa lo zip non viene
+  creato.
+
+### Sicurezza
+
+- **Fuori dai log nginx**: ogni chiamata porta un `Postman-Token` non vuoto (di
+  serie `qtRequestory`). Con quell'header il document generator non scrive la
+  chiamata nei log nginx, così le prove non finiscono nell'archivio di nessuno.
+  Si toglie solo dal singolo caso, con l'opzione esplicita.
+- **Link di upload**: i payload presi dai log contengono gli `attachmentUrl`,
+  link firmati dove il generatore scriverebbe il PDF, cioè il documento di un
+  cliente vero. Di serie vengono **rimossi** prima dell'invio (il generatore
+  restituisce comunque il documento). In alternativa *Lascia solo se tutti
+  scaduti*. Un link firmato ancora valido, ovunque sia nel payload, **non viene
+  mai inviato**: la generazione viene rifiutata e il motivo lo dice. Nei
+  messaggi i link compaiono sempre mascherati (`…?sig=***`); nel log del
+  programma resta solo il nome del server.
+- **Mai PROD**: un generatore il cui nome o URL contiene `prod` (in qualsiasi
+  forma), o `prd` come parola a sé, non si può salvare e non viene chiamato; si accetta solo `https` e i
+  reindirizzamenti non vengono seguiti. Un caso può usare solo un generatore
+  configurato e attivo.
+- **Cartella locale**: payload e documenti restano nella cartella
+  dell'Officina, mai nei log del programma. Tienila sul disco locale, non in
+  OneDrive: il programma lo permette ma avvisa, perché tutto verrebbe copiato
+  nel cloud.
+
+### Limiti di questa prima versione
+
+- Il confronto è **solo sul testo**, parola per parola: immagini, impaginazione,
+  caratteri e spaziature non vengono confrontati. Un testo andato a capo in
+  modo diverso o spostato su un'altra pagina non conta come differenza; un
+  blocco spostato altrove nel documento risulta come «mancante» più «in più».
+- Numeri di pagina, date di generazione e simili compaiono come differenze.
+- Un PDF senza testo (una scansione) non si confronta: il programma dice che
+  quel documento «non ha testo estraibile».
+- I casi HTML (target e documenti generati) vengono convertiti in PDF con
+  Microsoft Edge installato sul PC, senza rete (riferimenti esterni e script
+  tolti), per mostrarli e confrontarli: senza Edge il confronto di un caso HTML
+  non riesce.
+- *Segna accettato* non è bloccato dalle differenze; il motivo di una
+  generazione fallita si perde alla chiusura del programma; i predefiniti
+  degli header dell'iniziativa non hanno ancora una schermata.
+
+---
+
 ## Dove finiscono le cose
 
 | Cosa | Dove |
@@ -274,12 +464,13 @@ differenze:
 | Indice di ricerca | `<archivio>\.qtrequestory\index.sqlite` |
 | File estratti | `%TEMP%\qtrequestory-calls\` (temporanei) |
 | Preferenze della finestra (tema, ricerche recenti…) | registro utente, `HKCU\Software\qtRequestory` |
+| Officina (iniziative, casi, payload, documenti generati) | la cartella scelta in Impostazioni › Officina, vedi [Officina](#officina) |
 
 La pagina **Info** mostra tutti questi percorsi, con i pulsanti per copiarli e
 aprirli, e le ultime righe del log del programma.
 
-Nell'archivio e nell'indice ci sono **dati reali di clienti**: trattali come
-tali, non copiarli fuori dal PC aziendale.
+Nell'archivio, nell'indice e nella cartella dell'Officina ci sono **dati reali
+di clienti**: trattali come tali, non copiarli fuori dal PC aziendale.
 
 ---
 
@@ -363,9 +554,11 @@ iniziale e spuntando «Rimuovi il vecchio task NginxLogSync».
 
 ## Per chi sviluppa
 
-Progetto Python 3.12, src-layout, nessuna dipendenza a runtime oltre a PySide6.
-Il cuore (`qtrequestory.core`) usa solo la libreria standard; solo
-`qtrequestory.ui` importa Qt.
+Progetto Python 3.12, src-layout. Dipendenze a runtime: PySide6 e `pypdfium2`
+(solo per l'Officina: la importa soltanto `qtrequestory.officina.pdf`, e mai la
+`--sync` pianificata). Il cuore (`qtrequestory.core`) usa solo la libreria
+standard; solo `qtrequestory.ui` importa Qt. Le licenze dei componenti di terzi
+inclusi nell'eseguibile sono in `src/qtrequestory/THIRD-PARTY-NOTICES.md`.
 
 ```powershell
 python -m venv .venv

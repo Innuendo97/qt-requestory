@@ -39,7 +39,9 @@ def _data_files() -> list[Path]:
 def _is_declared(relative: Path, declared: dict[str, list[str]]) -> bool:
     """True when some declared pattern covers ``relative`` (as setuptools reads it)."""
     for package, patterns in declared.items():
-        prefix = "" if package == "*" else package.removeprefix("qtrequestory.").replace(".", "/")
+        # "*" and the top package itself both mean files directly in src/qtrequestory.
+        top = package in ("*", "qtrequestory")
+        prefix = "" if top else package.removeprefix("qtrequestory.").replace(".", "/")
         for pattern in patterns:
             candidate = f"{prefix}/{pattern}" if prefix else pattern
             if fnmatch.fnmatch(relative.as_posix(), candidate):
@@ -203,6 +205,60 @@ def test_no_new_dynamic_import_slips_in_unnoticed():
         "a file listed in KNOWN_DYNAMIC_IMPORTERS no longer imports dynamically; "
         "drop it here (and from the spec if nothing else needs it)"
     )
+
+
+# ------------------------------------------------------------- pypdfium2 ---
+#
+# officina/pdf.py is the only importer of pypdfium2 (see
+# tests/test_officina_boundary.py), and pypdfium2 ships its own binaries
+# (pdfium.dll / libpdfium.so) that PyInstaller's static analysis cannot find
+# on its own — they never show up as a Python import. collect_all pulls in
+# the datas/binaries/hiddenimports together; collect_dynamic_libs alone would
+# miss the version metadata pypdfium2 reads at import time. Without either,
+# the exe starts, the Officina tab opens, and the first PDF view raises
+# "OSError: cannot load library" — a failure mode packaging tests exist to
+# catch before a colleague does.
+#
+# qtrequestory.officina is reached the same way the pages are (see
+# KNOWN_DYNAMIC_IMPORTERS above): ui/pages/officina_page.py is imported only by
+# the page factory, and it reaches the officina package from there, so its
+# submodules need the same collect_submodules treatment.
+
+
+def test_spec_collects_pypdfium2_binaries():
+    spec = SPEC.read_text(encoding="utf-8")
+    assert re.search(r"collect_all\(\s*['\"]pypdfium2['\"]\s*\)", spec) or re.search(
+        r"collect_dynamic_libs\(\s*['\"]pypdfium2['\"]\s*\)", spec
+    ), "qtRequestory.spec never collects pypdfium2's binaries"
+
+
+def test_spec_collects_officina_submodules():
+    spec = SPEC.read_text(encoding="utf-8")
+    assert re.search(
+        r"collect_submodules\(\s*['\"]qtrequestory\.officina['\"]\s*\)", spec
+    ), "qtRequestory.spec never calls collect_submodules('qtrequestory.officina')"
+
+
+NOTICES = PACKAGE / "THIRD-PARTY-NOTICES.md"
+
+
+def test_third_party_notices_name_every_bundled_licence():
+    """The exe ships PDFium (through pypdfium2) and Qt (through PySide6): their
+    licences ask for a notice travelling with the binary, next to the Fluent
+    icons' ``ui/icons/LICENSE.md``."""
+    text = NOTICES.read_text(encoding="utf-8")
+    for needle in ("pypdfium2", "PDFium", "Apache-2.0", "BSD-3-Clause",
+                   "LicenseRef-PdfiumThirdParty", "PySide6", "LGPL", "ui/icons/LICENSE.md"):
+        assert needle in text, f"THIRD-PARTY-NOTICES.md does not mention {needle}"
+
+
+def test_spec_bundles_the_third_party_notices():
+    spec = SPEC.read_text(encoding="utf-8")
+    assert re.search(
+        r"\(\s*str\(\s*SRC\s*/\s*['\"]qtrequestory['\"]\s*/\s*['\"]THIRD-PARTY-NOTICES\.md['\"]\s*\)"
+        r"\s*,\s*['\"]qtrequestory['\"]\s*\)",
+        spec,
+    ), "qtRequestory.spec does not list THIRD-PARTY-NOTICES.md in datas"
 
 
 def test_dev_scripts_are_not_shipped():

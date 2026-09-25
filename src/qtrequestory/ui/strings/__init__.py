@@ -16,6 +16,7 @@ others. One module per page means each task owns a file:
 ``wizard.py``        first-run wizard
 ``about.py``         Info page
 ``imports.py``       importing logs from other folders (dialog, banner, wizard)
+``officina.py``      Officina tab (viewer, page, board, workbench)
 ===================  ==================================================
 
 Usage — always through the package, never the submodule::
@@ -35,6 +36,7 @@ from .settings import *  # noqa: F401,F403
 from .wizard import *  # noqa: F401,F403
 from .about import *  # noqa: F401,F403
 from .imports import *  # noqa: F401,F403
+from .officina import *  # noqa: F401,F403
 
 
 def lower_first(sentence: str) -> str:

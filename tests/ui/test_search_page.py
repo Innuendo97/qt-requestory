@@ -695,7 +695,7 @@ def test_the_context_menu_lists_every_row_action(qtbot, npp_page):
         strings.SEARCH_MENU_OPEN, strings.BTN_SAVE_AS, strings.SEARCH_MENU_COPY_JSON,
         strings.SEARCH_MENU_COPY_FDI, strings.SEARCH_MENU_COPY_KEY,
         strings.SEARCH_MENU_ONLY_FDI, strings.SEARCH_MENU_ONLY_KEY,
-        strings.SEARCH_MENU_OPEN_DAY_FOLDER,
+        strings.SEARCH_MENU_OPEN_DAY_FOLDER, strings.OFFICINA_ADD_MENU,
     ]
     menu.deleteLater()
 

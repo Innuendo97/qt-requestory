@@ -38,7 +38,7 @@ from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import SchedulerError
 from qtrequestory.ui.contracts import CoreServices, Environment
 from tests.conftest import FDI_A, KEY_CTE, KEY_SINT, StubServer, autoindex_html, entry_name, make_daily_file, synthetic_body
-from tests.fakes.fake_core import ENVS, FakeExtractApi, FakeSchedulerApi, _hit, build_fake_core
+from tests.fakes.fake_core import ENVS, FakeExtractApi, FakeSchedulerApi, _hit, build_fake_core, canned_pdf
 
 #: An environment the fake does not know about: the wizard lets the user import
 #: an environments.json with any names at all, so the knobs must cope.
@@ -551,6 +551,176 @@ def _case_write_temp_file_honours_retention(tmp_path: Path) -> None:
     assert not fake_stale.exists()
 
 
+# ------------------------------------------------------------ officina ---
+#
+# The fake Officina is the real service with an in-process generator; these
+# cases run the same script against the real service talking HTTP to a local
+# server (tests/officina/test_generator.FakeServer) and compare everything the
+# UI can see: names, ids, version numbers and types, files on disk, what was
+# sent, and every refusal/failure reason.
+
+_OFFICINA_PAYLOAD = {
+    "documents": [{"template": {"templateKey": "MOD_TEST_A"},
+                   "attributes": [{"key": "attachmentId", "value": "att-0"},
+                                  {"key": "attachmentUrl", "value": "https://example.invalid/c/MOD_TEST_A.pdf"}]}],
+    "customers": [{"name": "Cliente di prova"}],
+}
+
+
+def _officina_pair(tmp_path: Path):
+    """(real service + its server, fake bundle), both with svil enabled and
+    coll configured but disabled, and a payload file."""
+    from qtrequestory.core.config import GeneratorEndpoint
+    from qtrequestory.officina.service import OfficinaService
+    from tests.officina.test_generator import FakeServer
+
+    server = FakeServer()
+    server.canned.body = canned_pdf()
+    fake = build_fake_core(tmp_path / "fake")
+    fake.config.config.officina.generators.append(
+        GeneratorEndpoint("coll", "https://example.invalid/coll/documentGenerator", enabled=False))
+    real_cfg = dataclasses.replace(
+        default_config(), mirror_root=tmp_path / "real" / "mirror",
+        officina=dataclasses.replace(fake.config.config.officina, root=tmp_path / "real" / "officina",
+                                     generators=[GeneratorEndpoint("svil", server.url),
+                                                 GeneratorEndpoint("coll", server.url, enabled=False)]),
+    )
+    real = OfficinaService(lambda: real_cfg)
+    src = tmp_path / "payload.json"
+    src.write_text(__import__("json").dumps(_OFFICINA_PAYLOAD), encoding="utf-8")
+    return real, server, fake.officina, fake, src
+
+
+#: Added by http.client on the wire, not by the service: the fake never sees them.
+_TRANSPORT_HEADERS = frozenset({"host", "user-agent", "accept-encoding", "connection", "content-length"})
+#: Different on every call (a new uuid4, the clock): only their presence is compared.
+_PER_CALL_HEADERS = frozenset({"correlation_id", "current_timestamp"})
+
+
+def _app_headers(headers: dict[str, str]) -> dict[str, str]:
+    """The headers the service sent, lower-cased; per-call values blanked."""
+    low = {k.lower(): v for k, v in headers.items() if k.lower() not in _TRANSPORT_HEADERS}
+    return {k: ("<per call>" if k in _PER_CALL_HEADERS else v) for k, v in low.items()}
+
+
+def _layout(folder: Path) -> list[str]:
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
+
+
+def _case_officina_create_case_and_generate(tmp_path: Path) -> None:
+    import json
+
+    real, server, fake, bundle, src = _officina_pair(tmp_path)
+    try:
+        seen = {}
+        for name, api in (("real", real), ("fake", fake)):
+            before = api.initiatives()
+            ini = api.create_initiative("Iniziativa di prova")
+            case = api.case_from_file(ini, src, "MOD_TEST_A", "Variante Uno")
+            runs = [api.generate(ini, case, "asis"), api.generate(ini, case, "tobe"), api.generate(ini, case, "tobe")]
+            root = api.workspace_root()
+            seen[name] = {
+                "before": before,
+                "names": [i.name for i in api.initiatives()],
+                "case": (case.id, case.key, case.variant, case.env, case.source_fdi),
+                "versions": [(v.kind, v.number, v.doc_type, v.path.relative_to(root).as_posix(), sorted(v.meta))
+                             for v, _ in runs],
+                "results": [(r.ok, r.status, r.doc_type, r.reason) for _, r in runs],
+                "files": _layout(root),
+                "reloaded": [(c.id, [v.number for v in c.tobe_versions()], c.asis().number)
+                             for c in api.load("Iniziativa di prova").cases],
+            }
+        real_sent = [json.loads(body) for _, body in server.requests]
+        fake_sent = [r.payload for r in fake.requests]
+        real_headers = [_app_headers(h) for h, _ in server.requests]
+        fake_headers = [_app_headers(r.headers) for r in fake.requests]
+    finally:
+        server.close()
+    assert seen["real"] == seen["fake"]
+    assert seen["real"]["before"] == []
+    assert [v[1] for v in seen["real"]["versions"]] == [0, 1, 2]
+    assert real_sent == fake_sent and len(real_sent) == 3
+    assert real_headers == fake_headers and len(real_headers) == 3
+    assert real_headers[0]["template_key"] == "MOD_TEST_A" and real_headers[0]["postman-token"]
+    assert {"correlation_id", "current_timestamp"} <= set(real_headers[0])
+    assert "attachmentUrl" not in json.dumps(real_sent)
+
+
+def _case_officina_refusals_and_failures(tmp_path: Path) -> None:
+    real, server, fake, bundle, src = _officina_pair(tmp_path)
+    target = tmp_path / "atteso.pdf"
+    target.write_bytes(canned_pdf("atteso"))
+    html = b"<!DOCTYPE html><html><body>" + b"<p>MOD_TEST pagina</p>" * 40 + b"</body></html>"
+    try:
+        outcome = {}
+        for name, api in (("real", real), ("fake", fake)):
+            ini = api.create_initiative("I")
+            case = api.case_from_file(ini, src, "MOD_TEST_A")
+            got = []
+            case.env = "coll"                                   # disabled generator
+            got.append(api.generate(ini, case, "tobe"))
+            case.env = "ignoto"                                 # unknown generator
+            got.append(api.generate(ini, case, "tobe"))
+            case.env = "svil"
+            api.set_target(case, target)
+            if name == "real":
+                server.canned.status, server.canned.body = 500, b"errore"
+            else:
+                fake.set_response(b"errore", status=500)
+            got.append(api.generate(ini, case, "tobe"))         # HTTP 500
+            if name == "real":
+                server.canned.status, server.canned.body = 200, html
+            else:
+                fake.set_response(html)
+            got.append(api.generate(ini, case, "tobe"))         # HTML for a PDF case
+            outcome[name] = ([(v, r.ok, r.status, r.reason) for v, r in got],
+                             _layout(case.folder))
+    finally:
+        server.close()
+    assert outcome["real"] == outcome["fake"]
+    reasons = [r for _, _, _, r in outcome["real"][0]]
+    assert "non è attivo" in reasons[0] and "non è configurato" in reasons[1]
+    assert "HTTP 500" in reasons[2] and "risposta HTML per un caso PDF" in reasons[3]
+    assert not any(f.startswith("tobe/") for f in outcome["real"][1])
+
+
+def _case_officina_delivery(tmp_path: Path) -> None:
+    """Plan, conflicts, delivery (with the zip) and the remembered destination."""
+    real, server, fake, bundle, src = _officina_pair(tmp_path)
+    target = tmp_path / "atteso.pdf"
+    target.write_bytes(canned_pdf("atteso"))
+    try:
+        seen = {}
+        for name, api in (("real", real), ("fake", fake)):
+            ini = api.create_initiative("Consegna")
+            first = api.case_from_file(ini, src, "MOD_TEST_A", "uno")
+            second = api.case_from_file(ini, src, "MOD_TEST_A", "due")
+            for case in (first, second):
+                api.set_target(case, target)
+                api.generate(ini, case, "tobe")
+            ini = api.load("Consegna")
+            dest = tmp_path / f"consegne-{name}"
+            before = api.last_delivery_destination(ini)
+            plan = api.delivery_plan(ini, [c.id for c in ini.cases])
+            report = api.deliver(ini, plan.items, dest, on_conflict=lambda _p: "skip", make_zip=True)
+            again = api.delivery_conflicts(ini, plan.items, dest, make_zip=True)
+            seen[name] = {
+                "before": before,
+                "items": [(i.case_id, i.dest_rel) for i in plan.items],
+                "missing": [(m.case_id, m.slot, m.reason) for m in plan.missing],
+                "delivered": [p.relative_to(dest).as_posix() for p in report.delivered],
+                "failed": report.failed,
+                "conflicts": [p.relative_to(dest).as_posix() for p in again],
+                "last": api.last_delivery_destination(api.load("Consegna")) == dest,
+            }
+    finally:
+        server.close()
+    assert seen["real"] == seen["fake"]
+    assert seen["real"]["before"] is None and seen["real"]["last"] is True
+    assert seen["real"]["delivered"][-1] == "Consegna.zip"
+    assert len(seen["real"]["conflicts"]) == len(seen["real"]["delivered"])
+
+
 def _case_empty_today_reads_the_same(tmp_path: Path) -> None:
     """1.1.1: a quiet today after the compaction — not fresh (the next run
     re-lists), read as "empty_today" by ``freshness`` and ``env_status``."""
@@ -585,6 +755,9 @@ _FIDELITY_CASES = [
     ("list_template_keys_breaks_ties_by_count_then_name", _case_list_template_keys_breaks_ties_by_count_then_name),
     ("plan_is_scoped_to_requested_envs", _case_plan_is_scoped_to_requested_envs),
     ("write_temp_file_honours_retention", _case_write_temp_file_honours_retention),
+    ("officina_create_case_and_generate", _case_officina_create_case_and_generate),
+    ("officina_refusals_and_failures", _case_officina_refusals_and_failures),
+    ("officina_delivery", _case_officina_delivery),
     ("empty_today_reads_the_same", _case_empty_today_reads_the_same),
 ]
 
@@ -610,3 +783,96 @@ def test_mirror_root_errors_fake_matches_real(tmp_path: Path) -> None:
         assert fake.mirror_root_errors(cfg) == real.mirror_root_errors(cfg)
     assert real.mirror_root_errors(dataclasses.replace(base, mirror_root=Path(""))) != []
     assert real.mirror_root_errors(dataclasses.replace(base, mirror_root=tmp_path)) == []
+
+
+def test_fake_officina_knobs(fake, tmp_path: Path):
+    """The fake Officina's knobs: network error, scripted compare, compare
+    error, and a canned HTML->PDF print under the case cache."""
+    from qtrequestory.officina.compare.textdiff import TextComparison
+    from qtrequestory.officina.service import CompareError
+
+    api = fake.officina
+    assert fake.officina is api
+    assert api.workspace_root() == tmp_path / "core" / "officina"
+    src = tmp_path / "p.json"
+    src.write_text('{"documents": []}', encoding="utf-8")
+    ini = api.create_initiative("I")
+    case = api.case_from_file(ini, src, "MOD_TEST_A")
+
+    api.set_network_error("rete assente")
+    version, result = api.generate(ini, case, "asis")
+    assert version is None and result.reason == "errore di rete: rete assente"
+    assert [r.headers.get("Template_key") for r in api.requests] == ["MOD_TEST_A"]
+
+    api.set_response()
+    asis, result = api.generate(ini, case, "asis")
+    assert result.ok and asis.doc_type == "pdf"
+    target = tmp_path / "atteso.pdf"
+    target.write_bytes(canned_pdf("MOD_TEST documento generato dal generatore finto"))
+    tgt = api.set_target(case, target)
+    assert api.compare(tgt, asis).equal
+
+    scripted = TextComparison([], True, True, False, "nota scritta dal test")
+    api.set_comparison(scripted)
+    assert api.compare(tgt, asis) is scripted
+    api.set_compare_error("Edge non trovato")
+    with pytest.raises(CompareError, match="Edge non trovato"):
+        api.compare(tgt, asis)
+    assert len(api.compare_calls) == 3
+
+    api.set_compare_error(None)
+    api.set_comparison(None)
+    html = tmp_path / "email.html"
+    html.write_bytes(b"<!DOCTYPE html><html><body><p>MOD_TEST documento generato dal generatore finto</p></body></html>")
+    html_target = api.set_target(case, html)
+    assert api.compare(html_target, asis).equal
+    assert api.conversions[0][1].parent == case.folder / "cache"
+
+
+def test_fake_officina_scripts_one_case_of_a_batch(fake, tmp_path: Path):
+    """Task 7's batch: only the second case fails, the others succeed."""
+    import threading
+
+    api = fake.officina
+    src = tmp_path / "p.json"
+    src.write_text('{"documents": []}', encoding="utf-8")
+    ini = api.create_initiative("Batch")
+    cases = [api.case_from_file(ini, src, key) for key in ("MOD_TEST_A", "MOD_TEST_B", "MOD_TEST_C")]
+    api.set_response_for("MOD_TEST_B", b"errore del generatore", status=500)
+
+    results = {}
+
+    def run(case) -> None:
+        results[case.key] = api.generate(ini, case, "asis")
+
+    threads = [threading.Thread(target=run, args=(c,)) for c in cases]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert {k: r.ok for k, (_, r) in results.items()} == {"MOD_TEST_A": True, "MOD_TEST_B": False, "MOD_TEST_C": True}
+    assert results["MOD_TEST_B"][1].status == 500
+
+    api.set_response_for("MOD_TEST_B", None)  # back to the default answer
+    assert api.generate(ini, cases[1], "asis")[1].ok
+
+
+def test_fake_officina_responder_decides_per_request(fake, tmp_path: Path):
+    import urllib.error
+
+    api = fake.officina
+    src = tmp_path / "p.json"
+    src.write_text('{"documents": []}', encoding="utf-8")
+    ini = api.create_initiative("R")
+    case = api.case_from_file(ini, src, "MOD_TEST_A")
+
+    def responder(request):
+        if request.template_key == "MOD_TEST_A":
+            raise urllib.error.URLError("rete assente")
+        return 200, canned_pdf()
+
+    api.set_responder(responder)
+    version, result = api.generate(ini, case, "asis")
+    assert version is None and result.reason == "errore di rete: rete assente"
+    api.set_responder(None)
+    assert api.generate(ini, case, "asis")[1].ok

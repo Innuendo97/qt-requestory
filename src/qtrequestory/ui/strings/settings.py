@@ -18,6 +18,8 @@ SETTINGS_SECTION_SEARCH = "Ricerca"
 SETTINGS_SECTION_EDITOR = "Editor esterno"
 SETTINGS_SECTION_ADVANCED = "Avanzate"
 
+SETTINGS_SECTION_OFFICINA = "Officina"
+
 # -- Aspetto -----------------------------------------------------------------
 
 SETTINGS_THEME_LABEL = "Tema"
@@ -116,6 +118,60 @@ SETTINGS_SCHEDULE_UPDATE_FAILED = "Impossibile aggiornare l'attività pianificat
 #: The {message} of SETTINGS_SCHEDULE_UPDATE_FAILED when another schtasks call is running.
 SETTINGS_SCHEDULE_BUSY = "è in corso un'altra operazione sull'attività pianificata"
 SETTINGS_BTN_RETRY = "Riprova"
+
+# -- Officina ----------------------------------------------------------------
+
+SETTINGS_OFFICINA_GENERAL = "Officina"
+SETTINGS_OFFICINA_FOLDER_LABEL = "Cartella dell'Officina"
+SETTINGS_OFFICINA_FOLDER_CAPTION = "Seleziona la cartella dell'Officina"
+SETTINGS_OFFICINA_FOLDER_NONE = "Non impostata"
+#: Allowed: a warning, not an error.
+SETTINGS_OFFICINA_ONEDRIVE = (
+    "La cartella è in OneDrive: payload e documenti contengono dati reali dei clienti "
+    "e verranno sincronizzati nel cloud."
+)
+SETTINGS_OFFICINA_NETWORK = (
+    "La cartella è su un disco di rete: payload e documenti contengono dati reali dei clienti, "
+    "e le generazioni possono rallentare o fallire se la rete cade."
+)
+SETTINGS_OFFICINA_BUSY = (
+    "L'Officina sta generando o consegnando documenti: la cartella si può cambiare "
+    "quando ha finito (o dopo averli annullati)."
+)
+SETTINGS_OFFICINA_TIMEOUT_LABEL = "Timeout di generazione (secondi)"
+SETTINGS_OFFICINA_TOKEN_LABEL = "Postman-Token predefinito"
+SETTINGS_OFFICINA_TOKEN_HINT = (
+    "Con un Postman-Token non vuoto lo Scaler non scrive la chiamata nei log nginx: "
+    "le prove restano fuori dai log. Si toglie solo dal singolo caso, con l'apposita opzione."
+)
+SETTINGS_OFFICINA_GENERATORS = "Generatori"
+SETTINGS_OFFICINA_GENERATORS_HINT = (
+    "Gli endpoint documentGenerator a cui l'Officina invia i payload. Solo https; "
+    "nome e URL non possono contenere 'prod' o 'prd': la produzione non è mai configurabile."
+)
+SETTINGS_OFFICINA_COL_PROBLEM = "Problema"
+SETTINGS_OFFICINA_DEFAULT_LABEL = "Generatore predefinito"
+SETTINGS_OFFICINA_DEFAULT_NONE = "— scegli —"
+#: {name} = the generator that was the default.
+SETTINGS_OFFICINA_DEFAULT_REMOVED = (
+    "Il generatore predefinito '{name}' è stato eliminato: scegline un altro tra quelli attivi."
+)
+SETTINGS_OFFICINA_DEFAULT_DISABLED = (
+    "Il generatore predefinito '{name}' è stato disattivato: scegline un altro tra quelli attivi."
+)
+SETTINGS_OFFICINA_HEADERS = "Profilo intestazioni"
+SETTINGS_OFFICINA_HEADERS_HINT = (
+    "Inviate a ogni generazione; le intestazioni dell'iniziativa e del caso hanno la precedenza. "
+    "Host, Content-Length, Transfer-Encoding e le altre intestazioni gestite dal client HTTP "
+    "non sono ammesse."
+)
+SETTINGS_OFFICINA_COL_HEADER = "Nome"
+SETTINGS_OFFICINA_COL_VALUE = "Valore"
+#: The page's error list, when the tables still show problems.
+SETTINGS_OFFICINA_FIX_ROWS = "Officina: correggi gli errori segnalati accanto alle righe"
+#: The save bar's button that opens the Officina section while it blocks Salva.
+SETTINGS_OFFICINA_SHOW = "Mostra"
+
 
 # -- advanced ----------------------------------------------------------------
 

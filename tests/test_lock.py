@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -148,8 +149,15 @@ def test_lock_is_released_when_holder_dies(lock_path):
     try:
         assert ProcessLock(lock_path).acquire() is False
         _kill_holder(child, child_pid)
+        # Windows frees a dead process's byte-range locks asynchronously, a
+        # moment after the process is gone: retry until a deadline.
         survivor = ProcessLock(lock_path)
-        assert survivor.acquire() is True
+        deadline = time.monotonic() + 2.0
+        acquired = survivor.acquire()
+        while not acquired and time.monotonic() < deadline:
+            time.sleep(0.05)
+            acquired = survivor.acquire()
+        assert acquired is True
         survivor.release()
     finally:
         child.stdout.close()

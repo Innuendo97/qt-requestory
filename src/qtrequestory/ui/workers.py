@@ -43,8 +43,10 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgress, LogMessage
 
 __all__ = [
-    "DEFAULT_MAX_THREADS", "JOB_NAMES", "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
-    "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals",
+    "DEFAULT_MAX_THREADS", "JOB_NAMES", "OFFICINA_COMPARE_JOB", "OFFICINA_DELIVERY_JOB",
+    "OFFICINA_GENERATE_JOBS",
+    "OFFICINA_SUMMARY_JOB", "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
+    "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals", "officina_writing",
 ]
 
 log = logging.getLogger(__name__)
@@ -57,6 +59,31 @@ PROGRESS_INTERVAL_S = 0.1
 #: and Impostazioni (a save re-registers it) — and they must share one name to
 #: be mutually exclusive (see :attr:`JobRunner.EXCLUSIVE`).
 SCHEDULER_JOB = "scheduler"
+
+#: The Officina's generation lanes. ``JobRunner`` keeps one live job per name,
+#: and a generation must never be superseded (the document would still be
+#: written, but nobody would hear about it), so the Officina runs at most
+#: three cases at once, each on the first free lane — the batch concurrency
+#: cap of the spec (§5 "Batch"). The first lane is the one a single F5 uses.
+#: Named here because the window asks before quitting while one runs.
+OFFICINA_GENERATE_JOBS = ("officina-generate", "officina-generate-2", "officina-generate-3")
+#: The case workbench: documents to show and the TARGET vs version comparison
+#: (a newer request supersedes the older one).
+OFFICINA_COMPARE_JOB = "officina-compare"
+#: The initiative board: the "TO-BE contro target" pill of every case.
+OFFICINA_SUMMARY_JOB = "officina-summary"
+#: "Consegna…": the check of the destination, then the copy. Exclusive — a
+#: second delivery must never silence the first one's report — and asked
+#: about before quitting.
+OFFICINA_DELIVERY_JOB = "officina-delivery"
+
+
+def officina_writing(runner: JobRunner) -> bool:
+    """True while the Officina writes into its folder: a generation on any
+    lane or a delivery. The queue only waits while every lane is busy, so a
+    waiting case always means a running lane too. Impostazioni asks before
+    changing the folder under their feet."""
+    return any(runner.is_running(name) for name in (*OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB))
 
 #: Every name a page submits under, in one place. At most ONE job per name is
 #: ever *live* — :attr:`JobRunner.EXCLUSIVE` refuses a second, and every other
@@ -85,6 +112,10 @@ JOB_NAMES = (
     "import-scan",          # Importa log: the report of the chosen folder
     "import",               # Importa log: copy + verify
     "recycle",              # Importa log: the verified originals to the Recycle Bin
+    *OFFICINA_GENERATE_JOBS,  # Officina: AS-IS / TO-BE generation, up to 3 cases at once
+    OFFICINA_COMPARE_JOB,   # Officina: the case workbench's documents and comparison
+    OFFICINA_SUMMARY_JOB,   # Officina: the board's TO-BE vs target pills
+    OFFICINA_DELIVERY_JOB,  # Officina: "Consegna…" to the testers' folder
 )
 
 #: Extra threads for SUPERSEDED jobs. Superseding silences a job and sets its
@@ -339,7 +370,10 @@ class JobRunner(QObject):
     #: ``scheduler``, because ``schtasks`` ignores the cancel token, so two
     #: calls in flight could land in either order and leave the task in the
     #: state of the *first* one. Everything else supersedes instead.
-    EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import", "recycle"})
+    #: The Officina generation lanes are exclusive too: superseding one would
+    #: silence a call whose document is written anyway.
+    EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import", "recycle",
+                           *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB})
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)
