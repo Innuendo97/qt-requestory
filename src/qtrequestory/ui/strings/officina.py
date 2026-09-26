@@ -17,7 +17,6 @@ OFFICINA_VIEWER_PAGE_ERROR = "Impossibile mostrare la pagina {n}: {reason}"
 OFFICINA_NAV = "Officina"
 OFFICINA_JOB_GENERATE = "Generazione dell'Officina"
 OFFICINA_JOB_COMPARE = "Confronto dell'Officina"
-OFFICINA_JOB_SUMMARY = "Confronto dei casi dell'iniziativa"
 OFFICINA_JOB_DELIVERY = "Consegna dell'Officina"
 OFFICINA_DELIVERY_QUIT_INFO = ("La consegna si ferma: i file già copiati restano, nessun file "
                                "resta scritto a metà.")
@@ -108,13 +107,6 @@ OFFICINA_THUMB_ASIS_TIP = "AS-IS"
 #: {n} = TO-BE version number.
 OFFICINA_THUMB_TOBE_TIP = "TO-BE v{n}"
 OFFICINA_THUMB_MISSING_TIP = "Il file non c'è più nella cartella del caso."
-OFFICINA_PILL_EQUAL = "uguale"
-#: {n} = number of text differences (2 or more).
-OFFICINA_PILL_DIFFS = "{n} differenze"
-OFFICINA_PILL_ONE_DIFF = "1 differenza"
-OFFICINA_PILL_NO_TEXT = "senza testo"
-OFFICINA_PILL_ERROR = "confronto non riuscito"
-OFFICINA_PILL_PENDING = "confronto…"
 OFFICINA_PILL_NO_TARGET = "manca il target"
 OFFICINA_PILL_NO_TOBE = "manca il TO-BE"
 OFFICINA_STATUS_OPEN = "aperto"
@@ -187,12 +179,18 @@ OFFICINA_NO_VERSION = ("Nessun documento generato: «Genera AS-IS» per il docum
                        "«Rigenera TO-BE (F5)» dopo ogni pubblicazione.")
 OFFICINA_LOADING = "Preparazione dei documenti…"
 OFFICINA_DIFF_TITLE = "Differenze con il target"
+#: R45: an HTML side without its Edge print, compared through the DOM. {reason} = why.
+OFFICINA_PRINT_MISSING = ("Stampa dell'HTML non disponibile ({reason}). Le differenze sono "
+                          "nell'elenco e nella scheda DOM.")
 OFFICINA_DIFF_EQUAL = "Nessuna differenza di testo: uguale al target."
 OFFICINA_DIFF_NEED_BOTH = ("Il confronto compare quando ci sono sia il target sia un documento "
                            "generato.")
 #: {n} = number of differences (2 or more).
 OFFICINA_DIFF_COUNT = "{n} differenze di testo"
 OFFICINA_DIFF_COUNT_ONE = "1 differenza di testo"
+#: The same when some differences are not text (style, spacing, composition, links). {n}.
+OFFICINA_DIFF_COUNT_ANY = "{n} differenze"
+OFFICINA_DIFF_COUNT_ANY_ONE = "1 differenza"
 #: {reason} = the CompareError message.
 OFFICINA_DIFF_ERROR = "Confronto non riuscito: {reason}"
 OFFICINA_KIND_ADDED = "in più"
@@ -202,6 +200,8 @@ OFFICINA_KIND_CHANGED = "cambiato"
 OFFICINA_DIFF_WHERE = "pag. {page} · {kind}"
 #: {left} = target text, {right} = compared text.
 OFFICINA_DIFF_CHANGE = "«{left}» → «{right}»"
+#: A difference whose words are the same on both sides (style, spacing, a move). {text}.
+OFFICINA_DIFF_SAME_TEXT = "«{text}» (stesse parole)"
 #: {text} = the text that is only in the target.
 OFFICINA_DIFF_ONLY_LEFT = "nel target: «{text}»"
 #: {text} = the text that is only in the generated document.
@@ -227,8 +227,21 @@ OFFICINA_TARGET_FILTER = "Documenti (*.pdf *.html *.htm);;Tutti i file (*)"
 OFFICINA_TARGET_FAILED = "Target non salvato: {reason}"
 #: {name} = file name.
 OFFICINA_TARGET_SET = "Target impostato: {name}"
+#: R29: replacing the target of a case with review state (marks, non risolte or a summary).
+OFFICINA_TARGET_REPLACE_TITLE = "Sostituisci il target"
+OFFICINA_TARGET_REPLACE = ("Con il nuovo target i segni «fatta», le «non risolte» e il riepilogo "
+                           "del caso vengono azzerati: le differenze cambiano ancora. "
+                           "Tolleranze e «non è una variabile» restano, attive solo dove il testo "
+                           "combacia ancora. Sostituire il target?")
 OFFICINA_ACCEPT_WITH_DIFFS = ("Il documento mostrato ha ancora differenze di testo con il target. "
                               "Segnare il caso accettato lo stesso?")
+#: Spec §5.4: what is left when accepting. {parts} = "1 regressione, 2 da fare, 1 da verificare".
+OFFICINA_ACCEPT_REMAINING = "Restano {parts}. Segnare il caso accettato lo stesso?"
+#: A side without extractable text. {note} = the comparison's note ("il TO-BE non ha testo estraibile").
+OFFICINA_ACCEPT_NO_TEXT = "Il confronto non è stato possibile: {note}. Segnare il caso accettato lo stesso?"
+#: The latest TO-BE (the one accepting stamps) never compared. {version}.
+OFFICINA_ACCEPT_NOT_COMPARED = ("L'ultimo TO-BE (v{version}) non è ancora stato confrontato con il target. "
+                                "Segnare il caso accettato lo stesso?")
 OFFICINA_ACCEPTED = "Caso segnato accettato."
 OFFICINA_REOPENED = "Caso riaperto."
 #: {reason} = the load error of a damaged caso.json.

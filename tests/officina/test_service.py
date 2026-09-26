@@ -23,6 +23,7 @@ from qtrequestory.core.events import CancelToken, CollectingSink
 from qtrequestory.core.facade import IndexService
 from qtrequestory.core.index.search import SearchQuery
 from qtrequestory.officina import service_compare as service_mod
+from qtrequestory.officina.compare.model import Comparison
 from qtrequestory.officina.generator import SendResult
 from qtrequestory.officina.model import Case, Initiative, Version
 from qtrequestory.officina.service import CompareError, OfficinaService
@@ -107,6 +108,11 @@ class Env:
 @pytest.fixture
 def env(tmp_path: Path, server: FakeServer) -> Env:
     return Env(tmp_path, server)
+
+
+def _prints(case: Case) -> list[str]:
+    """The files in the case's cache folder other than the extraction cache (E7)."""
+    return [n for n in files_under(case.folder / "cache") if not n.startswith("extract-")]
 
 
 def files_under(folder: Path) -> list[str]:
@@ -444,7 +450,11 @@ def test_compare_finds_the_changed_word(env: Env, tmp_path: Path):
     _, tgt, tobe = _versions(env, tmp_path, canned_pdf("prezzo fisso per dodici mesi"),
                              canned_pdf("prezzo fisso per ventiquattro mesi"))
     result = env.svc.compare(tgt, tobe)
-    assert [(d.kind, d.left_text, d.right_text) for d in result.differences] == [("changed", "dodici", "ventiquattro")]
+    # R3 (I1): the phase-1 path is the staged engine now (compare_docs → Comparison)
+    assert isinstance(result, Comparison)
+    assert [(d.op, d.klass, d.left_text, d.right_text) for d in result.diffs] == [
+        ("cambiato", "testo", "dodici", "ventiquattro")]
+    assert result.diffs[0].left_spans and result.diffs[0].anchor.target_text == "dodici"
 
 
 def test_compare_cache_hits_on_the_second_call(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -478,7 +488,7 @@ def test_compare_notices_a_changed_file(env: Env, tmp_path: Path):
 def test_target_without_text_is_reported_not_diffed(env: Env, tmp_path: Path):
     _, tgt, tobe = _versions(env, tmp_path, canned_pdf(""), canned_pdf("testo del documento generato"))
     result = env.svc.compare(tgt, tobe)
-    assert result.differences == [] and not result.equal
+    assert result.diffs == () and not result.equal
     assert result.note == "il target non ha testo estraibile"
 
 
@@ -512,7 +522,7 @@ def test_html_is_converted_under_the_case_cache(env: Env, tmp_path: Path):
     # nothing derived lands in the slots
     assert files_under(case.folder / "target") == ["email.html", "target.meta.json"]
     assert files_under(case.folder / "tobe") == ["v001.meta.json", "v001.pdf", "v002.html", "v002.meta.json"]
-    cached = files_under(case.folder / "cache")
+    cached = _prints(case)
     assert len(cached) == 1 and cached[0].endswith(".pdf")
 
     # a new service (app restarted) reuses the converted PDF on disk
@@ -623,7 +633,7 @@ def test_concurrent_compares_of_the_same_html_convert_once(env: Env, tmp_path: P
     # Edge printed a private copy to a private name; only the final PDF stays
     html_in, out_tmp, _ = slow.calls[0]
     assert out_tmp.parent == case.folder / "cache" and html_in.parent == case.folder / "cache"
-    cached = files_under(case.folder / "cache")
+    cached = _prints(case)
     assert len(cached) == 1 and cached[0].endswith(".pdf")
     assert case.folder / "cache" / cached[0] != out_tmp
 
@@ -638,7 +648,8 @@ def test_a_truncated_cached_pdf_is_reconverted(env: Env, tmp_path: Path):
     final.write_bytes(whole[:1100])  # a crash mid-write: header and size, no %%EOF
 
     again = OfficinaService(lambda: env.config, html_to_pdf=slow)
-    assert again.compare(tgt, tobe).equal
+    assert again.compare(tgt, tobe).equal       # its words come from the extraction cache (E7)...
+    assert again.render_path(case, tobe) == final  # ...the viewer's print is checked and redone
     assert len(slow.calls) == 2 and final.read_bytes() == whole
 
 
@@ -694,7 +705,9 @@ def test_a_pdf_changed_during_extraction_is_not_cached(env: Env, tmp_path: Path,
     assert not first.equal  # A's words ("quattro"), not B's
     assert env.svc.compare(tgt, tobe) is first
     assert calls and all(p.parent == case.folder / "cache" for p in calls)
-    assert files_under(case.folder / "cache") == []  # the private copies are gone
+    # the private copies are gone; only the extraction cache of A (E7) stays
+    assert files_under(case.folder / "cache") == sorted(
+        f"extract-{hashlib.sha256(c).hexdigest()}.json" for c in (content_a, canned_pdf("uno due tre")))
 
 
 def test_case_from_hit_of_a_vanished_call_is_a_readable_error(tmp_path: Path):

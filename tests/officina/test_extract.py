@@ -77,7 +77,9 @@ def test_extract_pdf_imports_pypdfium2_only_through_officina_pdf():
 
 @pytest.mark.parametrize("module", [
     "qtrequestory.officina.compare",
-    "qtrequestory.officina.compare.textdiff",
+    "qtrequestory.officina.compare.pipeline",
+    "qtrequestory.officina.compare.normalise",
+    "qtrequestory.officina.compare.cache",
     "qtrequestory.officina.compare.extract_pdf",
     "qtrequestory.officina.compare.edge",
 ])
@@ -179,3 +181,66 @@ def test_a_glyph_without_unicode_keeps_its_word_whole(monkeypatch):
              ("b", (10, 0, 15, 10), (10, 0, 15, 10))]
     monkeypatch.setattr(pdf, "read_chars", lambda path: [pdf.PageChars(100, 100, chars, 0)])
     assert [w.text for w in extract(Path("x.pdf")).words] == ["a\ufffdb"]
+
+
+# ------------------------------------------------------ font per word ---
+
+def test_words_carry_font_size_and_bold(pdfs: Path):
+    bold = pdfgen.load_extra_font("bold")
+    if bold is None:
+        pytest.skip("no bold face of the test font on this system")
+    try:
+        html = pdfgen.runs_html([("Testo normale", 11, False), ("grassetto qui", 11, True),
+                                 ("grande", 16, False), ("piccolo", 8, False)])
+        words = {w.text: w for w in extract(pdfgen.html_pdf(pdfs / "font.pdf", html)).words}
+    finally:
+        pdfgen.unload_font(bold)
+    for text, size, is_bold in [("Testo", 11, False), ("normale", 11, False), ("grassetto", 11, True),
+                                ("qui", 11, True), ("grande", 16, False), ("piccolo", 8, False)]:
+        assert words[text].size == pytest.approx(size, abs=0.5), text
+        assert words[text].bold is is_bold, text
+
+
+def test_font_is_sampled_once_per_word(monkeypatch):
+    from qtrequestory.officina import pdf
+
+    chars = [("a", (0, 0, 5, 10), (0, 0, 5, 10)), ("b", (5, 0, 10, 10), (5, 0, 10, 10)),
+             (" ", None, None), ("c", (20, 0, 25, 10), (20, 0, 25, 10))]
+    fonts = [(9.0, True), None, None, (12.0, False)]
+    monkeypatch.setattr(pdf, "read_chars", lambda path: [pdf.PageChars(100, 100, chars, 0, fonts)])
+    words = extract(Path("x.pdf")).words
+    assert [(w.text, w.size, w.bold) for w in words] == [("ab", 9.0, True), ("c", 12.0, False)]
+
+
+def test_without_font_samples_words_have_no_font():
+    from qtrequestory.officina import pdf
+
+    assert pdf.PageChars(1, 1, [], 0).fonts == []
+
+
+@pytest.mark.parametrize(("weight", "name", "bold"), [
+    (-1, "ABCDEF+Arial-BoldMT", True), (-1, "Helvetica-Black", True), (-1, "XYZABC+Foo-Heavy", True),
+    (-1, "Font-Semibold", True), (-1, "ArialMT", False), (-1, "", False),
+    (700, "ArialMT", True), (400, "ArialMT", False), (520, "Arial-BoldMT", True),
+])
+def test_bold_from_weight_or_font_name(weight: int, name: str, bold: bool):
+    from qtrequestory.officina import pdf
+
+    assert pdf.is_bold(weight, name) is bold
+
+
+def test_subset_prefix_is_stripped_from_font_names():
+    from qtrequestory.officina import pdf
+
+    assert pdf.font_name(b"ABCDEF+Arial-BoldMT") == "Arial-BoldMT"
+    assert pdf.font_name(b"Arial+Extra") == "Arial+Extra"
+    assert pdf.font_name(b"ArialMT") == "ArialMT"
+
+
+def test_fonts_shorter_than_chars_is_an_error(monkeypatch):
+    from qtrequestory.officina import pdf
+
+    chars = [("a", (0, 0, 5, 10), (0, 0, 5, 10)), ("b", (5, 0, 10, 10), (5, 0, 10, 10))]
+    monkeypatch.setattr(pdf, "read_chars", lambda path: [pdf.PageChars(100, 100, chars, 0, [(9.0, False)])])
+    with pytest.raises(ValueError):
+        extract(Path("x.pdf"))

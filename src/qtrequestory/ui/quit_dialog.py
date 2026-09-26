@@ -12,8 +12,10 @@ from qtrequestory.ui import strings
 from qtrequestory.ui.workers import (
     OFFICINA_COMPARE_JOB,
     OFFICINA_DELIVERY_JOB,
+    OFFICINA_DOM_JOB,
     OFFICINA_GENERATE_JOBS,
-    OFFICINA_SUMMARY_JOB,
+    OFFICINA_NOISE_JOB,
+    OFFICINA_REVIEW_JOB,
 )
 
 __all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_job", "job_label"]
@@ -52,8 +54,10 @@ JOB_LABELS = {
     # every lane reads the same: the user sees one operation, not three
     **{lane: strings.OFFICINA_JOB_GENERATE for lane in OFFICINA_GENERATE_JOBS},
     OFFICINA_COMPARE_JOB: strings.OFFICINA_JOB_COMPARE,
-    OFFICINA_SUMMARY_JOB: strings.OFFICINA_JOB_SUMMARY,
     OFFICINA_DELIVERY_JOB: strings.OFFICINA_JOB_DELIVERY,
+    OFFICINA_REVIEW_JOB: strings.AZIONI_JOB_REVIEW,
+    OFFICINA_NOISE_JOB: strings.RUMORE_JOB_COUNT,
+    OFFICINA_DOM_JOB: strings.DOM_JOB,
 }
 
 

@@ -6,9 +6,9 @@ from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 
 from qtrequestory.ui import strings
-from qtrequestory.ui.contracts import Case, DeliveryReport, Difference, Initiative, MissingSlot, Version
+from qtrequestory.ui.contracts import Case, DeliveryReport, Initiative, MissingSlot, Version
 
-__all__ = ["accepted_count", "case_notice", "case_title", "delivery_summary", "difference_lines",
+__all__ = ["accepted_count", "case_notice", "case_title", "delivery_summary",
            "delivery_warning", "elide", "initiative_labels", "initiative_notice", "last_activity", "last_run",
            "latest_generated", "missing_text", "when"]
 
@@ -124,22 +124,6 @@ def elide(text: str, limit: int = QUOTE_CHARS) -> str:
     """``text`` on one line, cut to ``limit`` characters with "…"."""
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[:limit - 1].rstrip() + "…"
-
-
-def difference_lines(diff: Difference) -> tuple[str, str]:
-    """Where and what, for the differences list: ("pag. 1 · cambiato", "«a» → «b»")."""
-    words = diff.left or diff.right
-    page = (words[0].page + 1) if words else 1
-    kind = {"added": strings.OFFICINA_KIND_ADDED, "removed": strings.OFFICINA_KIND_REMOVED,
-            "changed": strings.OFFICINA_KIND_CHANGED}.get(diff.kind, diff.kind)
-    if diff.kind == "changed":
-        what = strings.OFFICINA_DIFF_CHANGE.format(left=elide(diff.left_text, QUOTE_CHARS // 2),
-                                                   right=elide(diff.right_text, QUOTE_CHARS // 2))
-    elif diff.kind == "removed":
-        what = strings.OFFICINA_DIFF_ONLY_LEFT.format(text=elide(diff.left_text))
-    else:
-        what = strings.OFFICINA_DIFF_ONLY_RIGHT.format(text=elide(diff.right_text))
-    return strings.OFFICINA_DIFF_WHERE.format(page=page, kind=kind), what
 
 
 # -- delivery (ui/pages/officina_delivery.py) ------------------------------------

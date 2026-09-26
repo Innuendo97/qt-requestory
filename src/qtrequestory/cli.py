@@ -56,7 +56,8 @@ EXIT_CONFIG_ERROR = 2
 
 #: Modes that read/print — the ones a windowed build's headless invocation
 #: from an interactive terminal must not go silent for (Important #14).
-_HEADLESS_FLAGS = ("--sync", "--index", "--find", "--task", "--version", "--archivio", "--import")
+_HEADLESS_FLAGS = ("--sync", "--index", "--find", "--task", "--version", "--archivio", "--import",
+                   "--selftest-noise-guard")
 _ATTACH_PARENT_PROCESS = -1
 
 
@@ -72,20 +73,15 @@ def _attach_parent_console(argv: list[str] | None) -> None:
     prints nothing anyone ever sees (Important #14).
 
     ``AttachConsole(ATTACH_PARENT_PROCESS)`` reattaches to the launching
-    terminal's console when there is one. When there is none — the scheduled
-    task, a double-click — it returns 0 and this is a no-op: the following
-    ``_guard_std_streams`` still redirects to ``os.devnull``, exactly as
-    before. Whether this run is headless is decided on the raw argv, before
+    terminal's console; without one (the scheduled task, a double-click) it is
+    a no-op and ``_guard_std_streams`` redirects to ``os.devnull``. Whether this run is headless is decided on the raw argv, before
     the parser exists, because this must run before ``_guard_std_streams``,
     which itself protects argparse's own error path. Any failure (not
     Windows, no ``ctypes.windll``, the API call itself) is swallowed: worst
     case the output stays invisible, same as before this existed.
 
-    Both handles are opened into locals first and ``sys.stdout``/``sys.stderr``
-    are only reassigned once BOTH succeeded (fix round 1, Minor): reopening
-    stdout and then having stderr's ``open("CONOUT$", ...)`` fail would
-    otherwise leave stdout pointing at the console while stderr stays
-    whatever it was — a partial, inconsistent reattachment.
+    Both handles are opened first and reassigned only once BOTH succeeded:
+    never a half-reattached stdout/stderr pair (fix round 1, Minor).
     """
     if sys.platform != "win32":
         return
@@ -122,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--find", action="store_true", help="estrai una chiamata dall'indice")
     mode.add_argument("--task", choices=TASK_ACTIONS, help="gestisci l'attività pianificata")
     mode.add_argument("--version", action="store_true", help="mostra la versione ed esci")
+    mode.add_argument("--selftest-noise-guard", action="store_true", help=argparse.SUPPRESS)  # dev, R22
     mode.add_argument("--archivio", nargs="?", const="", metavar="PERCORSO",
                       help="elenca i log fuori dalla struttura dell'archivio (predefinito: la cartella "
                            "dei log) e cosa farebbe l'importazione; non modifica nulla")
@@ -208,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(f"qtRequestory {__version__}")
         return 0
+    if args.selftest_noise_guard:  # before any config, path or log (noise_guard.selftest)
+        from qtrequestory.officina.compare.noise_guard import selftest
+        return selftest()
 
     paths = _resolve_paths(args.config)
     config = load_config(paths.config_file)

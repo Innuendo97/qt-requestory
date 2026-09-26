@@ -1,7 +1,9 @@
 """The comparison half of ``OfficinaService`` (``officina.service``).
 
-Both sides go through the text engine (``compare.extract_pdf`` +
-``compare.textdiff``). An HTML side is printed to PDF by Edge first, in the
+Both sides go through the staged engine (``compare.extract_pdf`` +
+``compare.pipeline.compare_docs``, without noise rules, verdicts or a
+review: the AS-IS view and "cos'altro ho cambiato"; ``compare_case`` is
+``service_review``'s). An HTML side is printed to PDF by Edge first, in the
 case's ``cache\\`` folder, never in ``target\\``, ``asis\\`` or ``tobe\\``:
 
 * the bytes that were hashed are copied to a private file in ``cache\\`` and
@@ -15,8 +17,11 @@ case's ``cache\\`` folder, never in ``target\\``, ``asis\\`` or ``tobe\\``:
 * a cached PDF that fails the check (a crash mid-write before this scheme, a
   hand-edit) is converted again, never reused.
 
-Extractions and results are also kept in memory, keyed by content hash:
-comparing the same two contents again costs reading and hashing two files. A
+Extractions are cached on disk (``compare.cache``:
+``<case>\\cache\\extract-<sha256>.json``, best-effort; a missing, corrupt or
+older-format file is a miss, silently written again) and, like the results,
+in memory, keyed by content hash: comparing the same two contents again
+costs reading and hashing two files. A
 PDF is extracted from a private copy of the bytes that were hashed (in
 ``cache\\``, removed afterwards), like an HTML is printed from one: what is
 cached under a hash is always the content of that hash, even when the file
@@ -24,7 +29,7 @@ is rewritten while the comparison runs.
 
 A comparison that cannot be made (a file gone, a PDF PDFium cannot read, Edge
 missing or failing) raises :class:`CompareError` with an Italian message for
-the UI to show — it is *not* folded into a ``TextComparison`` note, because a
+the UI to show — it is *not* folded into a ``Comparison`` note, because a
 note would be cached and read like a result ("0 differences"), while the
 problem is usually fixable (install Edge, restore the file) and must be
 retried. A side without a text layer, instead, IS a result: the comparison
@@ -35,7 +40,6 @@ Stdlib only at import time: ``compare.extract_pdf`` loads pypdfium2 inside
 """
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import logging
 import threading
@@ -46,9 +50,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from qtrequestory.core.fsutil import remove_quietly, replace_with_retry
+from qtrequestory.officina.compare import cache as extract_cache
 from qtrequestory.officina.compare.edge import MIN_PDF_BYTES
 from qtrequestory.officina.compare.extract_pdf import DocText, extract
-from qtrequestory.officina.compare.textdiff import TextComparison, compare_text
+from qtrequestory.officina.compare.model import Comparison
+from qtrequestory.officina.compare.pipeline import compare_docs
 from qtrequestory.officina.model import Case, Version
 
 __all__ = ["CompareError", "CompareMixin", "EDGE_TIMEOUT_S"]
@@ -79,10 +85,10 @@ class CompareMixin:
         self._lock = threading.Lock()
         self._path_locks: dict[Path, threading.Lock] = {}  # one per cached HTML->PDF name
         self._docs: OrderedDict[str, DocText] = OrderedDict()
-        self._results: OrderedDict[tuple[str, str, str, str], TextComparison] = OrderedDict()
+        self._results: OrderedDict[tuple[str, str, str, str], Comparison] = OrderedDict()
 
-    def compare(self, left: Version, right: Version) -> TextComparison:
-        """Text comparison of ``left`` (the reference, usually the TARGET) with
+    def compare(self, left: Version, right: Version) -> Comparison:
+        """Engine comparison of ``left`` (the reference, usually the TARGET) with
         ``right``. Cached by the two contents' SHA-256. :class:`CompareError`
         when it cannot be made (see the module docstring). The returned object
         may be shared with later calls: do not mutate it."""
@@ -96,14 +102,11 @@ class CompareMixin:
                 self._results.move_to_end(key)
                 return cached
         started = time.monotonic()
-        result = compare_text(self._doc(left, left_data, left_sha, left_label),
+        result = compare_docs(self._doc(left, left_data, left_sha, left_label),
                               self._doc(right, right_data, right_sha, right_label),
-                              right_label=right_label)
-        if left_label != "target":
-            result = dataclasses.replace(result, note=result.note.replace(
-                "il target non ha", f"{_article(left_label)}{left_label} non ha"))
+                              left_label=left_label, right_label=right_label)
         log.info("Officina: confronto %s/%s: %d differenze (%d ms)", left_label, right_label,
-                 len(result.differences), int((time.monotonic() - started) * 1000))
+                 len(result.diffs), int((time.monotonic() - started) * 1000))
         with self._lock:
             self._results[key] = result
             while len(self._results) > _RESULT_CACHE_SIZE:
@@ -126,17 +129,23 @@ class CompareMixin:
         return self._html_as_pdf(case.folder / "cache", data, _sha(data), label)
 
     def _doc(self, version: Version, data: bytes, sha: str, label: str) -> DocText:
-        """The words of ``data``, the bytes hashed as ``sha``. Never of the
-        live file: an HTML is printed from a private copy of ``data``, and a
-        PDF is extracted from one (in ``<case>\\cache\\``, removed afterwards),
-        so what is cached under ``sha`` is always what ``sha`` stands for,
+        """The words of ``data``, the bytes hashed as ``sha`` (for an HTML: of
+        its Edge print). Never of the live file: an HTML is printed from a
+        private copy of ``data``, and a PDF is extracted from one (in
+        ``<case>\\cache\\``, removed afterwards), so what is cached under
+        ``sha`` — in memory and on disk — is always what ``sha`` stands for,
         even if the version's file is rewritten meanwhile."""
         with self._lock:
             cached = self._docs.get(sha)
             if cached is not None:
                 self._docs.move_to_end(sha)
                 return cached
-        cache = _case_folder(version) / "cache"
+        folder = _case_folder(version)
+        cache = folder / "cache"
+        doc = extract_cache.load(folder, sha)
+        if doc is not None:
+            self._remember(sha, doc)
+            return doc
         if version.doc_type == "html":
             doc = self._extract(self._html_as_pdf(cache, data, sha, label), label)
         else:
@@ -151,11 +160,16 @@ class CompareMixin:
                 doc = self._extract(copy, label)
             finally:
                 remove_quietly(copy)
+        extract_cache.store(folder, sha, doc.words, doc.page_sizes, doc.has_text)
+        self._remember(sha, doc)
+        return doc
+
+    def _remember(self, sha: str, doc: DocText) -> None:
         with self._lock:
             self._docs[sha] = doc
+            self._docs.move_to_end(sha)
             while len(self._docs) > _DOC_CACHE_SIZE:
                 self._docs.popitem(last=False)
-        return doc
 
     @staticmethod
     def _extract(pdf_path: Path, label: str) -> DocText:
@@ -205,10 +219,6 @@ class CompareMixin:
 
 def _label(version: Version) -> str:
     return _LABELS.get(version.kind, str(version.kind))
-
-
-def _article(label: str) -> str:
-    return "l'" if label[:1].upper() in "AEIOU" else "il "
 
 
 def _of(label: str) -> str:

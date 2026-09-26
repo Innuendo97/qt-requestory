@@ -85,6 +85,17 @@ class Tokens:
     bad: str
     bad_bg: str
     neutral_bg: str
+    #: Officina phase 2: "in corso" and the progress bar (strong / soft).
+    progress: str
+    progress_bg: str
+    #: Officina phase 2: variables recognised in the target (strong / soft).
+    variable: str
+    variable_bg: str
+    #: Officina phase 2: the changed characters inside a word — a bright fill under
+    #: dark ink in BOTH modes (the page is always white; a chip carries dark text).
+    mark_yellow: str
+    #: The drop shadow of floating chrome (the Officina mini-bar); its alpha is per mode there.
+    shadow: str
     code_key: str
     code_string: str
     code_number: str
@@ -98,6 +109,8 @@ LIGHT = Tokens(
     selection="#DCEBFA", selection_text="#1B1F24",
     ok="#0E7A0D", ok_bg="#DFF6DD", warn="#8A5300", warn_bg="#FFF4CE",
     bad="#B42318", bad_bg="#FDE7E4", neutral_bg="#EDEFF2",
+    progress="#0F6CBD", progress_bg="#E6F0FB", variable="#6B5BB5", variable_bg="#EEEBFA",
+    mark_yellow="#FFD24D", shadow="#000000",
     code_key="#0B5CAD", code_string="#A31515", code_number="#0E7A0D", code_literal="#8250DF",
 )
 
@@ -108,6 +121,8 @@ DARK = Tokens(
     selection="#1F4468", selection_text="#EEF1F4",
     ok="#6CCB5F", ok_bg="#1F3A1D", warn="#F2C661", warn_bg="#433519",
     bad="#FF8A7A", bad_bg="#4A1F1A", neutral_bg="#3A3F47",
+    progress="#6BB3E8", progress_bg="#1B3A5C", variable="#B8A9F5", variable_bg="#2F2A4D",
+    mark_yellow="#E8C04A", shadow="#000000",
     code_key="#8CC4F2", code_string="#E9A27A", code_number="#9BD48F", code_literal="#C4A7F5",
 )
 

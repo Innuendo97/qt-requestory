@@ -468,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         """TARGET / TO-BE PDFs (synthetic words) and their differences, made once."""
         if not officina_docs:
             from qtrequestory.officina.compare.extract_pdf import extract
-            from qtrequestory.officina.compare.textdiff import compare_text
+            from qtrequestory.officina.compare.pipeline import compare_docs
             from tests.officina import pdfgen
 
             pdfgen.load_font()
@@ -492,13 +492,14 @@ def main(argv: list[str] | None = None) -> int:
             right = pdfgen.html_pdf(folder / "tobe.pdf", pages(True))
             lt, rt = extract(left), extract(right)
             officina_docs.update(left=(left, lt), right=(right, rt),
-                                 diffs=compare_text(lt, rt).differences)
+                                 diffs=compare_docs(lt, rt).diffs)
         return officina_docs
 
     def officina_viewer(zoom="fit_width"):
         def prepare():
             from PySide6.QtWidgets import QHBoxLayout, QWidget
 
+            from qtrequestory.ui.pages.officina_judged import unjudged
             from qtrequestory.ui.pages.officina_viewer import DocView, SyncController
 
             docs = officina_pdfs()
@@ -510,8 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 view = DocView()
                 path, text = docs[side]
                 view.load(side, path, text.page_sizes)
-                pick = (lambda d: d.left) if side == "left" else (lambda d: d.right)
-                view.set_highlights([(d.id, d.kind, pick(d)) for d in docs["diffs"]])
+                view.set_highlights([(unjudged(d), side) for d in docs["diffs"]])
                 row.addWidget(view)
                 views.append(view)
             holder._sync = SyncController(*views)
@@ -601,7 +601,83 @@ def main(argv: list[str] | None = None) -> int:
         api.set_response_for("MOD_TEST_CARTA_D", b"<html><body>gateway</body></html>", 502)
         officina_state.update(ini=ini.id, case=cases["MOD_TEST_RICHIESTA_B"].id,
                               failing=cases["MOD_TEST_CARTA_D"])
+        officina_verdicts(api.load(ini.id), cases["MOD_TEST_RICHIESTA_B"].id)
+        officina_html_case()  # U6: in the second initiative, the same in every mode
         return officina_state
+
+    def officina_verdicts(ini, case_id: str) -> None:
+        """Phase 2 (U1): script the fake's ``compare_case`` for case B so that
+        its TO-BE v2 holds every verdict and state — regressione, da fare, non
+        risolta (marked in v1, unchanged in v2), in corso, da verificare
+        (marked in v2), fatta, tollerata (by profile and by hand), rumore,
+        variabile — on word boxes of page 1 of the synthetic PDFs."""
+        from tests.fakes.fake_core import fake_diff
+
+        api = services.officina
+        docs = officina_pdfs()
+        lw = [w for w in docs["left"][1].words if w.page == 0]
+        rw = [w for w in docs["right"][1].words if w.page == 0]
+
+        def diff(op, klass, i, n=1, *, left=True, right=True, generated=None, part=False):
+            lwords = tuple(lw[i:i + n]) if left else ()
+            rwords = tuple(rw[i:i + n]) if right else ()
+            target = " ".join(w.text for w in lwords)
+            made = generated if generated is not None else " ".join(w.text for w in rwords)
+            # R33: the target words around the change, as the engine gives them (<= 5 a side)
+            fields = dict(left=lwords, right=rwords,
+                          context_before=" ".join(w.text for w in lw[max(0, i - 5):i]),
+                          context_after=" ".join(w.text for w in lw[i + n:i + n + 5]))
+            if part:  # a few characters inside the word, not all of it
+                fields.update(left_spans=((1, 3),), right_spans=((1, 3),))
+            return dataclasses.replace(fake_diff(op, klass, target, made), **fields)
+
+        def last_letter(i):  # U3: ONE letter changed, the list's hardest case
+            word = lw[i].text
+            made = word[:-1] + ("o" if word[-1] != "o" else "a")
+            n = len(word)
+            return dataclasses.replace(diff("cambiato", "testo", i, generated=made),
+                                       left_spans=((n - 1, n),), right_spans=((n - 1, n),))
+
+        def one_more(i, tail, base=None):  # one character added at the end of the word
+            n = len(lw[i].text)
+            return dataclasses.replace(base or diff("cambiato", "testo", i),
+                                       right_text=lw[i].text + tail, left_spans=((n, n),),
+                                       right_spans=((n, n + len(tail)),))
+
+        da_fare = last_letter(20)
+        stuck = one_more(34, "e")
+        before = diff("cambiato", "testo", 48, generated="prima")
+        now = one_more(48, "i", before)
+        promised = diff("cambiato", "testo", 62, generated=rw[62].text.upper())
+        done = diff("mancante", "testo", 76, 2, right=False)
+        by_hand = diff("cambiato", "testo", 104, generated=rw[104].text + "!")
+        link = fake_diff("cambiato", "link", "Scopri le condizioni", "Scopri le condizioni",
+                         before="Per i dettagli", after="del servizio.",
+                         detail="href: https://example.invalid/condizioni → "
+                                "https://example.invalid/condizioni-2025")
+        tobe = [
+            diff("in_piu", "testo", 6, 2, left=False),               # regressione
+            da_fare, stuck, now, promised,
+            diff("cambiato", "stile", 90),                            # tollerata (profilo)
+            by_hand,                                                  # tollerata a mano
+            diff("cambiato", "rumore", 118),
+            diff("cambiato", "variabile", 132, 2),
+            link,                                                     # solo nell'elenco
+        ]
+        # U2: a v1-only difference, so that a mark made in v1 is "risolta" in v2
+        extra = fake_diff("cambiato", "testo", "Titolo di esempio", "Titolo")
+        api.set_canned(case_id, 0, [da_fare, stuck, before, promised, done, by_hand, link])
+        api.set_canned(case_id, 1, [*tobe, extra])
+        api.set_canned(case_id, 2, tobe)
+        case = next(c for c in ini.cases if c.id == case_id)
+        v1, v2 = case.tobe_versions()[:2]
+        first = api.compare_case(ini, case, v1)
+        api.mark_done(case, next(j for j in first.judged if j.diff.anchor == stuck.anchor), 1)
+        second = api.compare_case(ini, case, v2)  # verifies the v1 mark: still there
+        by_anchor = {j.diff.anchor: j for j in second.judged}
+        api.mark_done(case, by_anchor[promised.anchor], 2)
+        api.tolerate(case, by_anchor[by_hand.anchor], "scelta di esempio")
+        officina_state.update(stuck=stuck, extra=extra, one_letter=da_fare, in_corso=now, link=link)
 
     def officina_list() -> None:
         officina_setup()
@@ -631,6 +707,382 @@ def main(argv: list[str] | None = None) -> int:
         if view.diffs.list.count():
             view.diffs.list.setCurrentRow(0)
         pump(900)
+
+    def officina_case_verdicts() -> None:
+        """Phase 2 (U1): case B's v2 judged by the scripted fake — every verdict
+        and state drawn by verdict, the fatte shown, the regression focused."""
+        officina_case()
+        view = window.page("officina").case_view
+        for side in (view.left, view.right):
+            side.view.set_show_done(True)
+        pump(600)
+
+    class _Restoring(_Kept):
+        """The window, then ``undo`` once it has been grabbed."""
+
+        def __init__(self, widget, undo) -> None:
+            super().__init__(widget)
+            self._undo = undo
+
+        def close(self) -> None:
+            self._undo()
+
+    def officina_measure(what: str) -> None:
+        """Where the documents start (R28: well above 45% of the window height)."""
+        from PySide6.QtCore import QPoint
+
+        view = window.page("officina").case_view
+        top = view.left.view.mapTo(window, QPoint(0, 0)).y()
+        print(f"{what}: documents start at y={top} of {window.height()} "
+              f"({100 * top / window.height():.1f}%)")
+
+    def officina_open_case_version(number: int):
+        from qtrequestory.ui.pages.officina_docside import version_key
+
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        case = page._case(state["case"])
+        page.open_case(case.id, version_key(case.tobe_versions()[number - 1]))
+        pump(2500)
+        return page, case
+
+    def officina_case_verification():
+        """Phase 2 (U2): two marks made in v1, v2 opened: one resolved (gone),
+        one "non risolta" (still identical) — the outcome banner; the v2 mark
+        still waits (the blue "da verificare" banner)."""
+        from qtrequestory.ui.contracts import Judged
+
+        state = officina_setup()
+        page = window.page("officina")
+        page.open_initiative(state["ini"])
+        case = page._case(state["case"])
+        api = services.officina
+        api.mark_done(case, Judged(state["stuck"], "da_fare"), 1)
+        api.mark_done(case, Judged(state["extra"], "regressione"), 1)
+        officina_open_case_version(2)
+        officina_measure("bar + marks strip + outcome strip")
+        return None
+
+    def officina_case_two_way():
+        """Phase 2 (U2): case B judged without an AS-IS comparison (its canned
+        entry 0 put aside for this picture): the two-way warning."""
+        state = officina_setup()
+        canned = services.officina.canned[state["case"]]
+        asis = canned.pop(0)
+        officina_open_case_version(2)
+        officina_measure("two-way (bar + marks strip)")
+
+        def undo() -> None:
+            canned[0] = asis
+
+        return _Restoring(window, undo)
+
+    def officina_case_no_text():
+        """R49 (final review): case B's v2 came back without text (the canned
+        comparison says so; the viewer still draws the fake's PDF) — no
+        verdict, no progress bar, the note instead of the list."""
+        from tests.fakes.fake_core import fake_comparison
+
+        state = officina_setup()
+        canned = services.officina.canned[state["case"]]
+        v2 = canned[2]
+        canned[2] = fake_comparison([], right_has_text=False, note="il TO-BE non ha testo estraibile")
+        officina_open_case_version(2)
+
+        def undo() -> None:
+            canned[2] = v2
+
+        return _Restoring(window, undo)
+
+    class _WithMenu:
+        """The window with a popup menu painted where it opened (a popup is a
+        window of its own: ``window.grab()`` would miss it)."""
+
+        def __init__(self, menu) -> None:
+            self.menu = menu
+
+        def grab(self):
+            from PySide6.QtGui import QPainter
+
+            shot = window.grab()
+            painter = QPainter(shot)
+            painter.drawPixmap(self.menu.pos() - window.mapToGlobal(window.rect().topLeft()),
+                               self.menu.grab())
+            painter.end()
+            return shot
+
+        def close(self) -> None:
+            self.menu.hide()
+
+        def deleteLater(self) -> None:
+            pass
+
+    pill_state: dict[str, object] = {}
+
+    def officina_pills_setup():
+        """U5: an initiative whose cases show one board pill each — every worst
+        state, a summary of an older TO-BE ("da riconfrontare"), nothing that
+        counts, and no TO-BE — from summaries saved in ``riepilogo`` (the board
+        compares nothing)."""
+        if pill_state:
+            return pill_state
+        from datetime import datetime
+
+        from qtrequestory.ui.contracts import CaseSummary
+
+        officina_setup()
+        api = services.officina
+        docs = officina_pdfs()
+        payloads = tmp / "officina-pill-payloads"
+        payloads.mkdir(exist_ok=True)
+        ini = api.create_initiative("Pillole della bacheca")
+        rows = [  # key, TO-BE versions, summary counts (version, avanzamento last)
+            ("MOD_TEST_PILL_REGRESSIONE", 1, dict(regressioni=1, non_risolte=1, da_fare=3,
+                                                  in_corso=2, da_verificare=1, fatte=2,
+                                                  tollerate=2, variabili=3, rumore=1), 1, 0.25),
+            ("MOD_TEST_PILL_NON_RISOLTA", 1, dict(da_fare=3, non_risolte=1, fatte=2), 1, 0.4),
+            ("MOD_TEST_PILL_DA_FARE", 1, dict(da_fare=2, fatte=4, variabili=8), 1, 0.67),
+            ("MOD_TEST_PILL_IN_CORSO", 1, dict(in_corso=2, fatte=5), 1, 0.71),
+            ("MOD_TEST_PILL_DA_VERIFICARE", 1, dict(da_fare=2, da_verificare=2, fatte=4), 1, 0.67),
+            ("MOD_TEST_PILL_FATTA", 1, dict(fatte=6, tollerate=2), 1, 1.0),
+            ("MOD_TEST_PILL_VECCHIO", 2, dict(regressioni=1, da_fare=1, fatte=2), 1, 0.5),
+            ("MOD_TEST_PILL_NIENTE", 1, dict(tollerate=2, rumore=1), 1, 1.0),
+            ("MOD_TEST_PILL_SENZA_TOBE", 0, None, 0, 0.0),
+        ]
+        for key, *_rest in rows:
+            path = payloads / f"{key}.json"
+            path.write_text('{"documents": [{"template": {"templateKey": "%s"}}]}' % key,
+                            encoding="utf-8")
+            api.case_from_file(ini, path, key)
+        ini = api.load(ini.id)
+        cases = {c.key: c for c in ini.cases}
+        api.set_response(docs["right"][0].read_bytes())
+        zero = dict(fatte=0, da_fare=0, in_corso=0, regressioni=0, da_verificare=0,
+                    non_risolte=0, tollerate=0, variabili=0, rumore=0)
+        for key, versions, counts, version, progress in rows:
+            case = cases[key]
+            api.set_target(case, docs["left"][0])
+            for _ in range(versions):
+                api.generate(ini, case, "tobe")
+            if counts is not None:
+                # now and two-way (no AS-IS here): else the board says "da riconfrontare" (I1)
+                summary = CaseSummary(version=version, **{**zero, **counts}, avanzamento=progress,
+                                      two_way=True, when=datetime.now().isoformat(timespec="seconds"))
+                api._commit_review(None, case, dataclasses.replace(case.review, summary=summary))
+        pill_state.update(ini=ini.id, tip=cases["MOD_TEST_PILL_REGRESSIONE"].id)
+        return pill_state
+
+    class _WithTip(_WithMenu):
+        """The window with the tooltip painted where it shows (its own window)."""
+
+        def close(self) -> None:
+            from PySide6.QtWidgets import QToolTip
+
+            QToolTip.hideText()
+
+    def officina_board_pills():
+        """U5: the board of "Pillole della bacheca", the tooltip of the first
+        pill (the full breakdown) showing."""
+        from PySide6.QtWidgets import QApplication, QLabel, QToolTip
+
+        from qtrequestory.ui.pages.officina_board import COL_PILL
+
+        state = officina_pills_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        pump(600)
+        board = page.board
+        row = next(r for r, c in enumerate(board._cases()) if c.id == state["tip"])
+        label = board.table.cellWidget(row, COL_PILL).findChild(QLabel)
+        at = label.mapToGlobal(label.rect().topRight())  # beside it: the rows below stay visible
+        at.setX(at.x() + 24)
+        QToolTip.showText(at, label.toolTip(), label)
+        pump(400)
+        tip = next((w for w in QApplication.topLevelWidgets()
+                    if w.metaObject().className() == "QTipLabel" and w.isVisible()), None)
+        return _WithTip(tip) if tip is not None else None
+
+    minimap_state: dict[str, object] = {}
+
+    def officina_minimap_setup():
+        """U5: a case of its own ("Minimappa") whose v1 has differences on
+        pages 1 to 12 of the synthetic 12-page PDFs, one of every verdict, so
+        the minimaps spread over the whole document height."""
+        if minimap_state:
+            return minimap_state
+        from tests.fakes.fake_core import fake_diff
+
+        officina_setup()
+        api = services.officina
+        docs = officina_pdfs()
+        lw, rw = docs["left"][1].words, docs["right"][1].words
+        path = tmp / "officina-minimap.json"
+        path.write_text('{"documents": [{"template": {"templateKey": "MOD_TEST_MINIMAPPA"}}]}',
+                        encoding="utf-8")
+        ini = api.create_initiative("Minimappa")
+        api.case_from_file(ini, path, "MOD_TEST_MINIMAPPA")
+        ini = api.load(ini.id)
+        case = ini.cases[0]
+        api.set_target(case, docs["left"][0])
+        api.set_response(docs["right"][0].read_bytes())
+        api.generate(ini, case, "asis")
+        api.generate(ini, case, "tobe")
+
+        def on(page, i, klass="testo", generated=None):
+            lwords = tuple(w for w in lw if w.page == page)[i:i + 2]
+            rwords = tuple(w for w in rw if w.page == page)[i:i + 2]
+            target = " ".join(w.text for w in lwords)
+            return dataclasses.replace(
+                fake_diff("cambiato", klass, target, generated or target.upper(),
+                          context=f"p{page}"), left=lwords, right=rwords)
+
+        regression, todo, moving, marked = on(1, 60), on(3, 120), on(5, 30), on(8, 90)
+        done, tolerated, late = on(10, 150), on(6, 200, "stile"), on(11, 40)
+        asis = [todo, dataclasses.replace(moving, right_text="prima"), marked, done, late]
+        api.set_canned(case.id, 0, asis)
+        api.set_canned(case.id, 1, [regression, todo, moving, marked, tolerated, late])
+        first = api.compare_case(ini, case, case.tobe_versions()[0])
+        api.mark_done(case, next(j for j in first.judged if j.diff.anchor == marked.anchor), 1)
+        minimap_state.update(ini=ini.id, case=case.id)
+        return minimap_state
+
+    def officina_case_minimap():
+        """U5: the "Minimappa" case, v1: the minimap beside each document's
+        scroll bar, the fatte shown (their segment appears on the target side)."""
+        state = officina_minimap_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        page.open_case(state["case"], "v1")
+        pump(2500)
+        view = page.case_view
+        for side in (view.left, view.right):
+            side.view.set_show_done(True)
+        pump(900)
+
+    def officina_case_profile():
+        """Phase 2 (U2): the header's profile menu open on case B."""
+        page, _case = officina_open_case_version(2)
+        button = page.case_view.profile_button
+        menu = button.menu()
+        menu.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        corner = button.mapToGlobal(button.rect().bottomRight())
+        corner.setX(corner.x() - menu.sizeHint().width())  # inside the window's right edge
+        menu.popup(corner)
+        pump(300)
+        return _WithMenu(menu)
+
+    def officina_list_select(tab: str, key: str | None = None, *, verification: bool = False):
+        """Phase 2 (U3): case B's v2, the list on ``tab`` with the row of the
+        scripted diff ``officina_state[key]`` selected (by anchor)."""
+        def prepare():
+            if verification:
+                officina_case_verification()
+            else:
+                officina_open_case_version(2)
+            view = window.page("officina").case_view
+            view.diffs.set_tab(tab)
+            if key is not None:
+                anchor = officina_state[key].anchor
+                target = next(j for j in view.docs.judged.judged if j.diff.anchor == anchor)
+                view.diffs.select(target.diff.id)
+                view.sync.focus_difference(target.diff.id)
+            elif view.diffs.row_ids():
+                view.diffs.select(view.diffs.row_ids()[0])
+            view.diffs.list.setFocus()
+            pump(900)
+            return None
+        return prepare
+
+    def _open_diff_near_right_edge():
+        """U4: case B's v2 zoomed in, the counting difference whose box ends
+        furthest right scrolled against the right edge of the TO-BE viewport,
+        then clicked (a real click): selected, with its mini-bar."""
+        from PySide6.QtTest import QTest
+
+        from qtrequestory.ui.pages.officina_rows import OPEN_STATES
+        from qtrequestory.ui.pages.officina_verdict_style import state_of
+
+        page, _case = officina_open_case_version(2)
+        view = page.case_view
+        doc = view.right.view
+        shown = [j for j in view.docs.judged.judged if doc.highlight_items(j.diff.id)]
+        candidates = ([j for j in shown if state_of(j) == "da_fare"]
+                      or [j for j in shown if state_of(j) in OPEN_STATES])
+        j = max(candidates, key=lambda x: doc.difference_rect(x.diff.id).right())
+        doc.set_zoom(2.0)
+        pump(300)
+        rect = doc.difference_rect(j.diff.id)
+        doc.centerOn(rect.center())
+        pump(100)
+        hbar = doc.horizontalScrollBar()
+        right = doc.mapFromScene(rect.topRight()).x()
+        hbar.setValue(hbar.value() + right - (doc.viewport().width() - 10))
+        pump(300)
+        item = doc.highlight_items(j.diff.id)[0]
+        QTest.mouseClick(doc.viewport(), Qt.MouseButton.LeftButton,
+                         pos=doc.mapFromScene(item.rect().center()))
+        pump(600)
+        bar = view.bars["right"]
+        print(f"mini-bar: diff {j.diff.id} ({state_of(j)}) highlight "
+              f"{doc.mapFromScene(rect).boundingRect()} bar {bar.geometry()} "
+              f"viewport {doc.viewport().geometry()} "
+              f"inside={doc.viewport().geometry().contains(bar.geometry())} visible={bar.isVisible()}")
+        return page, j
+
+    def officina_action_bar():
+        _open_diff_near_right_edge()
+        return None
+
+    def officina_action_menu():
+        """U4: the right-click menu of a "da fare" difference (grabbed where it opened)."""
+        page, j = _open_diff_near_right_edge()
+        view = page.case_view
+        doc = view.right.view
+        view.hide_bars()
+        at = doc.viewport().mapToGlobal(doc.mapFromScene(doc.difference_rect(j.diff.id).center()))
+        view.open_review_menu(j.diff.id, at)
+        menu = view.menu
+        menu.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        if menu.pos().x() + menu.width() > window.mapToGlobal(window.rect().topRight()).x():
+            menu.move(at.x() - menu.width(), at.y())  # a real screen flips it the same way
+        pump(300)
+        return _WithMenu(menu)
+
+    def officina_action_toast():
+        """U4: the toast after "✓ Fatta" in the mini-bar; the mark is undone
+        after the grab (Ctrl+Z path), so the next scenes see case B unchanged."""
+        page, _j = _open_diff_near_right_edge()
+        bar = page.case_view.bars["right"]
+        bar.done_button.click()
+        end = time.monotonic() + 10
+        while (page.case_view.acting or not window.toast.isVisible()) and time.monotonic() < end:
+            pump(100)
+        pump(300)
+
+        def undo() -> None:
+            page.undo_review()
+            end = time.monotonic() + 10
+            while page.case_view.acting and time.monotonic() < end:
+                pump(100)
+            window.toast.hide()
+
+        return _Restoring(window, undo)
+
+    def officina_action_note():
+        """U4: "Tollera…": the small note dialog, grabbed on its own."""
+        from qtrequestory.ui.pages.officina_actions_bar import TolerateDialog
+
+        officina_setup()
+        dialog = TolerateDialog(officina_state["one_letter"].left_text, window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.edit.setText("Il cliente accetta la nuova dicitura")
+        dialog.show()
+        pump(300)
+        return dialog
 
     def officina_board_sending() -> None:
         """The board while a case is on its way: "Generazione su svil…"."""
@@ -738,17 +1190,391 @@ def main(argv: list[str] | None = None) -> int:
         pump(300)
         return dialog
 
+    # -- U6: the noise rules dialog and the DOM tab --------------------------------
+
+    email_pretty = "\n".join([
+        "<!DOCTYPE html>", "<html>", "  <head>", "    <title>", "      Comunicazione Acme-Servizi",
+        "    </title>", "  </head>", "  <body>", "    <table>", "      <tr>", "        <td>",
+        "          <img src=\"https://example.invalid/img/logo.png\" alt=\"Acme-Servizi\">",
+        "        </td>", "      </tr>", "      <tr>", "        <td>", "          Gentile cliente,",
+        "        </td>", "      </tr>", "    </table>", "    <p>",
+        "      la sua richiesta n. PR-204518 del 12/03/2026 è stata presa in carico.", "    </p>",
+        "    <p>", "      Per i dettagli",
+        "      <a href=\"https://example.invalid/condizioni?utm_source=mail&amp;utm_campaign=x\">",
+        "        Scopri le", "        <b>", "          condizioni", "        </b>", "      </a>",
+        "      del servizio.", "    </p>", "    <ul>", "      <li>", "        Attivazione entro 5 giorni",
+        "      </li>", "      <li>", "        Assistenza dedicata", "      </li>", "    </ul>", "    <p>",
+        "      Cordiali saluti,", "      <br>", "      Acme-Servizi", "    </p>", "  </body>", "</html>"])
+    email_generated = (email_pretty
+                       .replace("condizioni?utm_source=mail&amp;utm_campaign=x", "condizioni-2026")
+                       .replace("Attivazione entro 5 giorni", "Attivazione entro 7 giorni")
+                       .replace("PR-204518 del 12/03/2026", "PR-377120 del 25/09/2026"))
+
+    def officina_html_case() -> None:
+        """U6: an HTML case (target and TO-BE e-mails) in the second
+        initiative, the DOM sources scripted as the engine prints them."""
+        api = services.officina
+        ini = api.load("Rinnovo moduli")
+        payload = tmp / "officina-payloads" / "MOD_TEST_EMAIL_F.json"
+        payload.write_text('{"documents": [{"template": {"templateKey": "MOD_TEST_EMAIL_F"}}]}',
+                           encoding="utf-8")
+        api.case_from_file(ini, payload, "MOD_TEST_EMAIL_F", "")
+        ini = api.load(ini.id)
+        case = ini.cases[0]
+        target = tmp / "officina-payloads" / "Email del cliente.html"
+        body = "".join(f"<p>{line.strip()}</p>" for line in email_pretty.splitlines()
+                       if line.strip() and not line.strip().startswith("<"))
+        body += "<p>Messaggio generato automaticamente, non rispondere.</p>" * 8  # not "too short"
+        target.write_text(f"<html><body>{body}</body></html>", encoding="utf-8")
+        api.set_target(case, target)
+        api.set_response(f"<html><body>{body}</body></html>".encode())
+        api.generate(ini, case, "tobe")
+        from tests.fakes.fake_core import canned_pdf, fake_diff
+
+        api.set_response(canned_pdf("x"))
+
+        link = fake_diff("cambiato", "link", "https://example.invalid/condizioni",
+                         "https://example.invalid/condizioni-2026", before="Per i dettagli",
+                         after="del servizio.",
+                         detail="href: https://example.invalid/condizioni → "
+                                "https://example.invalid/condizioni-2026")
+        text = fake_diff("cambiato", "testo", "5", "7", before="Attivazione entro", after="giorni")
+        noise = fake_diff("cambiato", "rumore", "PR-204518", "PR-377120", before="richiesta n.",
+                          after="del")
+        api.set_canned(case.id, 1, [noise, link, text])
+        api.set_dom_view(case.id, (email_pretty, email_generated))
+        api.set_noise_text(case.id, email_pretty + "\n" + email_generated)
+        officina_state.update(html_ini=ini.id, html_case=case.id, html_link=link)
+
+    def officina_noise_dialog():
+        """U6: "Regole di rumore…" of the HTML case: the presets all off, two
+        rules of the case — one counted, one whose regex does not compile."""
+        from qtrequestory.ui import strings as s
+        from qtrequestory.ui.contracts import NoiseRule
+        from qtrequestory.ui.pages.officina_format import case_title
+        from qtrequestory.ui.pages.officina_noise import NoiseDialog
+
+        state = officina_setup()
+        page = window.page("officina")
+        page.open_initiative(state["html_ini"])
+        case = page._case(state["html_case"])
+        rules = [NoiseRule("Codice pratica", r"PR-\d{6}"), NoiseRule("Saluti", r"(Cordiali saluti")]
+        dialog = NoiseDialog(s.RUMORE_TITLE_CASE.format(name=case_title(case)),
+                             services.officina.noise_presets(), set(), rules,
+                             own_title=s.RUMORE_OWN_CASE, counter=page._counter(case),
+                             counts_note=s.RUMORE_COUNTS_ON.format(case=case_title(case)), parent=window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.resize(820, 600)
+        dialog.show()
+        end = time.monotonic() + 10
+        while dialog.is_counting() and time.monotonic() < end:
+            pump(100)
+        pump(300)
+        print("noise counts:", [dialog.hits_shown(dialog.own, r) for r in range(dialog.own.rowCount())])
+        return dialog
+
+    def officina_case_dom():
+        """U6: the DOM tab of the HTML case, the link difference selected in the list."""
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["html_ini"])
+        page.open_case(state["html_case"])
+        pump(2500)
+        view = page.case_view
+        view.set_dom_mode(True)
+        end = time.monotonic() + 10
+        while view.dom.stack.currentWidget() is not view.dom.splitter and time.monotonic() < end:
+            pump(100)
+        anchor = state["html_link"].anchor
+        target = next(j for j in view.docs.judged.judged if j.diff.anchor == anchor)
+        view.diffs.list.setCurrentRow(view.diffs.row_ids().index(target.diff.id))
+        pump(600)
+        print("dom: link on lines", view.dom.line_of(target.diff.id))
+        return None
+
+    engine_state: dict[str, object] = {}
+    engine_lines = ["Contratto di prova per Acme-Servizi, modulo di adesione.",
+                    "Il prezzo resta fisso per dodici mesi dalla data di attivazione.",
+                    "La carta sarà abilitata agli acquisti online e nei negozi.",
+                    "Pagamento con addebito mensile anticipato sul conto indicato.",
+                    "Il servizio clienti risponde entro tre giorni lavorativi.",
+                    "Località ..........",
+                    "Firma del cliente in calce al modulo, con la data."]
+
+    def officina_engine_setup():
+        """I1: a case of the third initiative ("Motore reale") whose
+        comparisons come from the REAL engine (``compare_docs`` on synthetic
+        PDFs, canned into the fake: its verdicts equal the service's, the
+        fidelity test says so). AS-IS, v1, v2: one fatta, one in corso, marks
+        made in v1 (one resolved, a stuck da fare, a stuck regressione), a
+        tolerance whose difference is gone in v2 (inactive), a new v2
+        regression, a variable slot. A second case, compared two-way, then
+        given an AS-IS: its board pill says "da riconfrontare"."""
+        if engine_state:
+            return engine_state
+        from qtrequestory.officina.compare.extract_pdf import extract
+        from qtrequestory.officina.compare.pipeline import compare_docs
+        from tests.fakes.fake_core import canned_pdf
+        from tests.officina import pdfgen
+
+        officina_setup()
+        api = services.officina
+        folder = tmp / "officina-motore"
+        folder.mkdir(exist_ok=True)
+        filler = [pdfgen.lorem(70, seed=40 + n) for n in range(6)]
+
+        def pdf(name: str, *changes: tuple[str, str], extra: str = "", font_pt: float = 11) -> Path:
+            lines = []
+            for line in engine_lines:
+                for old, new in changes:
+                    line = line.replace(old, new)
+                lines.append(line)
+            body = [*lines[:3], *filler[:3], *lines[3:], *filler[3:]] + ([extra] if extra else [])
+            return pdfgen.paragraphs_pdf(folder / f"{name}.pdf", body, font_pt=font_pt)
+
+        target = pdf("target")
+        bodies = {
+            "asis": pdf("asis", ("dodici", "ventiquattro"), ("abilitata", "abilitato"),
+                        ("mensile", "trimestrale"), ("tre giorni", "cinque giorni"),
+                        ("..........", "Springfield"), font_pt=12),  # + a style change (Stretto only)
+            1: pdf("v1", ("dodici", "ventiquattro"), ("abilitata", "abilitato"), ("tre giorni", "cinque giorni"),
+                   ("Firma del", "Firme del"), ("calce", "calse"), ("..........", "Springfield")),
+            2: pdf("v2", ("abilitata", "abilitato"), ("tre giorni", "quattro giorni"), ("Firma del", "Firme del"),
+                   ("..........", "Shelbyville"), extra="Paragrafo aggiunto soltanto nella seconda versione."),
+        }
+        payloads = tmp / "officina-payloads"
+        ini = api.create_initiative("Motore reale")
+        for key in ("MOD_TEST_MOTORE_G", "MOD_TEST_MOTORE_H"):
+            path = payloads / f"{key}.json"
+            path.write_text('{"documents": [{"template": {"templateKey": "%s"}}]}' % key, encoding="utf-8")
+            api.case_from_file(ini, path, key, "")
+        ini = api.load(ini.id)
+        case, other = sorted(ini.cases, key=lambda c: c.key)
+        target_doc = extract(target)
+        for c in (case, other):
+            api.set_target(c, target)
+        api.set_response(bodies["asis"].read_bytes())
+        api.generate(ini, case, "asis")
+        api.set_canned(case.id, 0, compare_docs(target_doc, extract(bodies["asis"]), right_label="AS-IS"))
+        for number in (1, 2):
+            api.set_response(bodies[number].read_bytes())
+            api.generate(ini, case, "tobe")
+            api.set_canned(case.id, number, compare_docs(target_doc, extract(bodies[number])))
+        ini = api.load(ini.id)
+        case = next(c for c in ini.cases if c.id == case.id)
+        v1, v2 = case.tobe_versions()[:2]
+        first = api.compare_case(ini, case, v1)
+        marked = [next(j for j in first.judged if text in j.diff.left_text) for text in ("dodici", "abilitata", "Firma")]
+        api.tolerate(case, next(j for j in first.judged if "calce" in j.diff.left_text), "refuso segnalato")
+        api.compare_case(ini, case, v2)  # the tolerated difference is gone in v2: inactive
+        # the second case: compared two-way, then an AS-IS arrives (the board: da riconfrontare)
+        api.set_response(bodies[1].read_bytes())
+        api.generate(ini, other, "tobe")
+        api.set_canned(other.id, 1, compare_docs(target_doc, extract(bodies[1])))
+        other = next(c for c in api.load(ini.id).cases if c.id == other.id)
+        api.compare_case(ini, other, other.tobe_versions()[0])
+        time.sleep(1.1)  # the summary's time has seconds only
+        api.set_response(bodies["asis"].read_bytes())
+        api.generate(ini, other, "asis")
+        api.set_response(canned_pdf("x"))
+        engine_state.update(ini=ini.id, case=case.id, marked=marked)
+        return engine_state
+
+    def officina_engine_case(tab: str = "guardare", select: str | None = None, version: str = "v2",
+                             *, verify: bool = False):
+        def prepare():
+            state = officina_engine_setup()
+            page = window.page("officina")
+            if verify:  # three marks made in v1: opening v2 verifies them (every mode)
+                case = next(c for c in services.officina.load(state["ini"]).cases if c.id == state["case"])
+                for j in state["marked"]:
+                    services.officina.mark_done(case, j, 1)
+            window.show_page("officina")
+            page.open_initiative(state["ini"])
+            page.open_case(state["case"], version)
+            pump(2500)
+            view = page.case_view
+            if view.docs is not None and view.docs.judged is not None:
+                view.diffs.set_tab(tab)
+                ids = view.diffs.row_ids()
+                chosen = next((j.diff.id for j in view.docs.judged.judged
+                               if select and select in j.diff.left_text and j.diff.id in ids), None)
+                if chosen is None and ids:
+                    chosen = ids[0]
+                if chosen is not None:
+                    view.diffs.select(chosen)
+                cc = view.docs.judged
+                print("engine case:", ascii([(j.diff.op, j.diff.klass, j.verdict, j.unresolved, j.marked,
+                                              j.diff.left_text[:24]) for j in cc.judged]),
+                      "inactive", cc.inactive, "|", ascii(view.banners.outcome_text()), "|",
+                      ascii(view.diffs.tab_texts()))
+            elif view.diffs.list.count():
+                view.diffs.list.setCurrentRow(0)
+            pump(900)
+        return prepare
+
+    def officina_engine_asis_strict():
+        """I1 fix: the AS-IS view under the Stretto profile (style rows named as such)."""
+        state = officina_engine_setup()
+        api = services.officina
+        ini = api.load(state["ini"])
+        case = next(c for c in ini.cases if c.id == state["case"])
+        api.set_profile(ini, case, "stretto")
+        officina_engine_case(version="asis")()
+
+        def undo() -> None:
+            api.set_profile(api.load(state["ini"]), case, None)
+
+        return _Restoring(window, undo)
+
+    def officina_engine_done():
+        """R45: "✓ Mostra fatte" on: the fatte underlined in green on the target
+        side and in its minimap."""
+        officina_engine_case()()
+        view = window.page("officina").case_view
+        view.done_button.setChecked(True)
+        pump(600)
+
+    def officina_engine_more_menu():
+        """R45: the case header's "⋯" menu with "Azzera tolleranze…"."""
+        officina_engine_case()()
+        view = window.page("officina").case_view
+        menu = view.more_button.menu()
+        menu.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        at = view.more_button.mapToGlobal(view.more_button.rect().bottomRight())
+        menu.popup(at)
+        menu.move(at.x() - menu.sizeHint().width(), at.y())
+        pump(300)
+        return _WithMenu(menu)
+
+    def officina_html_without_edge():
+        """R45 (spec §6): an HTML case whose print fails (Edge missing): the
+        DOM comparison, the viewers' notice, the DOM tab as the main view."""
+        state = officina_setup()
+        api = services.officina
+        if "noedge_case" not in state:
+            ini = api.load(state["html_ini"])
+            payload = tmp / "officina-payloads" / "MOD_TEST_EMAIL_SENZA_EDGE.json"
+            payload.write_text('{"documents": [{"template": {"templateKey": "MOD_TEST_EMAIL_SENZA_EDGE"}}]}',
+                               encoding="utf-8")
+            api.case_from_file(ini, payload, "MOD_TEST_EMAIL_SENZA_EDGE", "")
+            ini = api.load(ini.id)
+            case = next(c for c in ini.cases if c.key == "MOD_TEST_EMAIL_SENZA_EDGE")
+            body = "".join(f"<p>{line.strip()}</p>" for line in email_pretty.splitlines()
+                           if line.strip() and not line.strip().startswith("<"))
+            body += "<p>Senza stampa: confronto sul DOM.</p>" * 8
+            target = tmp / "officina-payloads" / "Email senza Edge.html"
+            target.write_text(f"<html><body>{body}</body></html>", encoding="utf-8")
+            api.set_target(case, target)
+            api.set_response(f"<html><body>{body}</body></html>".encode())
+            api.generate(ini, case, "tobe")
+            from tests.fakes.fake_core import canned_pdf
+
+            api.set_response(canned_pdf("x"))
+            api.set_canned(case.id, 1, list(api.canned[state["html_case"]][1].diffs))
+            api.set_dom_view(case.id, (email_pretty, email_generated))
+            state["noedge_case"] = case.id
+        api.set_print_error("Microsoft Edge non trovato")
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["html_ini"])
+        page.open_case(state["noedge_case"])
+        pump(2500)
+        view = page.case_view
+        end = time.monotonic() + 10
+        while view.dom.stack.currentWidget() is not view.dom.splitter and time.monotonic() < end:
+            pump(100)
+        print("no print: dom mode", view.dom_mode(), "|", ascii(view.left.message_text()[:60]))
+
+        def undo() -> None:
+            api.set_print_error(None)
+
+        return _Restoring(window, undo)
+
+    def officina_html_without_edge_documents():
+        """The same case, "Documenti" chosen: the viewers' notice in place of the print."""
+        restoring = officina_html_without_edge()
+        view = window.page("officina").case_view
+        view.set_dom_mode(False)
+        pump(400)
+        return restoring
+
+    def officina_engine_board():
+        state = officina_engine_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        pump(1200)
+
+    def officina_engine_confirm(which: str):
+        """I1: the "Target…" (R29) and "Segna accettato" (spec §5.4) questions,
+        as ``officina_dialogs.confirm`` asks them, on the engine case."""
+        def prepare():
+            from PySide6.QtWidgets import QMessageBox
+
+            from qtrequestory.ui import strings as s
+
+            officina_engine_case()()
+            page = window.page("officina")
+            case = page._case(page.case_id)
+            if which == "target":
+                title, text = s.OFFICINA_TARGET_REPLACE_TITLE, s.OFFICINA_TARGET_REPLACE
+            else:
+                title, text = s.OFFICINA_MARK_ACCEPTED, page.case_view.acceptance_warning()
+            box = QMessageBox(QMessageBox.Icon.Question, title, text,
+                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, window)
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            box.show()
+            pump(300)
+            print("confirm:", ascii(text))
+            return box
+        return prepare
+
     scenes += [
         ("officina-consegna", officina_delivery_dialog),
         ("officina-consegna-riepilogo", officina_delivery_summary),
         ("officina-cartella", officina_chooser),
         ("officina-iniziative", officina_list),
         ("officina-bacheca", officina_board),
+        ("officina-bacheca-pillole", officina_board_pills),
+        ("officina-caso-minimappa", officina_case_minimap),
         ("officina-caso", officina_case),
+        ("officina-caso-verdetti", officina_case_verdicts),
+        ("officina-caso-verifica", officina_case_verification),
+        ("officina-caso-due-vie", officina_case_two_way),
+        ("officina-caso-senza-testo", officina_case_no_text),
+        ("officina-caso-profilo", officina_case_profile),
+        ("officina-elenco-una-lettera", officina_list_select("guardare", "one_letter")),
+        ("officina-elenco-da-verificare", officina_list_select("verificare")),
+        ("officina-elenco-non-risolta", officina_list_select("guardare", "stuck", verification=True)),
+        ("officina-elenco-in-corso", officina_list_select("guardare", "in_corso")),
+        ("officina-elenco-link", officina_list_select("guardare", "link")),
+        ("officina-azioni-mini-barra", officina_action_bar),
+        ("officina-azioni-menu", officina_action_menu),
+        ("officina-azioni-toast", officina_action_toast),
+        ("officina-azioni-tollera-nota", officina_action_note),
         ("officina-bacheca-invio", officina_board_sending),
         ("officina-caso-invio", officina_case_sending),
         ("officina-payload-header", officina_editor),
         ("officina-aggiungi", officina_add_dialog),
+        ("officina-rumore", officina_noise_dialog),
+        ("officina-caso-dom", officina_case_dom),
+        # I1: the real engine's comparisons behind the case view
+        ("officina-motore-caso", officina_engine_case(verify=True)),
+        ("officina-motore-regressione-non-risolta", officina_engine_case(select="Firma")),
+        ("officina-motore-in-corso", officina_engine_case(select="tre giorni")),
+        ("officina-motore-tutte-inattive", officina_engine_case("tutte")),
+        ("officina-motore-asis", officina_engine_case(version="asis")),
+        ("officina-motore-asis-stretto", officina_engine_asis_strict),
+        ("officina-motore-bacheca", officina_engine_board),
+        ("officina-motore-conferma-target", officina_engine_confirm("target")),
+        ("officina-motore-conferma-accetta", officina_engine_confirm("accept")),
+        ("officina-motore-mostra-fatte", officina_engine_done),
+        ("officina-motore-menu-azzera", officina_engine_more_menu),
+        ("officina-html-senza-edge", officina_html_without_edge),
+        ("officina-html-senza-edge-documenti", officina_html_without_edge_documents),
     ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]

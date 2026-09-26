@@ -101,6 +101,10 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 | Enter / double-click | Officina list, board | open the initiative / the case |
 | F5 | Officina case | Rigenera TO-BE (the same `GenerationQueue` as the board) |
 | Enter / click | Officina differences list | focus the difference in both viewers |
+| ↑ / ↓ | Officina differences list | previous / next row (over the "DA VERIFICARE" header) |
+| F / T / V | Officina list or viewer | segna fatta / tollera / non è una variabile (toggles), then the next row |
+| Ctrl+Z | Officina case | undo the last review action of this case |
+| click / double-click / right-click | Officina highlight | select + mini-bar / segna fatta / action menu |
 | Ctrl+wheel | Officina viewer | zoom (the other viewer follows while in sync) |
 
 The Ricerca shortcuts are `QShortcut`s on the **page** (`WidgetWithChildrenShortcut`,
@@ -393,7 +397,7 @@ starts the sync on Sincronizzazione if requested.
 - After a sync, index, import or recycle job the page refreshes coverage, keys and the
   backlog banner (`on_data_changed`) and **keeps** the current results and period.
 
-## Officina tab (phase 1)
+## Officina tab (phases 1 and 2)
 
 The template developer's workbench (README §Officina): initiatives of cases, each case
 brought from its AS-IS to the customer's TARGET through TO-BE versions, then delivered to
@@ -401,6 +405,13 @@ the testers. The page reaches the Officina **only** through `services.officina`
 (`OfficinaApi` in `ui/contracts.py`, DESIGN-core §Officina), plus one lazy call to
 `officina.pdf.page_sizes` inside a worker. Importing any `officina_*` UI module never loads
 PDFium (subprocess tests); `officina_page` is reached only through the page factory.
+Phase 2 (release 1.3.0) turned the case workbench into a verdict-first view: every
+difference of a TO-BE is drawn and listed by its **verdict** (DESIGN-core §Comparison
+engine), with progress, marks to verify, keyboard actions, a minimap and, for HTML, a DOM
+tab. The phase-2 modules are `officina_{progress,strip,banners,verdict_style,minimap,
+diffs,difflist,rows,actions_bar,review,undo,judge,compare_jobs,board_pill,noise,
+noise_cells,noise_page,dom,dom_map,dom_view,case_docs,case_extras,judged,viewer_input}.py`,
+each ≲ 400 lines.
 
 **Structure** — `officina_page.OfficinaPage` (the controller, with the user actions in the
 `officina_actions.CaseActionsMixin`) is a `QStackedWidget` with four screens:
@@ -430,8 +441,24 @@ chooser ──► list ──► board ──► case
     font/style/DPI/theme changes;
   - *Documenti*: T / A / `vN` tiles, "—" for an empty slot, a `bad` tile when the file is gone
     from disk;
-  - *TO-BE contro target*: pill "uguale" / "N differenze" / "senza testo" / "confronto non
-    riuscito" / "manca il target" / "manca il TO-BE", computed by the `officina-summary` job;
+  - *TO-BE contro target* (`officina_board_pill.board_badge`, pure): read from
+    `case.review.summary` (`caso.json` → `riepilogo`, saved by the `compare_case` of the
+    latest TO-BE when it has text, R48/R49) — the
+    board never runs a comparison. The pill shows the **worst state** present
+    (regressione > non risolta > da fare > in corso > da verificare > fatta) with its count
+    and the percentage ("▲ 1 regressione · 60%"), in the state's `Look.pill` tone, and a
+    tooltip with the full breakdown in the case bar's order and words. The counts are the
+    case bar's totals rebuilt from the summary (`board_counts`): "non risolte" is
+    `summary.non_risolte` as it is (every flagged difference, R44, exact); a mark counts as
+    "da verificare" only (the summary counts it in both, R15), taken out of the open
+    verdicts mildest first — exact when nothing is marked or one open verdict is present,
+    otherwise never milder than the bar (R42). "vN · da
+    riconfrontare" (neutral) when the summary is of an older TO-BE than the latest, or the
+    target or AS-IS changed after it (an AS-IS generated after a two-way summary, a newer
+    AS-IS or target); a muted "nessuna differenza che conta" when nothing counts; "da
+    confrontare" with a target and a TO-BE never compared; the phase-1 "manca il target" /
+    "manca il TO-BE" otherwise. After a change of the noise rules the pills keep the old
+    summaries until each case is compared again (there is no "rules changed at" time);
   - *Ultima generazione*: "oggi 11:05 · svil", "AS-IS …", "in coda…" / "Generazione su
     svil…" (the case's generator), the masked failure reason in `bad`, or "annullata prima
     dell'invio" (muted);
@@ -441,35 +468,223 @@ chooser ──► list ──► board ──► case
   A warn banner under the toolbar shows an unreadable `iniziativa.json` (then [Genera AS-IS
   mancanti] and [Rigenera TO-BE selezionati] are disabled: the header defaults are unknown)
   or what loading left out (a null header default). [Rigenera TO-BE selezionati] is also
-  disabled while the selection holds a case with an unreadable `caso.json`. Leaving the
-  board (list or case) cancels its `officina-summary` job.
+  disabled while the selection holds a case with an unreadable `caso.json`.
   Toolbar: [+ Caso da ricerca] (switches to Ricerca with a hint toast), [+ Caso da file…],
-  [Genera AS-IS mancanti], [Rigenera TO-BE selezionati], [Consegna…], [Apri cartella]; a
+  [Genera AS-IS mancanti], [Rigenera TO-BE selezionati], [Consegna…], [Regole di rumore…]
+  (the initiative's rules and presets, counts on the selected case), [Apri cartella]; a
   "Generazione: n di m" line with [Annulla generazioni] shown only on the board of an
   initiative that has cases in the queue.
-- **Case workbench** (`officina_case.CaseView`, `officina_diffs.py`): the header shows the
-  case's generator ("Generatore: svil"); toolbar [Rigenera TO-BE (F5)] [Genera AS-IS |
-  Rigenera AS-IS…] [Target…] [Payload e header…] [Segna accettato | Riapri] + a busy label
-  "Generazione su svil…"; everything that changes the case (payload, target, status) is
-  disabled while it is queued or running. A case with an unreadable `caso.json` can be
-  looked at only: editor, accept and generations disabled (saving would wipe the file);
-  the generations are disabled too while the initiative's `iniziativa.json` is unreadable.
-  Below: a warn banner for a failed generation ("Generazione non riuscita (HTTP 502):
-  <masked reason>") and a notice for a damaged `caso.json`, or "Nuova versione dopo
-  l'accettazione: da ricontrollare." after a new AS-IS/TO-BE reopened an accepted case. A splitter, 5 : 5 : 2
-  on first show: `DocSide` TARGET | `DocSide` generated document with the `VersionSwitch`
-  (AS-IS | v1…vn, the newest five, older ones in a "…" menu) | `DiffPanel` (count + one item
-  per difference, "pag. 1 · cambiato" / "«a» → «b»", elided with "…"). An item (click or
-  Enter) or a highlight click focuses the difference in **both** views. The documents and
-  the comparison are prepared in the `officina-compare` job (`render_path` + `page_sizes` +
-  `compare`); a `CompareError` or any worker failure is a sentence ("Confronto non riuscito:
-  …"), never a stuck "Preparazione…". After a successful generation the right side switches
-  to the new version and the comparison refreshes by itself.
+- **Case workbench** (`officina_case.CaseView` + the `officina_case_docs` mixin), top to
+  bottom (approved draft "caso-fase2" v1/v2):
+
+  ```
+  ‹ Iniziativa  MOD_TEST_A · abilitato  [aperto]  Generatore: svil  [Regole di rumore…] [Profilo: Tollerante ▾] [⋯]
+  [Rigenera TO-BE (F5)] [Genera AS-IS] [Target…] [Payload e header…]  [Documenti|DOM]  [Segna accettato]
+  60%  v3 contro target   ▲ 1 regressione  ○! 1 non risolta  ○ 2 da fare  ◐ 1 in corso  ✓ 6 fatte │ ⊘ 3  {x} 14
+       ▮▮▮▮▮▮▮▮▮▮▮▮▮▮ (verdict strip)                       [⚠ a due vie · Genera l'AS-IS] / [v3: 2/3 risolte]
+  ✓? 2 modifiche da verificare: pubblica su svil e rigenera il TO-BE (F5).       [Annulla i segni]
+  v3: verificate 3 modifiche segnate — 2 risolte, 1 non risolta
+  +---- TARGET ----+m+---- [AS-IS|v1|v2|v3] ----+m+-- Differenze con il target --+
+  | DocView        | | DocView                   | | tabs, rows, key legend        |
+  +----------------+-+---------------------------+-+-------------------------------+
+  ```
+  The header carries the case's generator, [Regole di rumore…] (the case's own rules) and
+  the **profile menu** (`officina_banners.ProfileButton`: Tollerante / Stretto / Solo testo
+  / "Come l'iniziativa (…)"; "Profilo: X (iniziativa) ▾" when inherited; it waits while the
+  case is being compared, then `set_profile` on the UI thread and a new comparison), then
+  a **"⋯" menu** (`officina_case_extras`, R45) with *Azzera tolleranze…*: after a question
+  ("… non si può annullare"; no undo entry) `reset_tolerances` clears the case's manual
+  tolerances and «non è una variabile», and the same version is judged again; it waits
+  ("Attendi la fine del confronto…") while the case is being compared or has queued
+  actions. The toolbar is the phase-1 one plus the *Documenti | DOM* switch (HTML cases only). Under it:
+  the progress bar, the review strips, the phase-1 notices (a damaged `caso.json`, "Nuova
+  versione dopo l'accettazione: da ricontrollare.") and the failed-generation banner. The
+  splitter holds TARGET | generated document (with the `VersionSwitch`: AS-IS | v1…vn, the
+  newest five, older ones in a "…" menu) | the DOM tab (hidden unless switched on, in place
+  of the two viewers) | the differences list, 5 : 5 : 3 on first show; each `DocView` has
+  its minimap (m) beside its scroll bar. Everything that changes the case (payload,
+  target, status) is disabled while it is queued or running; a case with an unreadable
+  `caso.json` can be looked at only; generations are disabled while the initiative's
+  `iniziativa.json` is unreadable.
+  Documents and comparisons are prepared in the `officina-compare` job
+  (`officina_jobs.load_case_docs`: `render_path` + `page_sizes`, then for a TO-BE
+  `compare_case`; `compare` only when there is no judged comparison — the AS-IS view, a
+  case being generated, a failed judge). A `CompareError` or any worker failure is a
+  sentence ("Confronto non riuscito: …"), never a stuck "Preparazione…". After a
+  successful generation the right side switches to the new version and the comparison
+  refreshes by itself; after a review action only the verdicts are redrawn
+  (`show_rejudged`: no reload, no jump to the top). The **AS-IS view** (and the fallback
+  when a judge fails) has no verdicts: no progress bar, neutral boxes with the changed
+  characters in yellow, the plain list (`DiffPanel.show_comparison`, no tabs, no keys).
+  It shows only `Comparison.counting(profile)` for the case's effective profile
+  (`CaseDocs.profile`: case → initiative → Tollerante) — variables, noise and the classes
+  the profile tolerates are left out, and highlights and the acceptance question follow
+  the same filter. Rows are named by operation and class (`officina_judged.
+  difference_lines`: "pag. 1 · cambiato · stile", "«…» (stesse parole)" for a style,
+  spacing or move, the page count's detail), never «x» → «x»; the count line says "N
+  differenze di testo", or "N differenze" when some are not text.
+  **HTML without the Edge print** (R45): when a side's print fails (Edge missing or
+  failing), a TO-BE is still judged through the DOM (`load_case_docs` marks the side
+  `no_print`): each such viewer shows "Stampa dell'HTML non disponibile (<reason>). Le
+  differenze sono nell'elenco e nella scheda DOM.", the DOM tab becomes the main view
+  (the switch is set to DOM and the sources are fetched), and the list, strip, verdicts and
+  actions work as usual. The AS-IS view (no judge) still needs the print and shows the
+  error.
   - Regenerating an existing AS-IS asks for a mandatory note (`QInputDialog`
     multi-line); blank or Cancel sends nothing.
-  - "Segna accettato" asks for confirmation while the document on screen still has text
-    differences — a phase-1 stand-in for the phase-2 verdict; it does not block. It
-    accepts the latest TO-BE (`accepted_version` in `caso.json`).
+  - "Segna accettato" (D2) never blocks, and describes the **latest** TO-BE — the one it
+    stamps (`accepted_version` in `caso.json`): its judged comparison when it is on
+    screen, else its saved summary — "Restano 1 regressione, 2 da fare, 1 da verificare.
+    Segnare il caso accettato lo stesso?" (no question when nothing is open); "L'ultimo
+    TO-BE (vN) non è ancora stato confrontato con il target." when it never was; "Il
+    confronto non è stato possibile: <note>." when a side has no extractable text (such a
+    comparison is never shown as "uguale"); without verdicts, the profile-filtered
+    question of the AS-IS view.
+  - "Target…" on a case with marks, "non risolte" or a summary first asks
+    (`OFFICINA_TARGET_REPLACE`): those are cleared, tolerances and "non è una variabile"
+    stay, active only where the text still matches (R29); "No" changes nothing.
+- **Verdict looks** (`officina_verdict_style.py`, Qt-free): one `Look` per *state* — the
+  verdict refined by the "da verificare" mark and the "non risolta" flag, or the class
+  when there is no verdict — naming theme **tokens**, never colours, so viewer, list,
+  strip, minimap and board re-derive on a theme switch. Every state is colour + glyph +
+  word (never colour alone):
+
+  | state | fill | edge | dash | px | glyph |
+  |---|---|---|---|---|---|
+  | regressione | `bad_bg` | `bad` | no | 1.5 | ▲ (flagged: ▲!) |
+  | non risolta | `warn_bg` | `warn` | no | 1.5 | ○! |
+  | da fare | `warn_bg` | `warn` | no | 1.5 | ○ |
+  | in corso | `progress_bg` | `accent` | no | 1.5 | ◐ |
+  | da verificare | — | `ok` | yes | **2** | ✓? |
+  | fatta | — (underline, target side) | `ok` | no | 1 | ✓ |
+  | tollerata | — | `muted` | yes | 1 | ⊘ |
+  | rumore | — | `muted` | yes | 1 | ~ |
+  | variabile | — (underline) | `variable` | yes | 1 | {x} |
+
+  "Non risolta" is a flag (R31, R42): on da fare and in corso the state is `non_risolta`
+  (worse than either); a flagged regressione stays `regressione` (never downgraded) with
+  the `▲!` glyph and the reason line in the list; a marked difference is "da verificare"
+  whatever its flag. A flagged regressione's label reads "regressione · non risolta" (in the
+  narrow row pill, in its tooltip). Anything the page draws **on the paper** uses the LIGHT token values
+  in both themes (`officina_overlays.PAPER`, R13: the page is white, dark tokens would be
+  faint on it); the chrome around it (pills, list, strip, minimap, bars) follows the theme.
+  Changed characters (R14): `mark_yellow` sub-rects of the word boxes, proportional to the
+  `left_spans` / `right_spans`, plus a 2 px underline in the page's ink colour, so they
+  stay visible on a `warn_bg` fill. "Fatta" is drawn only with **Mostra fatte** on (below),
+  as a thin `ok` underline on the target side.
+- **Progress bar** (`officina_progress.ProgressBar`, `officina_strip.VerdictStrip`; hidden
+  while nothing is judged): the percentage (`CaseSummary.avanzamento`, "pageTitle" role),
+  "vN contro target", then the pills in the order regressioni · non risolte · da fare · in
+  corso · da verificare · fatte and, apart and dimmed, tollerate · variabili · rumore (a
+  zero count has no pill). With the judged list at hand the totals are `pill_counts`: each
+  difference in its verdict's pill ("da verificare" when marked), and every flagged one
+  ALSO in "non risolte", whatever its verdict (R44) — so a difference can be in two totals,
+  as the "non risolte" pill's tooltip says; the pills, the outcome strip and the board
+  (`board_counts` of the summary, the same counting) agree. The **verdict strip** draws one segment per judged
+  difference that has a verdict, in document order, like the `coverage_strip` squares (a
+  non risolta amber with a red band; da verificare a dashed green outline); a click selects
+  that difference, the tooltip gives verdict, page and text. On the strip's row: the
+  two-way pill "⚠ a due vie" (the full warning as tooltip) with a flat [Genera l'AS-IS],
+  and the folded verification outcome ("v3: 2/3 risolte").
+- **Review strips** (`officina_banners.ReviewBanners`, R28: one line each, at most
+  `STRIP_MAX_H` = 28 px, small flat buttons, hidden when empty): *da verificare* (blue)
+  while the case has live marks — "✓? N modifiche da verificare: pubblica su <generatore>
+  e rigenera il TO-BE (F5)." with [Annulla i segni]; the count is the live marks
+  (`live_marks`: dormant marks, R32, left out); *esito della verifica* after the first
+  comparison of a TO-BE newer than the marks — "**vM: verificate N modifiche segnate** — X
+  risolte, Y non risolte, Z cambiate ma ancora diverse" (zero parts left out; green when
+  all resolved, amber otherwise). The outcome lives while the case stays open, on that
+  version; the user's next action folds it into the bar's pill; leaving the case forgets
+  it. With both strips and the bar, the documents still start at ~38% of a 768 px window.
+- **Differences list** (`officina_diffs.DiffPanel`, `officina_difflist`, `officina_rows`):
+  "Differenze con il target" and six tabs with counts — *Da guardare* (regressioni, non
+  risolte, da fare, in corso; then a dimmed "DA VERIFICARE" group of the marked ones, not
+  counted), *Da verificare*, *Fatte*, *Tollerate*, *Variabili*, *Tutte* (noise included;
+  "Tutte n ⊘k" when k review entries match nothing any more — `CaseComparison.inactive`,
+  explained in the tooltip). Under the tabs, a row of its own holds the checkable **"☐
+  Mostra fatte"** (`officina_case_extras`, R45): on ("☑ Mostra fatte"), both viewers'
+  `set_show_done(True)` draw the fatte on the target side and in the minimap; clicking the
+  *Fatte* tab turns it on. *Da guardare* puts the non risolte first, then document order
+  (page, top, left); every other tab is in document order. A row: verdict pill, class glyph
+  (Aa testo, ▦ composizione, ¶ stile, ↔ spaziatura, ⇄ spostato, 🔗 link, {x} variabile, ~
+  rumore), "pag. N · <operation>", and the **snippet** (R33/R34): the target context around
+  the change once (`Diff.context_before/after`, up to 5 words), the target's changed
+  characters struck in paper colours (`LIGHT.bad` on `LIGHT.bad_bg`, weight 700), the
+  generated ones **bold**, and, when only part of a word changed, on `mark_yellow` with the
+  paper ink — "abilitat~~a~~**o**"; when the unchanged parts do not line up, "target →
+  generated", each marked; long stretches elided around the change. Notes under the
+  snippet: "Prima «…» → ora «…»" for in corso, "Segnata fatta in vN, ma in vM è ancora
+  qui." for a flagged row, "Nell'AS-IS era uguale al target." for a regression, the note
+  of a tolerance. The key legend sits at the bottom ("↑ ↓ scorri · Invio vai · F fatta · T
+  tollera · V non è una variabile"). Selection is shared both ways with the viewers, the
+  strip, the minimap and the DOM tab; a difference outside the current tab switches to
+  the tab that holds it. A refill after an action keeps the tab and the selected
+  difference, or — when it just changed state — the row at the same place. Rows are
+  widgets: ~2–3 ms each (BACKLOG: a delegate beyond ~1,000 rows).
+- **Actions** (`officina_actions_bar`, `officina_viewer_input`, `officina_review`,
+  `officina_undo`; D10 — no long press): a **click** on a highlight selects it (list and
+  both viewers: the other document aligns, a halo rings the box) and opens the floating
+  **mini-bar** "✓ Fatta F · ⊘ Tollera T · ⋯" under it (above when there is no room, pushed
+  in from the page edge, following scroll and zoom; UI chrome, so it follows the theme);
+  its buttons flip to "↺ Togli il segno" / "⊘ Non tollerare" on a marked / hand-tolerated
+  difference. **Double click** = segna fatta / toglie il segno (nothing on a difference
+  that does not count). **Right click** (or ⋯) = menu Fatta · Tollera… · Non è una
+  variabile · Copia testo del target · Copia testo generato. **F / T / V** in the list or a
+  viewer act on the selected row ("Tollera…" asks an optional note in `TolerateDialog`;
+  T and the bar's button tolerate without one). Every request becomes an `Intent` on the
+  case's **FIFO queue** (R38: queued, never refused) and runs when the case is free (no
+  compare of it running, no action being saved); it is planned only then, against the
+  difference found by its **anchor** in the verdicts the previous item left, so F on three
+  rows marks three. F / T / V move the selection to the next row of the tab **at once**,
+  before the refresh (R40), so F, F, F marks three consecutive rows; on the last open row
+  a second F within `REPEAT_GUARD_S` = 1 s is a no-op (it does not unmark). A request keeps
+  the version on screen when it was made (for its undo); a "segna fatta" records the
+  LATEST TO-BE existing when it runs (R47), so only a newer generation verifies it. The plan (forward calls + the calls that undo
+  them, `officina_undo`) is saved in the `officina-review` worker (under the case's review
+  lock, then the same version judged again); a **toast** says what was done with
+  "Annulla", and **Ctrl+Z** undoes the last action — one stack per case, in memory, an
+  entry pushed only after the save succeeded and undone only on the version it was made
+  on. Undoing "Annulla i segni" re-marks every removed mark, from a stand-in built from the
+  mark when its difference is not on screen. A difference gone by the time its item runs
+  is skipped with a status line; leaving the case with items waiting drops them, and says
+  so.
+- **Worker locks** (`officina_judge`): a case is keyed `(initiative id, case id)`. A
+  generation and `compare_case` take turns on the case's lock (a judge never waits for a
+  generation: the reload after it judges again); review actions and `compare_case` take
+  turns on a second, short **review** lock, so an action never races the verification of
+  the marks and never waits for an HTTP call. `judge` takes case then review lock, `act`
+  only the review lock: no cycle. The "being generated" state is a counter.
+- **Minimap** (`officina_minimap.MiniMap`, one per `DocView`, beside its scroll bar): one
+  segment per difference the viewer draws on that side, at the vertical position of its
+  words in the whole document, in the strip's colours (theme chrome); variables and noise
+  have none; a faint band shows the part on screen and follows the viewport (a horizontal
+  scroll bar appearing included). A click on or near a segment goes to that difference,
+  elsewhere centres that point of the document.
+- **Noise rules dialog** (`officina_noise.NoiseDialog`, `officina_noise_page`): from
+  the board (the initiative's rules and presets) and from the case header (the case's own
+  rules; the initiative's listed read-only, since they add up; the presets are always the
+  initiative's). Help line: rules match the normalised text. Presets with a checkbox (all
+  off by default), then the rules table (on/off, Nome, Espressione regolare, Occorrenze)
+  with [+ Regola] [Rimuovi]. Each row shows how often it matches the target and the latest
+  TO-BE of the case — counted **before** saving, in the `officina-noise` worker, debounced,
+  with a small spinner (a custom rule may take up to ~2 s in the guarded child). A row
+  error — no name, no pattern, a regex that does not compile, a name used at any level
+  ("nome già usato da un preset / da una regola dell'iniziativa / dalla regola del caso
+  KEY"), or the service's "espressione potenzialmente troppo lenta: semplificala" — is red
+  on that row (long ones elided, full text in the tooltip) and keeps [Salva e riconfronta]
+  disabled. Saving (`set_noise_rules`, UI thread) waits while the case is being compared or
+  has queued review actions; the initiative's rules and presets also wait for running
+  generations. Then the case is compared again.
+- **DOM tab** (`officina_dom.DomTab`, `officina_dom_map`, `officina_dom_view`; HTML cases,
+  *Documenti | DOM*): a tree of the TARGET's block elements (parsed back from the pretty
+  source's indentation), each marked with the worst verdict of the differences inside it
+  (glyph + edge colour of its look); the two pretty sources (`dom_view`, fetched once per
+  (target, version) in the `officina-dom` worker) in read-only `QPlainTextEdit`s that scroll
+  together, each located difference's line tinted by its verdict (`ExtraSelection`), the
+  selected one stronger. A difference is located by its attribute value (a link) or its
+  text in the stream of text lines, searched from the previous difference onwards;
+  selection is shared with the list both ways. Without the Edge print the tab is the case's
+  main view (R45, above).
 - **Adding a case** (`officina_add.AddCaseDialog`): Ricerca's row menu "Aggiungi
   all'Officina…" (wrench icon, lazy import) and "+ Caso da file…" share one dialog:
   Iniziativa (existing or "Nuova iniziativa…" + its name), File JSON + [Sfoglia…] (file flow
@@ -498,9 +713,12 @@ stops the others. [Annulla generazioni] drops the waiting cases and sets the can
 the running ones; `generate` checks it just before sending, so a call already on the wire
 runs to its end. A case already queued is not queued twice (the status bar names it).
 Failure reasons live in memory per (initiative, case id), until the next success or a
-restart. Other Officina jobs: `officina-compare` (the workbench), `officina-summary` (the
-board's pills, a separate name so the workbench never supersedes them), `officina-delivery`
-(exclusive). All are in `JOB_NAMES` with Italian labels in `quit_dialog`.
+restart. Other Officina jobs: `officina-compare` (the workbench's documents and
+`compare_case`; a newer request supersedes), `officina-review` (a review action then the
+same version judged again; exclusive, fed by the per-case queue), `officina-noise` (the
+dialog's live counts; superseding), `officina-dom` (the DOM tab's sources; superseding),
+`officina-delivery` (exclusive). Phase 1's `officina-summary` is gone: the board reads the
+saved summaries. All are in `JOB_NAMES` with Italian labels in `quit_dialog`.
 
 **Viewer** (`officina_viewer.DocView`, `officina_render.PageRenderer`,
 `officina_sync.SyncController`, `officina_overlays.py`):
@@ -531,13 +749,15 @@ board's pills, a separate name so the workbench never supersedes them), `officin
   extraction, page sizes — runs under one process-wide `RLock` in `officina.pdf`. The pools
   keep the GUI responsive but never render in parallel. On Windows the render thread may
   hold a PDF open for a moment (a test that deletes a version retries).
-- **Overlays**: a difference is one `HighlightItem` per run of words on a line, filled with
-  the kind's soft token and outlined with its strong one — added `ok_bg`/`ok`, removed
-  `bad_bg`/`bad`, changed `warn_bg`/`warn` (and "moved" `selection`/`accent`, ready for
-  phase 2). The fill is painted in *multiply* mode so black text stays black; in dark mode the
-  soft tokens are dark and are drawn translucent (alpha 110) over the white page.
-  `focus_difference` rings the difference in `accent` and scrolls only when it is not
-  already fully visible. A click emits `difference_clicked` on release, only if the mouse
+- **Overlays** (`officina_overlays.py`, input `set_highlights(items: list[tuple[Judged,
+  str]])`, "left"/"right" = side, R4): a difference is one `HighlightItem` per run of words
+  on a line, styled by its **verdict look** (above): a fill in the look's soft token and a
+  solid or dashed edge, or a line under the words (variabile, fatta); changed characters
+  in `mark_yellow` with an ink underline. Everything is drawn with the LIGHT token values
+  (paper, R13), fills in *multiply* mode so black text stays black. A neutral look (no
+  verdict: the AS-IS view) uses a grey box. `focus_difference` rings the difference with a
+  halo and scrolls only when it is not already fully visible; Enter in the list centres it
+  in both documents even when visible. A click emits `difference_clicked` on release, only if the mouse
   moved less than the drag distance. Everything re-derives on `theme.signals.changed`.
 - `SyncController(left, right)` keeps scroll (by **relative page position**: page index +
   fraction of the page, so documents with different page lengths still show the same page
@@ -562,10 +782,17 @@ cartella] [Chiudi].
 
 **Shell hooks**: `config_changed` (the chosen folder), `on_config_changed` (refresh; a new
 folder goes back to the list), `on_quit()` (drop the waiting cases), `is_writing()` (asked
-by Impostazioni before a folder change). Strings: `ui/strings/officina.py`. Screenshot
-scenes in `scripts/dev/shoot.py`, on the fake core: `officina-cartella`, `-iniziative`,
-`-bacheca`, `-caso`, `-payload-header`, `-aggiungi`, `-visore`, `-visore-pagina`,
-`-consegna`, `-consegna-riepilogo`, and `impostazioni-officina*` /
+by Impostazioni before a folder change). Strings: `ui/strings/officina.py` and the phase-2
+modules `officina_{avanzamento,verdetto,elenco,azioni,rumore}.py`. Screenshot scenes in
+`scripts/dev/shoot.py`, on the fake core: `officina-cartella`, `-iniziative`, `-bacheca`,
+`-caso`, `-payload-header`, `-aggiungi`, `-visore`, `-visore-pagina`, `-consegna`,
+`-consegna-riepilogo`; phase 2: `-caso-verdetti`, `-caso-verifica`, `-caso-due-vie`,
+`-caso-profilo`, `-caso-minimappa`, `-caso-dom`, `-elenco-*` (una lettera, in corso, non
+risolta, da verificare, link), `-azioni-*` (mini-barra, menu, toast, tollera-nota),
+`-bacheca-pillole`, `-rumore`, the R45 scenes (azzera tolleranze, mostra fatte, HTML
+senza stampa), and `-motore-*` (including a Stretto AS-IS) (the REAL engine's comparisons of synthetic
+PDFs, canned into the fake: caso, regressione non risolta, in corso, tutte inattive, AS-IS,
+bacheca, the target and accept confirmations); `impostazioni-officina*` /
 `impostazioni-salva-bloccato` for the settings section.
 
 ## Impostazioni page
@@ -708,8 +935,8 @@ class Worker(QRunnable): wraps fn(*args, sink=..., cancel=..., **kw); exceptions
 class JobRunner(QObject): submit(name, fn, ...) -> Job | None; busy(str); job_finished(str, bool)
     # pool size = len(JOB_NAMES) + SUPERSEDED_HEADROOM (4): one thread per job name plus room
     # for superseded jobs still finishing a blocking call (read_body, one SQLite query).
-    # "sync"/"index"/"scheduler"/"import"/"recycle", the three "officina-generate*" lanes and
-    # "officina-delivery" are EXCLUSIVE: a second submit is refused -> busy(name);
+    # "sync"/"index"/"scheduler"/"import"/"recycle", the three "officina-generate*" lanes,
+    # "officina-delivery" and "officina-review" are EXCLUSIVE: a second submit is refused -> busy(name);
     # every other name supersedes (the older job is cancelled and silenced by _Delivery).
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
@@ -795,6 +1022,9 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   | warn / warn_bg | `#8A5300` / `#FFF4CE` | `#F2C661` / `#433519` |
   | bad / bad_bg | `#B42318` / `#FDE7E4` | `#FF8A7A` / `#4A1F1A` |
   | neutral_bg | `#EDEFF2` | `#3A3F47` |
+  | progress / progress_bg (Officina "in corso") | `#0F6CBD` / `#E6F0FB` | `#6BB3E8` / `#1B3A5C` |
+  | variable / variable_bg (Officina variables) | `#6B5BB5` / `#EEEBFA` | `#B8A9F5` / `#2F2A4D` |
+  | mark_yellow (changed characters) / shadow | `#FFD24D` / `#000000` | `#E8C04A` / `#000000` |
   | code key / string / number / literal | `#0B5CAD` / `#A31515` / `#0E7A0D` / `#8250DF` | `#8CC4F2` / `#E9A27A` / `#9BD48F` / `#C4A7F5` |
 
   The accent is **fixed** (`#0F6CBD`, the app icon's blue; its dark-mode variant
@@ -810,7 +1040,8 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   palette Mid" is gone (Mid was invisible in dark mode). Errors and unreachable endpoints
   are `warn`; red (`bad`) appears only for **lost days** (purged before they were
   downloaded): the calendar square, the badge and chip dot, the `syncBannerBad` banner and
-  the Ricerca `banner="bad"` warning.
+  the Ricerca `banner="bad"` warning — and, in the Officina, for **regressions** and the
+  struck target text of a difference (§Officina).
 - Icon tint and the JSON highlighter read `theme.tokens()` and re-derive on
   `theme.signals.changed`; `theme.apply` clears the icon cache.
 - Fonts: UI Segoe UI Variable Text → Segoe UI; monospace only through `theme.mono_font()`
@@ -834,7 +1065,11 @@ to copy qtkit's style. The look is our own — not qtkit's either.
 ## Testability
 
 - `ui/strings/` is a package, one module per page (`common`, `search`, `sync`, `settings`,
-  `wizard`, `about`, `imports`, `officina` — every Officina string prefixed `OFFICINA_`),
+  `wizard`, `about`, `imports`, `officina` — phase-1 Officina strings prefixed `OFFICINA_` —
+  and the phase-2 Officina modules `officina_avanzamento` (progress bar, strips, profile,
+  board pill), `officina_verdetto` (verdict words and glyphs), `officina_elenco` (the
+  list), `officina_azioni` (mini-bar, menu, toasts), `officina_rumore` (noise dialog, DOM
+  tab)),
   all re-exported from `qtrequestory.ui.strings`. `tests/ui/test_strings.py`
   also enforces one vocabulary: no English words in user-facing strings, the same labels
   for the same thing on every page, and no module formatting a size by hand — every size
@@ -850,7 +1085,8 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   `set_local_days(env, days, empty=())` / `set_server_days(env, listed=(), seen=())` for the
   coverage states, the real archive discovery/import on a temp tree with a simulated
   Recycle Bin; `FakeOfficinaApi` wraps the real `OfficinaService` on real files and replaces
-  only the HTTP opener and the Edge print),
+  only the HTTP opener and the Edge print, while its comparisons and verdicts are scripted
+  by `tests/fakes/fake_verdict.py` — DESIGN-core §Testing),
   and `tests/test_fake_core.py` checks the fake against the real facade.
 - Presenters (`SearchPresenter`, `SyncPresenter`, `SettingsPresenter`) are plain objects
   with a few Qt signals; widgets render and forward.

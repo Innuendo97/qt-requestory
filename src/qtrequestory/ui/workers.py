@@ -44,8 +44,8 @@ from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgres
 
 __all__ = [
     "DEFAULT_MAX_THREADS", "JOB_NAMES", "OFFICINA_COMPARE_JOB", "OFFICINA_DELIVERY_JOB",
-    "OFFICINA_GENERATE_JOBS",
-    "OFFICINA_SUMMARY_JOB", "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
+    "OFFICINA_DOM_JOB", "OFFICINA_GENERATE_JOBS", "OFFICINA_NOISE_JOB", "OFFICINA_REVIEW_JOB",
+    "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
     "Job", "JobRunner", "QtEventSink", "Worker", "WorkerSignals", "officina_writing",
 ]
 
@@ -70,12 +70,19 @@ OFFICINA_GENERATE_JOBS = ("officina-generate", "officina-generate-2", "officina-
 #: The case workbench: documents to show and the TARGET vs version comparison
 #: (a newer request supersedes the older one).
 OFFICINA_COMPARE_JOB = "officina-compare"
-#: The initiative board: the "TO-BE contro target" pill of every case.
-OFFICINA_SUMMARY_JOB = "officina-summary"
+#: A review action on the case on screen ("segna fatta", "tollera", … and
+#: their undo), then the same version judged again. Exclusive, as a safety
+#: net: an action is never silenced (the page queues the next one, R38).
+OFFICINA_REVIEW_JOB = "officina-review"
 #: "Consegna…": the check of the destination, then the copy. Exclusive — a
 #: second delivery must never silence the first one's report — and asked
 #: about before quitting.
 OFFICINA_DELIVERY_JOB = "officina-delivery"
+#: "Regole di rumore…": the live counts of the rules being edited (a user
+#: rule may take ~2 s in the guarded child; a newer count supersedes).
+OFFICINA_NOISE_JOB = "officina-noise"
+#: The "DOM" tab of an HTML case: the two pretty sources (a newer one supersedes).
+OFFICINA_DOM_JOB = "officina-dom"
 
 
 def officina_writing(runner: JobRunner) -> bool:
@@ -114,8 +121,10 @@ JOB_NAMES = (
     "recycle",              # Importa log: the verified originals to the Recycle Bin
     *OFFICINA_GENERATE_JOBS,  # Officina: AS-IS / TO-BE generation, up to 3 cases at once
     OFFICINA_COMPARE_JOB,   # Officina: the case workbench's documents and comparison
-    OFFICINA_SUMMARY_JOB,   # Officina: the board's TO-BE vs target pills
     OFFICINA_DELIVERY_JOB,  # Officina: "Consegna…" to the testers' folder
+    OFFICINA_REVIEW_JOB,    # Officina: a review action on the case on screen
+    OFFICINA_NOISE_JOB,     # Officina: the noise dialog's live counts
+    OFFICINA_DOM_JOB,       # Officina: the DOM tab's sources
 )
 
 #: Extra threads for SUPERSEDED jobs. Superseding silences a job and sets its
@@ -373,7 +382,7 @@ class JobRunner(QObject):
     #: The Officina generation lanes are exclusive too: superseding one would
     #: silence a call whose document is written anyway.
     EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import", "recycle",
-                           *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB})
+                           *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB, OFFICINA_REVIEW_JOB})
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)

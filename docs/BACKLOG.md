@@ -30,55 +30,92 @@ sovrapposta a quella dei log, i weekend con traffico mai segnalati.
 
 ## Officina
 
-La fase 1 (generazione, confronto del solo testo, visore, consegna) è descritta in README
-§Officina, DESIGN-core §Officina e DESIGN-ui §Officina. Il resto del progetto arriva a fasi.
+La fase 1 (1.2.0: generazione, confronto del solo testo, visore, consegna) e la fase 2
+(1.3.0: motore a stadi, variabili, regole di rumore, verdetto a tre vie, tolleranze, segna
+fatta verificata alla rigenerazione, HTML via DOM, vista del caso con avanzamento,
+minimappa e azioni da tastiera) sono descritte in README §Officina, DESIGN-core §Officina e
+DESIGN-ui §Officina. L'OCR è escluso del tutto: un PDF scansionato resta «senza testo
+estraibile». *Segna accettato* resta un avviso con il riepilogo, mai un blocco (decisione
+della fase 2).
 
-### Fase 2 — confronto a tre vie
+### Fase 3
 
-- **Verdetto a tre vie**: per ogni differenza, TO-BE contro target combinato con AS-IS
-  contro target → *fatta*, *da fare*, *in corso*, *regressione*, *tollerata*; l'avanzamento
-  del caso (fatte / (fatte + da fare + regressioni)) e le pillole sulla bacheca. *Segna
-  accettato* diventa bloccante (0 da fare, 0 regressioni) invece della conferma di oggi.
-- **Allineamento dei blocchi**: pagine e blocchi non si abbinano per indice ma con un
-  punteggio pesato (contenuto, posizione, struttura) risolto come assegnamento, con pagine
-  inserite e tolte; tabelle confrontate cella per cella; OCR solo come ripiego, segnalato,
-  per le pagine con il livello di testo inutilizzabile (oggi un documento misto conta come
-  «con testo» e la pagina scansionata esce come differenze normali).
-- **Profili di tolleranza** *Tollerante* (predefinito: testo, composizione e immagini
-  contano; stile e spaziatura tollerati), *Stretto*, *Solo testo*, per iniziativa e per
-  caso; classi `testo`, `composizione`, `stile`, `spaziatura`, `immagine`, `spostato`.
-- **Differenze DOM per l'HTML**: testo visibile e struttura (inscriptis + xmldiff),
-  confronto esatto degli attributi critici (`href`, `src`), una scheda «DOM» accanto al
-  visore.
-- **Spostamenti**: un blocco tolto e uno aggiunto con lo stesso testo normalizzato diventano
-  una sola differenza «spostato» (in blu; il colore è già previsto negli overlay). Oggi
-  escono come «mancante» più «in più».
-
-### Fase 3 — rifiniture
-
-- **Confronto delle immagini**: pHash come filtro veloce, SSIM su ritagli in scala di
-  grigi come criterio (tollerante a renderer e antialiasing diversi).
-- **Regole di rumore nell'interfaccia**: regex per iniziativa (date di generazione, numeri
-  di pratica, codici a barre, marcatori di firma, timestamp) → segnaposto; piccole e
-  visibili, mai pulizie globali silenziose. Oggi `noise_rules` esiste in `iniziativa.json`
-  ma non viene usato, e numeri di pagina e date escono come differenze.
+- **Immagini**: pHash come filtro veloce, SSIM su ritagli in scala di grigi come criterio
+  (tollerante a renderer e antialiasing diversi). Richiede numpy: da pesare contro la
+  soglia di crescita dell'exe (+1 MB).
+- **Tabelle cella per cella**: oggi una tabella si confronta come testo a blocchi (una riga
+  di modulo, un paragrafo, una `td`), senza sapere di righe e colonne.
+- **Stile per carattere** oltre dimensione e grassetto della parola (corsivo, colore,
+  carattere diverso dentro una parola).
 - **`riepilogo-differenze.pdf`** nella consegna: per caso il verdetto, le differenze
-  tollerate con le note, versioni e date (QPdfWriter). Serve il verdetto della fase 2.
-- **Minimappa delle differenze** (heat-strip) lungo la barra di scorrimento del visore.
-- **Annotazioni**: segnare una differenza «tollerata» con una nota (tasto T), annotarla
-  (tasto N), con ↑/↓ e Invio nell'elenco; salvate in `caso.json` e ritrovate dopo una
-  rigenerazione (ancora di testo indipendente dalla pagina + tipo).
-- **Editor dei predefiniti degli header dell'iniziativa** nell'interfaccia: oggi
-  `header_defaults` si scrive a mano in `iniziativa.json` (il generatore lo usa già).
-- Rigenerazione in blocco con i verdetti; «Condividi caso anonimizzato» (pseudonimi
-  deterministici, elenco dei campi non personali).
+  tollerate con le note, versioni e date (QPdfWriter).
+- **Annotazioni libere** su una differenza (tasto N), salvate in `caso.json` e ritrovate
+  dopo una rigenerazione con la stessa ancora delle tolleranze.
+- **Editor dei predefiniti degli header dell'iniziativa** (`header_defaults`, oggi a mano in
+  `iniziativa.json`; il generatore li usa già). Nella stessa schermata, il **profilo
+  dell'iniziativa** (oggi solo `profilo` in `iniziativa.json`; il caso ha il suo menu).
+- **Rigenerazione in blocco con i verdetti**: *Rigenera TO-BE selezionati* che, a fine
+  giro, confronta ogni caso e aggiorna le pillole della bacheca.
+- **«Condividi caso anonimizzato»**: pseudonimi deterministici, elenco dei campi non
+  personali.
 
-### Limiti noti della fase 1
+### Limiti noti della fase 2
+
+Visibili all'utente:
+- **Vista AS-IS di un caso HTML senza Edge**: un TO-BE si confronta dal DOM anche senza
+  stampa, la vista AS-IS (senza verdetto) no: mostra l'errore della stampa.
+- **Azzera tolleranze** non si annulla (la conferma lo dice): non entra nella pila di Ctrl+Z.
+- **Elenco lento oltre ~1.000 righe**: ogni riga è un widget (~2–3 ms), quindi un caso con
+  migliaia di differenze blocca l'elenco per qualche secondo a ogni riempimento. Serve un
+  delegate (`QStyledItemDelegate`) al posto dei widget.
+- **Prima estrazione lunga**: due PDF di 60 pagine richiedono ~10 s la prima volta
+  (caratteri e font da PDFium), in un worker; dopo, la cache su disco.
+- **Bacheca dopo un cambio delle regole di rumore**: le pillole restano quelle calcolate con
+  le regole vecchie finché ogni caso non viene riaperto (non c'è un «regole cambiate il…»
+  con cui confrontare il riepilogo).
+- **Regola troppo lenta**: una regola personalizzata scaduta nel processo figlio resta
+  rifiutata per quei testi fino al riavvio del programma, anche dopo averla corretta
+  (accettato).
+- **Differenze «Solo nell'elenco»**: una differenza senza un punto sulla pagina (un link o
+  un `src` HTML) non ha evidenziazione né tacca nella minimappa: sta nell'elenco e nella
+  scheda DOM.
+- **F due volte in 1 s sull'ultima riga aperta**: il secondo F è ignorato (protegge dal
+  togliere il segno appena messo quando la selezione non può più avanzare); per togliere
+  il segno subito, doppio clic o un F dopo un secondo.
+- **Annullare un'azione di un'altra versione**: un «segna fatta» dato su v2 si annulla
+  (Ctrl+Z o toast) solo mentre è mostrata v2.
+- **Conteggi che si sovrappongono**: ogni differenza «non risolta» sta sia nel totale del
+  suo verdetto sia in quello delle non risolte (voluto, lo dice il tooltip); sulla bacheca
+  i segni «da verificare» sono tolti dai verdetti aperti partendo dal più lieve, perché il
+  riepilogo non dice su quale verdetto stanno: con più verdetti aperti la ripartizione può
+  differire di un passo da quella del caso, mai in meglio.
+- **Ancore**: una modifica che fa scorrere righe identiche di un modulo può spostare una
+  tolleranza o un segno sulla riga vicina; sostituire il target riparte da zero (segni e
+  riepilogo si azzerano, tolleranze inattive dove il testo non combacia più).
+- **Casi limite del motore**: un blocco spostato e molto modificato, o spostato attraverso
+  un lungo modulo senza parole uniche, esce come «mancante» più «in più» invece di
+  «spostato»; una riga singola non abbinata si fonde con un «cambiato» vicino invece di
+  diventare una sezione; due blocchi HTML di una riga mancanti e adiacenti fanno una sola
+  sezione; «Non è una variabile» mostra la differenza come «..........→ valore» invece di
+  un confronto parola per parola; una sezione in più può essere elencata dopo la modifica
+  che la segue quando entrambi i vicini sono cambiati.
+- **HTML**: testo in linea direttamente nel `body` diviso in più blocchi; un commento non
+  chiuso nasconde il resto del documento (come nel browser); il sorgente «bello» della
+  scheda DOM omette `<![if]>` e le istruzioni di elaborazione.
+- Wingdings: la mappatura del glifo U+F070 a casella vuota non è confermata su un PDF reale.
+
+Interni:
+- Il lock di scrittura per caso vale per il processo (l'app è a istanza singola).
+- La chiave della memoria dei confronti non contiene il tipo di documento (irrilevante:
+  gli stessi byte non sono un PDF e un HTML insieme).
+- `officina/delivery.py` (~460 righe), `officina/generator.py` (~420) e `cli.py` (~500)
+  sono sopra la soglia delle ~400 righe; `officina_diffs.py` e `officina/model.py` sono a
+  400 esatte: dividerli prima di farli crescere.
+
+### Limiti noti della fase 1 ancora aperti
 
 - Il motivo di una generazione fallita vive solo in memoria (il modello salva solo le
   generazioni riuscite): si perde alla chiusura.
-- La cache delle estrazioni è solo in memoria (le stampe HTML di Edge invece sono in
-  `cache\`): dopo un riavvio il primo confronto rilegge i PDF.
 - Edge con un profilo nuovo a ogni stampa impiega circa 3,5 s; un timeout su
   `--headless=new` viene ritentato, quindi il caso peggiore è il doppio del timeout.
 - Una chiamata già partita non si interrompe: *Annulla* agisce tra un caso e l'altro, e
@@ -87,12 +124,17 @@ La fase 1 (generazione, confronto del solo testo, visore, consegna) è descritta
 - Il controllo dei link firmati rifiuta anche un link SAS valido di sola lettura fuori dagli
   attributi di upload (es. in `customData`): più sicuro, e il motivo indica il percorso.
 - urllib invia i nomi degli header con le iniziali maiuscole (`Template_Key`): HTTP non
-  distingue, ma se il generatore si rivelasse sensibile servirebbe `http.client`.
-- `compare_text` ha solo `right_label`: quando a sinistra non c'è il target il servizio
-  riscrive la nota a mano (un `left_label` sarebbe più pulito).
-- L'eseguibile non è stato rimisurato dopo l'aggiunta di pypdfium2 (`pdfium.dll` ~5,4 MB).
-- `officina/delivery.py` (~450 righe) e `officina/service.py` (~560) sono sopra la soglia
-  delle ~400 righe (moduli del motore, non dell'interfaccia).
+  distingue, ma se il generatore si rivelasse sensibile servirebbe `http.client` (la fase 2
+  non l'ha toccato).
+
+Chiusi dalla fase 2: la cache delle estrazioni è anche su disco (`cache\extract-<sha>.json`,
+sopravvive al riavvio); il confronto a sequenza unica e la sua nota `right_label` riscritta
+a mano non esistono più (`compare_docs` ha `left_label` e `right_label`); l'eseguibile è
+stato rimisurato (34,5 MB con pypdfium2 e il motore, +0,34 MB sulla 1.2.0);
+`officina/service.py` è sceso sotto le 400 righe; le regole di rumore dell'iniziativa
+(`noise_rules`, prima ignorate) sono lette e hanno la loro finestra; blocchi spostati,
+numeri di pagina e date non escono più come differenze normali; un caso HTML senza Edge
+si confronta dal DOM (TO-BE).
 
 ## Codici di uscita e CLI
 

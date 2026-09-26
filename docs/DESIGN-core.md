@@ -74,18 +74,44 @@ src/qtrequestory/
 ├── officina/              the Officina tab's engine (§Officina); Qt-free, never imported by core or cli
 │   ├── __init__.py        empty: importing the package loads nothing heavy
 │   ├── model.py           Workspace, Initiative (+ re-exports Case, Version): initiatives and cases on disk
-│   ├── model_case.py      Case and its caso.json (load, save merge, reopen after acceptance)
+│   ├── model_case.py      Case and its caso.json (load, save merge, reopen), case_write_lock, write_review
+│   ├── model_review.py    Review, Tolerance, Mark, NoiseRule: the review keys of caso.json / iniziativa.json
 │   ├── model_versions.py  Version: reading/writing TARGET, AS-IS and TO-BE files and metas
-│   ├── model_io.py        atomic writes (unique temp file), tolerant and strict JSON reads
+│   ├── model_io.py        atomic writes (unique temp file), tolerant / strict JSON reads, read_text_retrying
 │   ├── links.py           upload links (SAS): find_links, remove_links, signed_links, mask, mask_text
 │   ├── generator.py       resolve_headers, prepare_payload, send, sniff, SendResult, HeaderError
 │   ├── service.py         OfficinaService (behind ui/contracts.OfficinaApi): workspace, generate, delivery
-│   ├── service_compare.py CompareMixin (compare, render_path, the Edge print cache), CompareError
+│   ├── service_compare.py CompareMixin (compare without verdict, render_path, Edge print cache), CompareError
+│   ├── service_case.py    CaseInputsMixin: engine inputs per version, cached pairs, custom rules via the guard
+│   ├── service_review.py  ReviewMixin: compare_case, the review actions, profile, noise rules, dom_view
 │   ├── delivery.py        build_plan/plan_delivery, deliver/run_delivery, safe_component
-│   ├── pdf.py             THE ONLY pypdfium2 importer: read_chars, page_sizes, page_count, render_page
-│   └── compare/
+│   ├── pdf.py             THE ONLY pypdfium2 importer: read_chars (+ fonts), page_sizes, page_count, render_page, TextSearch
+│   └── compare/           the staged comparison engine (§Comparison engine); pure, stdlib only
+│       ├── model.py       THE CONTRACT: Word, Block, Anchor, Diff, Comparison, Judged, CaseSummary,
+│       │                  Verification, CaseComparison, COUNTING
 │       ├── extract_pdf.py Word, DocText, extract (pypdfium2 loaded inside extract())
-│       ├── textdiff.py    Difference, TextComparison, normalise, compare_text
+│       ├── extract_html.py extract_html (html.parser) -> Blocks + pretty source; attr_diffs, locate
+│       ├── html_boxes.py  boxes for HTML words from Edge's print
+│       ├── cache.py       the extraction cache on disk (extract-<sha>.json)
+│       ├── normalise.py   normalise_token, units (comb fields, checkboxes, dehyphenation, punctuation)
+│       ├── slots.py       variable slots of the target, absorb, slot_anchor
+│       ├── noise.py       PRESETS, compile_rules (risky-pattern check), apply (placeholders)
+│       ├── noise_guard.py custom noise rules in a killable child process (2 s budget): counts, spans
+│       ├── sides.py       prepare: both sides up to the noise stage (Prepared.noise_sides), noise_stage
+│       ├── blocks.py      lines, columns, paragraphs, form rows -> Blocks
+│       ├── hungarian.py   assignment solver (no scipy)
+│       ├── align.py       block alignment: exact matches, weighted score, Hungarian
+│       ├── worddiff.py    word diff over the whole sequence (patience cuts), char_spans
+│       ├── bounds.py      unmatched blocks as hard boundaries of the word diff
+│       ├── moves.py       reading order, out-of-order pairs, text moves
+│       ├── classify.py    one class per difference; counts(profile, klass)
+│       ├── anchor_keys.py the target keys an Anchor is taken on
+│       ├── anchors.py     disambiguate: "#n" on repeated anchors
+│       ├── display.py     context_before / context_after of a difference
+│       ├── linkdiff.py    the link differences of an HTML pair
+│       ├── urls.py        URL normalisation, TRACKING_KEYS / tracking_drop
+│       ├── pipeline.py    compare_docs = sides.prepare + finish: every stage, composed
+│       ├── verdict.py     judge: three-way verdict, tolerances, marks, summary; generated_text, inactive
 │       ├── sanitise.py    sanitise_html (allow-list) + CSP
 │       └── edge.py        find_edge, html_to_pdf (Microsoft Edge headless)
 ├── THIRD-PARTY-NOTICES.md licences of the bundled third-party components (§Packaging)
@@ -767,7 +793,7 @@ disabled env may still hold history worth searching). Explicit `envs` go through
 CLI (`cli.main(argv) -> int`), first two things:
 
 1. **Console attach.** The exe is windowed (`console=False`), so a headless mode typed in a
-   terminal used to print nothing. For `--sync/--index/--find/--task/--version/--archivio/--import` (decided on
+   terminal used to print nothing. For `--sync/--index/--find/--task/--version/--archivio/--import/--selftest-noise-guard` (decided on
    the raw argv, before argparse), `AttachConsole(ATTACH_PARENT_PROCESS)`; when it succeeds
    `sys.stdout`/`sys.stderr` are reopened on `CONOUT$` — both, or neither. Under the
    scheduled task or a double-click there is no parent console, the call returns 0 and
@@ -784,6 +810,7 @@ qtRequestory.exe --archivio [PATH]                 # read-only report; default P
 qtRequestory.exe --import PATH [--env-for DIR=ENV]... [--delete-originals]
 qtRequestory.exe --config PATH                     # every mode; only config.json moves, logs stay in the app dir
 qtRequestory.exe --version
+qtRequestory.exe --selftest-noise-guard            # hidden (argparse.SUPPRESS): dev/diagnostic check of the noise guard, see §Packaging
 ```
 
 Exit codes:
@@ -826,14 +853,16 @@ editor unless `--no-open`, exit 1 when nothing matches). `--task status` exits 1
 is registered. Qt is imported ONLY inside the GUI branch (`tests/test_cli.py` checks it in a
 subprocess).
 
-## Officina (`qtrequestory.officina`) — phase 1
+## Officina (`qtrequestory.officina`) — phases 1 and 2
 
 The engine of the Officina tab (README §Officina, DESIGN-ui §Officina): initiatives and
 cases on disk, generation against a document generator with safe headers and upload links,
-a word-level text comparison, and the testers' delivery folder. Phase 1 compares **text
-only**; the rest of the comparison design (alignment, three-way verdict, tolerance
-profiles, images, DOM diff) is in BACKLOG §Officina. Qt-free throughout: the UI turns the
-rendered bytes into `QImage`s.
+the staged comparison of a generated document with the customer's TARGET (phase 2, release
+1.3.0: variables, noise rules, block alignment, moves and sections, a three-way verdict,
+tolerances, "segna fatta" verified on regeneration, HTML through its DOM), and the testers'
+delivery folder. What is still to come (images, tables cell by cell, the PDF summary…) is
+in BACKLOG §Officina. Qt-free throughout: the UI turns the rendered bytes into `QImage`s
+and reaches everything through `ui/contracts.OfficinaApi`.
 
 ### Lazy boundary and PDFium (`officina/pdf.py`)
 
@@ -852,7 +881,11 @@ rendered bytes into `QImage`s.
   RenderedPage` (BGRx bytes, displayed orientation, white fill). A /Rotate 180 page is read
   with its rotation set to 0 **in memory** (PDFium reads upside-down text right-to-left) and
   restored in `finally`; the file is never saved. `PdfReadError(ValueError)` wraps
-  PDFium's errors in Italian; a missing file stays `FileNotFoundError`.
+  PDFium's errors in Italian; a missing file stays `FileNotFoundError`. Phase 2 adds, per
+  character run, the font size and weight (`PageChars.fonts`, read through
+  `pypdfium2.raw`; a weight of −1 is guessed from the font name; bold = weight ≥ 600 or a
+  bold font name) and `TextSearch`, a text search over a PDF used to box HTML blocks on
+  Edge's print.
 - **One process-wide `RLock` around every PDFium call** (render, extraction, sizes): PDFium
   is not thread-safe, and the viewer's render threads could otherwise meet an extraction
   running in a worker. Rendering is therefore never parallel; the pools only keep the UI
@@ -863,15 +896,18 @@ rendered bytes into `QImage`s.
 ```
 <Officina root>\
   <Iniziativa>\                      folder-safe name; the display name is in iniziativa.json
-    iniziativa.json                  name, created, header_defaults, noise_rules, delivery {last_destination, last_at}, notes
+    iniziativa.json                  name, created, header_defaults, delivery {last_destination, last_at}, notes,
+                                     profilo, regole_rumore, preset_rumore
     casi\<case-id>\                  case-id = <KEY> or <KEY>__<variant-slug>
       caso.json                      key, variant, env, headers, drop_postman_token, correlation(+value),
-                                     link_policy, status, notes, source_fdi, history [{at, note}]
+                                     link_policy, status, notes, source_fdi, history [{at, note}],
+                                     + the review keys (below)
       payload.json                   (payload.original.json written on the first edit)
       target\<original name>         + target.meta.json {original_name, …}
       asis\asis.pdf|html + asis.meta.json      (asis.previous-<n>.* kept on replace)
       tobe\v001.pdf|html + v001.meta.json, v002…
-      cache\                         Edge prints of HTML, temporary copies (safe to delete)
+      cache\                         html-<sha>.pdf Edge prints, extract-<sha>.json extractions,
+                                     temporary copies (all safe to delete)
 ```
 - `Workspace(root)`: `initiatives()`, `create_initiative(name)` (refuses duplicates),
   `load(initiative_id)`, `add_case(ini, key, variant, payload, *, env, source_fdi)`, `save_case`,
@@ -915,7 +951,48 @@ rendered bytes into `QImage`s.
   source FDI, name or header defaults. Every write goes through a unique temporary file in
   the same folder (`tempfile.mkstemp`), so two writers never share one.
 - Initiative header defaults exist in the model (`header_defaults`) but have no editor in the
-  UI yet; noise rules are stored but unused in phase 1.
+  UI yet.
+
+**Review state** (`officina/model_review.py`, phase 2). `Case.review` is a `Review` read from
+the `caso.json` keys below; `Initiative.profile`, `.noise_rules`, `.noise_presets` from
+`iniziativa.json`. Everything is backward compatible: a missing key is the empty value, so a
+1.2.0 file loads as `Review()`; a value that cannot be used (hand-edited junk, an unknown
+profile, an anchor of the wrong shape) is dropped with an Italian line in `load_notes`,
+never a crash. Anchors are stored as `{op, klass, context, target_text}`.
+
+```
+caso.json
+  "profilo":       null | "tollerante" | "stretto" | "solo_testo"      null = as the initiative
+  "tolleranze":    [{"anchor", "generato", "nota", "quando"}]
+  "non_variabili": [{"anchor", "quando"}]
+  "segnate":       [{"anchor", "generato", "versione", "quando"}]      versione = TO-BE the mark was made in
+  "non_risolte":   [{"anchor", "versione", "generato"}]                versione = the mark's (R10)
+  "regole_rumore": [{"name", "pattern", "enabled"}]                    the case's own; they add up
+  "riepilogo":     {"versione", "fatte", "da_fare", "in_corso", "regressioni", "da_verificare",
+                    "non_risolte", "tollerate", "variabili", "rumore", "avanzamento", "quando", "due_vie"}
+iniziativa.json
+  "profilo" (default "tollerante"), "regole_rumore", "preset_rumore" (names of the presets on)
+```
+The legacy `noise_rules` of an `iniziativa.json` (unused in phase 1) is read once as the
+initiative's own rules when `regole_rumore` is absent, and disappears at the next
+`save_initiative_settings`. Nothing is ever inherited by a case from another case or
+initiative: a new case starts with an empty review.
+
+- **One writer per part of `caso.json`** (R8): `save_case` merges the case's own fields and
+  keeps the review keys; `Workspace.save_review(case)` merges ONLY the review keys. Both
+  refuse an unreadable file like every other merge.
+- **Per-case write lock** (R16): every read-modify-write of one case's `caso.json` holds
+  `model_case.case_write_lock(case_dir)` (a process-wide `RLock` per folder), so a worker
+  saving the review and the GUI thread saving the case never merge into each other's stale
+  copy. The lock is per process (the app is single-instance).
+- **Retrying reads** (R16): on Windows, opening a file while another thread `os.replace`s
+  it fails with a sharing violation for a few milliseconds. `model_io.read_text_retrying`
+  retries errors 32/33 (`TRANSIENT_TRIES` = 10, 20 ms apart); `read_json_strict` has no
+  separate existence check: it relies on the read's own `FileNotFoundError` inside the retry,
+  so a racing replace is never read as "missing".
+- **Replacing the target** (R29) on a case with review state clears `segnate`,
+  `non_risolte` and `riepilogo` and appends a history line; tolerances and
+  `non_variabili` stay (they are inactive where their anchors no longer match).
 
 ### Upload links (`officina/links.py`)
 
@@ -1005,15 +1082,18 @@ relative; then `initiatives()` is empty and writes raise `ValueError`.
   payload, the document, the headers or a link's path (a caplog test checks it). The reason
   returned to the UI keeps the masked link (`…?sig=***`) so the user sees which one.
 - `generate` also refuses an initiative with `load_error` and a case with `load_error`.
-- `compare(left, right) -> TextComparison`: each file is read once and hashed; a PDF is
-  extracted from a private copy of exactly those bytes (in `cache\`), an HTML side is first
-  printed by Edge. Extractions (LRU 16) and results (LRU 64, keyed by both hashes and
-  labels) are cached **in memory**, so an identical regenerated TO-BE costs two reads and
-  two hashes. `right_label` names the right side ("TO-BE"/"AS-IS") in the "non ha testo
-  estraibile" note. A comparison that cannot be made (file gone, unreadable PDF, Edge missing
-  or failing, no cache folder) raises `CompareError` (Italian): not a note, because a note
-  would be cached and read like a result, while these problems are fixable and must be
-  retried. A side without a text layer IS a result (Review Focus 2).
+- `compare(left, right) -> Comparison`: the engine's `compare_docs` without noise rules,
+  verdicts or a review (the AS-IS view, "cos'altro ho cambiato"). Each file is read once
+  and hashed; a PDF is extracted from a private copy of exactly those bytes (in `cache\`),
+  an HTML side is first printed by Edge. PDF extractions are cached **on disk**
+  (§Comparison engine, `compare/cache.py`) and in memory (LRU 16), results in memory
+  (LRU 64, keyed by both hashes and labels), so an identical regenerated TO-BE costs two
+  reads and two hashes, and a restart costs no re-extraction. `left_label` / `right_label`
+  name the sides in the "non ha testo estraibile" note. A comparison that cannot be made
+  (file gone, unreadable PDF, Edge missing or failing, no cache folder) raises
+  `CompareError` (Italian): not a note, because a note would be cached and read like a
+  result, while these problems are fixable and must be retried. A side without a text
+  layer IS a result (Review Focus 2).
 - `render_path(case, version) -> Path`: the PDF the viewer shows — the file itself, or the
   cached Edge print of an HTML.
 - **HTML print cache**: `<case>\cache\html-<sha256[:32]>.pdf`. The hashed bytes are copied to
@@ -1027,32 +1107,264 @@ relative; then `initiatives()` is empty and writes raise `ValueError`.
   be a customer's)
   and `last_delivery_destination` wrap `officina/delivery.py`.
 
-### Text comparison (`officina/compare/extract_pdf.py`, `textdiff.py`)
+**Phase 2: the case comparison and the review** (`service_case.py`, `service_review.py`):
+- `compare_case(ini, case, version) -> CaseComparison` (in a worker): TO-BE `version` ↔
+  target and, when there is an AS-IS, AS-IS ↔ target, both through `compare_docs` with the
+  noise rules (the presets the initiative turned on, then the initiative's rules, then the
+  case's); then `verdict.judge` with the effective profile (case → initiative →
+  `tollerante`), the review **read from disk** (never the `Case` in hand, which may be the
+  board's stale copy) and `when` = now. The returned review (verified marks
+  removed, `non_risolte`, `riepilogo`) is saved; `case.review` is updated only after the
+  save succeeded. Only the LATEST TO-BE's comparison writes `riepilogo` and prunes
+  `non_risolte` (R48): an older version adds the "non risolte" its verification found and
+  leaves the rest. When the TO-BE or the target has no extractable text nothing is judged,
+  no mark is verified and nothing is saved (R49: `judged` empty, the note shows); an AS-IS
+  without text makes the verdict two-way, with a note. An unreadable `caso.json` is a
+  `CompareError`.
+- Inputs (`CaseInputsMixin._input`): a PDF as its words (disk + memory cache); an HTML as
+  its DOM blocks (`extract_html`, every URL key kept so the cache does not depend on the
+  tracking preset), boxed from the Edge print (`html_boxes`). Without Edge, the service still
+  compares an HTML through its DOM (`print_error` says why; the words keep zero boxes);
+  the case view uses it for a TO-BE (R45, DESIGN-ui §Officina: "Stampa dell'HTML non
+  disponibile", the DOM tab as the main view). Pairs are
+  cached in memory by content hashes, rules and tracking flag: re-judging after a profile or
+  tolerance change costs no engine run. The user's rules never run in the application
+  (R46): `sides.prepare` builds each pair's pre-noise sides, ONE `noise_guard.match_spans`
+  child matches the rules on `Prepared.noise_sides()` (the exact keys and line ends the
+  noise stage sees) for every pair, and `pipeline.finish` applies the returned spans
+  (`noise.Found`) after the presets. A rule unusable on any pair (does not compile, out of
+  time, no child) is dropped from all of them with a note; spans are cached per pair and
+  pattern.
+- Actions: `tolerate(case, judged, note)`, `untolerate`, `mark_done(case, judged,
+  version)`, `unmark`, `unmark_all`, `not_variable`, `variable_again`, `reset_tolerances`
+  (clears `tolleranze` and `non_variabili`), `set_profile(ini, case | None, profile)`,
+  `set_noise_rules(ini, case | None, rules, presets)`, `noise_presets()`,
+  `count_noise_hits(case, rules)` (the dialog's live counts, through the noise guard),
+  `dom_view(case, version) -> (target source, generated source)` (pretty sources). Every
+  action is idempotent (twice = one entry), finds its difference by `anchor`, stores
+  `verdict.generated_text(diff)` (R30), and goes through `ReviewMixin._commit`: under the
+  case write lock, read the review from disk, change only its own entry, `save_review`.
+  `mark_done` also accepts a stand-in `Judged` built from a mark (the undo of "Annulla i
+  segni" when the difference is not on screen).
+- Rule names are unique across presets, the initiative and every case: `set_noise_rules`
+  refuses a clash ("regola di rumore «X»: nome già usato da un preset / da una regola
+  dell'iniziativa / da una regola del caso KEY"); `compare_case` tolerates a clash already
+  in a hand-edited file (the later rule dropped with a note).
+- Logs carry counts and action names only — never a document's text, a note or a rule.
 
-- `extract(path) -> DocText(words, page_sizes, has_text)`; `Word(text, page, x0, y0, x1, y1)`
-  in points of the displayed page, origin top-left. Characters become words on whitespace,
-  a horizontal gap over 0.25 × the glyph height, a line change or a jump back to the left;
-  words are clustered into lines by vertical centre and read top to bottom, left to right;
-  characters whose centre is off the displayed page are dropped (cropped or clipped text).
-  `has_text` is False with no word at all, or for a "scanned" document: every page under
-  5 words and at least one page with an image.
-- `compare_text(left, right, *, right_label="TO-BE") -> TextComparison(differences,
-  left_has_text, right_has_text, equal, note)`: `difflib.SequenceMatcher(autojunk=False)`
-  over the **whole document** as one sequence, page-agnostic (reflow onto another page is
-  not a difference); replace/delete/insert → `changed`/`removed`/`added`, ids from 1. The
-  comparison units are normalised (NFKC, soft hyphens and zero-width characters removed,
-  quotes and dashes unified, case kept); a word ending in `-`, U+2010 or a soft hyphen at a
-  line end, followed by a lowercase word, is joined with it (never a dash); a
-  punctuation-only token sticks to its neighbour. A `Difference` keeps the **original**
-  `Word`s and boxes of both sides, which the viewer highlights. A side without text gives
-  `equal=False`, no differences and a note. Deterministic (a test runs it twice); two
-  10-page PDFs compare in about 1 s.
+### Comparison engine (`officina/compare/`)
+
+Phase 2 replaced phase 1's single-sequence text diff: every comparison, with or without a
+verdict, goes through `pipeline.compare_docs`. Every stage is a small module (≲ 400 lines),
+**pure** (input → output, no global state), stdlib only, and **deterministic** (stable
+orders everywhere, no set or dict order reaches a result; tests run it twice).
+
+**Contract** (`compare/model.py`, frozen dataclasses of tuples, shared between threads):
+- `Word(text, page, x0, y0, x1, y1, size, bold)` — PDF points of the displayed page, origin
+  top-left; `size`/`bold` sampled per word (0.0/False for HTML).
+- `Block(id, words, page, kind: paragrafo | riga_modulo | html, dom_path, attrs)`.
+- `Diff(id, op, klass, left, right, left_text, right_text, left_spans, right_spans, anchor,
+  detail, context_before, context_after)` — `left` is the TARGET; `op` ∈ mancante, in_piu,
+  cambiato, spostato, sezione_assente, sezione_in_piu, pagine; `klass` ∈ testo,
+  composizione, stile, spaziatura, variabile, rumore, link; spans = changed character
+  ranges; `context_*` = up to 5 target words around the change, display only (R33).
+- `Anchor(op, klass, context, target_text)` — the stable key of a difference across
+  regenerations, taken on the **target** side, never a page or block index.
+- `Comparison(diffs, left_has_text, right_has_text, left_pages, right_pages, note,
+  slots_found, noise_hits)`; `.counting(profile)` = the diffs whose class the profile counts
+  (what the verdict-less AS-IS view lists), `.equal_for(profile)` = both sides have text and
+  nothing counted differs, `.equal` = `equal_for("tollerante")`.
+- `Judged(diff, verdict, marked, unresolved, tolerated_note, previous_text)`,
+  `CaseSummary` (the `riepilogo`), `Verification(checked, resolved, unresolved, changed,
+  version)`, `CaseComparison(version, judged, summary, tobe, asis, verification, profile,
+  inactive)`.
+- `COUNTING[profile]`: tollerante = testo, composizione, link; stretto = + stile,
+  spaziatura; solo_testo = testo. `variabile` and `rumore` never count.
+
+**Stages** (`pipeline.compare_docs(left, right, *, rules, custom_hits, disabled_slots,
+left_label, right_label, link_drop) -> Comparison` = `pipeline.finish(sides.prepare(...))`:
+stages up to slots in `prepare`, noise onwards in `finish`; left = TARGET, each side a `DocText` or an HTML
+`Block` list; the profile is applied later, by the verdict):
+1. **extract** — `extract_pdf.extract(path) -> DocText(words, page_sizes, has_text)`
+   (characters → words on whitespace, a gap over 0.25 × glyph height, a line change or a
+   jump left; lines by vertical centre; off-page characters dropped; `has_text` False with
+   no word, or for a "scan": every page under 5 words and one page with an image), or
+   `extract_html` (§HTML through the DOM).
+2. **blocks** (`blocks.py`) — lines by baseline (± half a line height), columns at empty
+   vertical corridors (≥ 3 median character widths on ≥ 3 consecutive lines), paragraphs by
+   line pitch (> 1.5 ×), indent and font-size changes; a line with a leader or a checkbox is
+   its own `riga_modulo` block. HTML blocks come from the extractor.
+3. **align** (`align.py`, `hungarian.py`) — exact matches first (identical normalised text
+   occurring the same number of times on both sides, paired in order); then, per candidate
+   pair, 0.70·content (Jaccard on 3-key shingles; `SequenceMatcher` ratio under 8 keys) +
+   0.20·position (relative order, convex penalty so equal rows never cross) + 0.10·structure
+   (kind, lines, font size), solved by a home-made Hungarian algorithm (Jonker–Volgenant
+   form) on pairs scoring ≥ 0.35, per connected group; a group over 300 blocks a side is
+   cut into windows of 30 target pages; a key shared by many blocks yields only its 48
+   nearest candidates.
+4. **reading order** (`moves.reading_order`, R20/R26) — alignment only ORDERS the generated
+   side: a STRONG pair (content ratio ≥ 0.85) out of order is read at its partner's place
+   and reported as a move; weak and unpaired generated blocks stay where they are.
+5. **normalise** (`normalise.py`) — per token NFKC (ligatures, NBSP), invisible characters
+   dropped, quotes and dashes unified, checkbox glyphs (Wingdings/PUA, `❏`, `☐`, `□`, `[ ]`,
+   a lone `q` opening a line) → `☐`, (`☒`, `☑`, `[x]`, `[X]`) → `☒`; across tokens:
+   **comb fields** (≥ 4 one-character letters/digits on a line with a regular pitch, ±25%)
+   → one unit, dehyphenation at line ends, punctuation stuck to its neighbour. Only the
+   comparison KEY changes: a unit keeps its original `Word`s, so highlights use the
+   original boxes. Case is kept.
+6. **slots** (`slots.py`, target only) — *sicuro*: a leader, a run of ≥ 4 `.`/`_` (`…` is
+   three dots after NFKC), split out of its label's key; *probabile*: a label followed by
+   a line end or another label, where the label ends with `:`, is a known form label (N°,
+   CAP, Provincia, Località, Data) or is a word ending with `,` alone on its line («Città,
+   »). A slot is a wildcard key: in the word diff it absorbs, for a sure slot, the generated
+   keys up to the next word matching the target (one line at most), for a probable one at
+   most 6 words on one line; beyond that it stays a normal difference. Line ends are the
+   words' boxes and, for an HTML side, also its block boundaries (HTML words may have no
+   boxes: no Edge print, or a block the print could not place). What it absorbs is a
+   `variabile` diff, anchored by `slot_anchor` — the ONE place a slot's anchor is made
+   (R2), taken before noise.
+7. **noise** (`noise.py`) — the enabled valid rules, in order, on both sides' NORMALISED
+   keys (keys joined by spaces, newlines at line ends, `re.MULTILINE`; each rule runs line
+   by line on at most 2,000 characters). A match becomes ONE unit holding the placeholder
+   `NOISE:<name>` (R18: `01/02/2026.` and `1 febbraio 2026.` both become one `NOISE Data .`
+   key). `compile_rules` names and leaves out every unusable rule — a regex that does not
+   compile, an empty name or pattern, a duplicate name, or a **risky** pattern (a repeat
+   whose body holds an unbounded repeat, a backreference inside a repeat; found by walking
+   the `re` parser tree, R17: "espressione potenzialmente troppo lenta: semplificala"); a
+   bad rule is never half-applied. Presets (all off by default): Numero di pagina, Data
+   (numeric and Italian textual), IBAN, Codice fiscale, CAP, Importo, Marcatore di firma
+   (`` `sig,…` ``), Parametri di tracciamento (URL keys from `urls.TRACKING_KEYS`, R21 —
+   also dropped from HTML URL attributes when on).
+8. **worddiff** (`worddiff.py`, `bounds.py`) — `difflib.SequenceMatcher(autojunk=False)`
+   over the WHOLE unit sequence in target order (reflow onto another page, or blocks cut
+   differently, cost nothing), fixed on the aligned blocks with identical keys; a stretch
+   over 1,000 keys is cut at *patience anchors* (keys unique on both sides) or, where none
+   exist, at aligned block-pair starts (R23: otherwise a 2,400-row form never finishes).
+   Target blocks the alignment left unmatched that could be a section are hard boundaries
+   (R27), so a missing clause next to an edited word is one section plus one small change.
+   Each non-equal part is refined and split around slots → `cambiato` / `mancante` /
+   `in_piu`; a second `SequenceMatcher` on characters gives the spans of a `cambiato`.
+   Equal runs whose placeholders cover different texts are `rumore` changes; equal runs
+   whose words differ in size (> 0.5 pt) or weight are `stile` changes.
+9. **moves and sections** (`moves.py`) — out-of-order strong pairs (the pairs outside a
+   longest increasing subsequence; a consecutive run = one move), and a `mancante` plus an
+   `in_piu` with the same text (≥ 3 keys, ratio ≥ 0.85), become ONE `spostato`. A deletion
+   (insertion) covering whole unmatched blocks holding ≥ 2 lines together (an HTML block
+   counts as one line, R24) is ONE `sezione_assente` (`sezione_in_piu`, detail "N righe").
+   Different page counts (PDF only) give one `pagine` diff, first in the list.
+10. **classify** (`classify.py`) — the first rule that applies: `variabile`; `composizione`
+    (sections, moves, pages); `rumore`; `stile` (keys equal, size or weight not);
+    `spaziatura` (keys differ only by where spaces and line breaks fall); `testo`. `link`
+    comes from the HTML stage.
+
+**Anchors** (`anchor_keys.py`, `anchors.py`): `context` = the 3 target keys before and after
+the difference (for an insertion, the one key before and the one after; keys without a
+letter or digit are never context), `target_text` = the target keys of the difference (a
+slot as its leader), both taken on the target's slotted keys BEFORE noise, so switching a
+rule on does not move them. A form with ten identical rows would give ten identical
+anchors, so `disambiguate` appends `" #n"` (n ≥ 2, target order) to repeats (R19), always
+producing unused anchors (R35). Differences are then numbered 1..n in target order.
+Accepted cost: an edit that shifts identical rows can move a tolerance or a mark onto the
+neighbouring row; replacing the target is a fresh start for anchors.
+
+**Verdict** (`verdict.judge(tobe, asis | None, review, profile, version, when)`): TO-BE and
+AS-IS differences are matched by anchor equality. For each TO-BE difference, the first rule
+that applies:
+1. an anchor in `review.not_variables` turns a `variabile` diff into `testo` under the same
+   anchor (R36: the slot keeps absorbing, the spot becomes one counting diff "leader →
+   value", so undo and tolerances stay keyed to it; the pipeline's `disabled_slots` is not
+   used by the service);
+2. `variabile` / `rumore` → no verdict;
+3. a class the profile does not count → `tollerata`;
+4. a tolerance with the same anchor AND the same normalised generated text
+   (`generated_text`) → `tollerata` with its note (a changed text makes it count again; the
+   tolerance stays in the file, inactive);
+5. two-way (no AS-IS) → `da_fare`; else the anchor in AS-IS↔target: same generated text →
+   `da_fare`, different → `in_corso` (`previous_text` = the AS-IS text); absent →
+   `regressione`.
+Then each counting AS-IS difference whose anchor is gone from TO-BE is a `fatta` (it carries
+the AS-IS diff, for the target-side underline).
+
+Marks are verified **per mark** (R7): a mark with `mark.version < version` is removed from
+the returned review — difference gone → resolved; still there with the same generated text
+→ **"non risolta"**: the difference KEEPS its verdict (R31: a stuck `regressione` stays a
+`regressione`, an `in_corso` stays `in_corso`) and gets the `unresolved` flag, remembered in
+`non_risolte` while the difference is present with the same anchor and text; different text
+→ `in_corso` with `previous_text` = the marked text. A mark of the compared version or later
+is `marked=True` ("da verificare") and keeps its verdict. A mark on a difference that does
+not count right now is **dormant** (R32): not verified, not "da verificare", kept, live
+again when the difference counts again. `inactive(review, judged)` counts the review entries
+that match nothing (shown on the "Tutte" tab). Duplicate anchors are never an assertion
+(R35): a warning, then `disambiguate` again. Ids are renumbered 1..n in judged order (R9).
+Summary: a marked difference counts in its verdict AND in `da_verificare` (R15);
+`avanzamento` = fatte / (fatte + da fare + in corso + regressioni), 1.0 when nothing counts.
+A "non risolta" count covers every flagged difference, whatever its verdict (R44).
+
+**Noise guard** (`noise_guard.py`, R22/R37). CPython's `re` cannot be interrupted and no
+static check catches every catastrophic pattern (`(a|a)*b` passes R17), so the rules the
+USER wrote — never the tested presets — run first in a child process (`multiprocessing`
+*spawn*), each within `BUDGET_S` = 2 s of matching: `count_hits` gives per rule the number
+of hits or an Italian error; a rule out of time kills the child and a new one carries on
+with the next rule. The engine compiles them only in the child (`noise.check`; in the
+application only `noise.precheck`, which compiles nothing; the noise dialog compiles a
+pattern only to validate its syntax, catching `re.error`, `OverflowError` and
+`RecursionError`). `compare_case` does not probe and then apply: it
+sends the pipeline's exact pre-noise sides to `match_spans` and applies the spans found
+(`noise.Found`), so no user regex is ever matched (executed) in the application process
+(R46); spans are cached per pair, pattern and print state, never for a side without a
+print (R50: they index a text without boxes); a rule
+out of time is dropped with a note. The dialog's counts (`count_hits`) take the same path. The child's start-up is not
+part of the budget (`START_S` = 30 s to say "ready"). A child that cannot start, or never
+gets ready, makes its rules `UNAVAILABLE` — dropped from that comparison with the note
+"regole personalizzate non applicate: …", **never** run in-process; a child that never got
+ready latches the guard "unavailable" for `LATCH_S` = 120 s (a failed spawn is retried at
+once). A timed-out rule stays refused for those texts until restart (accepted, R43). The
+entry scripts (`scripts/entrypoint.py`, `__main__.py`) call
+`multiprocessing.freeze_support()` so a child of the frozen exe runs the guard, not the
+application; `--selftest-noise-guard` checks exactly that (§Packaging).
+
+**Disk cache** (`cache.py`, spec §4.3; closes a phase-1 limit):
+`<case>\cache\extract-<sha256>.json` per extracted PDF — words with boxes, size and bold,
+page sizes, `has_text`, the sha and `FORMAT` (1). A missing file, another format, another sha, or anything not exactly
+the expected shape is a miss (never an error): the caller extracts again and `store`
+overwrites it atomically. Writing is best-effort (logged at debug, path and error only).
+
+**Timings** (idle development laptop, measured at integration): two 10-page PDFs (~6,700
+words each) 1.8–1.9 s end to end (extraction 1.6 s, `compare_docs` 0.25 s; spec budget
+3 s); two 60-page PDFs (~40,500 words each) ~12 s the first time (extraction ~10 s, the
+comparison ~2 s), then ~2 s from the disk cache; a synthetic 60-page pair with 1,030
+differences compares in ~1.3 s (the patience cuts, R23). Everything runs in workers.
+
+### HTML through the DOM (`compare/extract_html.py`, `html_boxes.py`, `linkdiff.py`, `urls.py`)
+
+- `extract_html` (stdlib `html.parser`, no lxml/inscriptis/xmldiff — decision D4) returns
+  the `Block` list stages 3–10 work on, plus a pretty source (one tag or text run per line,
+  two spaces per depth) for the DOM tab. One block per block element with text (`p`, `td`,
+  `th`, `li`, `h1`–`h6`); other text belongs to the innermost `div`, else the top-level
+  element holding it, else `body` (inline text straight in `body` is ONE block); text
+  around a nested block is split around it, in reading order. Invisible content is
+  skipped: `head`, `script`, `style`, `template`, Office's `<xml>` and `o:`/`v:`/`w:` tags,
+  every comment (MSO conditionals included; an unterminated one hides the rest, as in a
+  browser), and any element with `display:none` or `hidden`, with its subtree.
+  `dom_path` counts same-tag siblings below `body` (`table[2]/tr[3]/td[1]`).
+- **Critical attributes** — `href` (`a`/`area`, `mailto:`/`tel:` included), `src` and `alt`
+  (`img`), compared EXACTLY after `urls.normalise` (scheme and host lower-cased, query keys
+  sorted, the tracking keys dropped when the "Parametri di tracciamento" preset is on; path,
+  fragment and values as written; a key nobody recognises is always kept). A difference is
+  one `cambiato` of class `link` per attribute, detail `"href: a → b"`, anchored like a change
+  of its target block; it counts like text.
+- **Boxes** (`html_boxes.py`) — the viewer shows the Edge print, so the DOM words take their
+  boxes from it: matched against the print's words with one `SequenceMatcher`; a leftover
+  word placed after its matched neighbour; a block none of whose words matched searched as
+  text in the print (`pdf` search); otherwise zero boxes — the difference is only in the
+  list and the DOM tab. Sizes and weights are not taken from the print.
 
 ### HTML → PDF with Edge, sandboxed (`officina/compare/sanitise.py`, `edge.py`)
 
-An HTML case (an email body) is compared, and shown, through its PDF print by the Microsoft
-Edge installed on Windows (`find_edge()`: Program Files (x86), Program Files, LOCALAPPDATA,
-then the App Paths registry key, read-only). Rendering must be offline and deterministic,
+An HTML case (an email body) is compared through its DOM (§HTML through the DOM), and
+shown — its words boxed — through its PDF print by the Microsoft Edge installed on Windows
+(`find_edge()`: Program Files (x86), Program Files, LOCALAPPDATA, then the App Paths
+registry key, read-only). Rendering must be offline and deterministic,
 and a customer HTML must not be able to reach the network, so there are three layers:
 1. **Sanitiser (an allow-list)**: `sanitise_html(bytes)` writes a sanitised copy next to the
    output, and Edge renders that copy, never the original. A reference survives only when it
@@ -1177,9 +1489,23 @@ plugin that renders every icon).
 dynamic page factory as the others), and `collect_all("pypdfium2")` brings pypdfium2's data
 files, hidden imports and its `pypdfium2-<version>.dist-info` folder — which holds the
 licence texts. `pdfium.dll` (about 5.4 MB) lives in the separate `pypdfium2_raw` package
-and is collected by pyinstaller-hooks-contrib's `hook-pypdfium2_raw`. The exe has not been
-re-measured since pypdfium2 was added. `tests/test_packaging.py` checks the spec text for
-both collections.
+and is collected by pyinstaller-hooks-contrib's `hook-pypdfium2_raw`.
+`tests/test_packaging.py` checks the spec text for both collections. Measured with the
+Officina: **34.17 MB** (1.2.0), **34.51 MB** after phase 2 (+0.34 MB for the whole staged
+engine: stdlib only, no new dependency).
+
+**Multiprocessing in the frozen exe.** The noise guard starts a *spawn* child; in a onefile
+exe that child is the exe itself, so `scripts/entrypoint.py` (and `__main__.py`) call
+`multiprocessing.freeze_support()` first thing.
+
+**`--selftest-noise-guard`** (hidden: `argparse.SUPPRESS`, not in `--help`; for development
+and diagnostics only, never for users) runs `noise_guard.selftest()`: one synthetic custom
+rule counted in a spawned child, one printed line `noise guard: ok {…} (… s)`, exit 0 — or
+`NON riuscito`, exit 1. It is a headless flag (the parent console is attached, like
+`--version`) and returns before any config, path or logging setup, with no file or network
+I/O: keep it that way. Run it on a new build (with `QTREQUESTORY_HOME` pointing at a temp
+folder) whenever the packaging or the guard changes: it is the only check of the frozen
+child path short of the UI.
 
 **Third-party licences.** `src/qtrequestory/THIRD-PARTY-NOTICES.md` names every bundled
 third-party component and its licence: pypdfium2 (`Apache-2.0 OR BSD-3-Clause`), PDFium
@@ -1255,8 +1581,30 @@ synthetic only (`MOD_TEST_*` keys, `example.invalid` URLs, made-up signatures):
   half a body or a trickle. No test ever contacts a real endpoint.
 - The real-Edge test is skipped when Edge is missing; a fake `msedge.cmd` covers the
   failure and retry path.
-- `FakeOfficinaApi` (`tests/fakes/fake_core.py`) wraps the **real** `OfficinaService` on real
-  files and replaces only the outside world: an in-process HTTP opener (`canned_pdf(text)`,
-  a hand-built one-page PDF; per-case scripting with `set_response_for` / `set_responder`)
-  and a canned Edge print. `tests/test_fake_core.py` compares real and fake on generation,
-  refusals, file layout, headers sent and delivery.
+- `FakeOfficinaApi` (`tests/fakes/fake_officina.py`, re-exported by `fake_core.py`) wraps the
+  **real** `OfficinaService` on real files for generation, the model and delivery, and
+  replaces only the outside world: an in-process HTTP opener (`canned_pdf(text)`, a
+  hand-built one-page PDF; per-case scripting with `set_response_for` / `set_responder`)
+  and a canned Edge print. Its comparisons and verdicts are scripted: `compare` /
+  `compare_case` return canned `Diff` lists (`fake_diff`) judged by
+  `tests/fakes/fake_verdict.py`, a small re-implementation of the verdict rules that imports
+  only the contract, so the UI tests drive every state by hand. `tests/test_fake_core.py`
+  compares real and fake on generation, refusals, file layout, headers sent and delivery,
+  and runs one scripted review scenario (tolerate, mark, verify, "non è una variabile",
+  "Annulla i segni" and its undo, duplicate rule names…) on both, step by step.
+- **Engine tests** (`tests/officina/test_{normalise,slots,noise,noise_guard,blocks,hungarian,
+  align,worddiff,moves,classify,anchors,pipeline,verdict,cache,extract_html,html_boxes,
+  compare_docs_basics,service_review,service_integration}.py`) build their PDFs with
+  `pdfgen` (a changed letter, sure and probable slots and a value too long for one,
+  Wingdings boxes against `[x]`, spaced comb fields, a block in another reading order,
+  sections missing and extra, moved blocks, an extra page, style and spacing in the three
+  profiles) and synthetic HTML emails (nested tables, MSO comments, hidden elements,
+  tracking parameters, a changed `src`). Properties: determinism (two runs), time budgets
+  (10 pages; 60 pages), the disk cache (hit, other format, corrupt file), 1.2.0
+  `caso.json` / `iniziativa.json` loading unchanged. The noise-guard tests use a fake clock
+  and a slow pattern like `(a|a)*b`.
+- **End to end** (`tests/ui/test_officina_e2e_real.py`): the Officina page on the REAL
+  service and the local fake generator — target, AS-IS, v1, F on two rows, v2 fixing one:
+  the outcome strip reads "v2: verificate 2 modifiche segnate — 1 risolta, 1 non risolta"
+  and `caso.json` holds the non risolta and the v2 summary; the HTML variant (real Edge,
+  skipped without it) checks the DOM tab.

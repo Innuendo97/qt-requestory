@@ -219,9 +219,11 @@ class MainWindow(QMainWindow):
         """Transient message in the left segment ("Copiato negli appunti…")."""
         self.statusBar().showMessage(text, ms)
 
-    def show_toast(self, text: str, tone: str = "neutral", ms: int = TOAST_MS) -> None:
-        """A confirmation over the content ("JSON copiato · 157 KB"); see ``ui/toast``."""
-        self.toast.show_message(text, tone, ms)
+    def show_toast(self, text: str, tone: str = "neutral", ms: int = TOAST_MS,
+                   action: tuple[str, Callable[[], None]] | None = None, hint: str = "") -> None:
+        """A confirmation over the content ("JSON copiato · 157 KB"); see ``ui/toast``.
+        ``action`` = ``(button text, callback)`` adds a button ("Annulla")."""
+        self.toast.show_message(text, tone, ms, action=action, hint=hint)
 
     def set_sync_state(self, items: Sequence[tuple]) -> None:
         """The app-bar chip: ``(env, tone, text[, note])`` per environment."""

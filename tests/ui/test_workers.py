@@ -428,11 +428,12 @@ def test_every_name_a_page_submits_is_declared():
     from qtrequestory.ui.pages.sync_auto_card import TASK_STATUS_JOB
     from qtrequestory.ui.pages.sync_page import REACHABILITY_JOB as SYNC_REACHABILITY_JOB
     from qtrequestory.ui.wizard_pages import REACHABILITY_JOB
-    from qtrequestory.ui.pages.officina_jobs import COMPARE_JOB, GENERATE_JOBS, SUMMARY_JOB
+    from qtrequestory.ui.pages.officina_jobs import COMPARE_JOB, GENERATE_JOBS
     from qtrequestory.ui.workers import JOB_NAMES, SCHEDULER_JOB
 
     declared = set(JOB_NAMES)
-    assert {*GENERATE_JOBS, COMPARE_JOB, SUMMARY_JOB} <= declared
+    assert {*GENERATE_JOBS, COMPARE_JOB} <= declared
+    assert "officina-summary" not in declared, "the board reads riepilogo, it compares nothing (U5)"
     assert GENERATE_JOBS[0] == "officina-generate" and COMPARE_JOB == "officina-compare"
     assert set(GENERATE_JOBS) <= JobRunner.EXCLUSIVE, "a generation is never superseded"
     assert {LOG_JOB, PREVIEW_JOB, CHECK_JOB, INDEX_JOB, REACHABILITY_JOB,

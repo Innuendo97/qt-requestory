@@ -788,7 +788,7 @@ def test_mirror_root_errors_fake_matches_real(tmp_path: Path) -> None:
 def test_fake_officina_knobs(fake, tmp_path: Path):
     """The fake Officina's knobs: network error, scripted compare, compare
     error, and a canned HTML->PDF print under the case cache."""
-    from qtrequestory.officina.compare.textdiff import TextComparison
+    from qtrequestory.officina.compare.model import Comparison
     from qtrequestory.officina.service import CompareError
 
     api = fake.officina
@@ -812,7 +812,7 @@ def test_fake_officina_knobs(fake, tmp_path: Path):
     tgt = api.set_target(case, target)
     assert api.compare(tgt, asis).equal
 
-    scripted = TextComparison([], True, True, False, "nota scritta dal test")
+    scripted = Comparison((), True, False, 1, 1, "nota scritta dal test", 0, ())
     api.set_comparison(scripted)
     assert api.compare(tgt, asis) is scripted
     api.set_compare_error("Edge non trovato")
@@ -876,3 +876,488 @@ def test_fake_officina_responder_decides_per_request(fake, tmp_path: Path):
     assert version is None and result.reason == "errore di rete: rete assente"
     api.set_responder(None)
     assert api.generate(ini, case, "asis")[1].ok
+
+
+# ------------------------------------------- officina phase 2: case comparison ---
+
+def _review_case(fake, tmp_path: Path):
+    """A case with a target, an AS-IS and TO-BE v1 (canned PDFs)."""
+    api = fake.officina
+    src = tmp_path / "p.json"
+    src.write_text('{"documents": []}', encoding="utf-8")
+    ini = api.create_initiative("Verdetti")
+    case = api.case_from_file(ini, src, "MOD_TEST_A")
+    target = tmp_path / "atteso.pdf"
+    target.write_bytes(canned_pdf("MOD_TEST atteso"))
+    api.set_target(case, target)
+    assert api.generate(ini, case, "asis")[1].ok
+    v1, result = api.generate(ini, case, "tobe")
+    assert result.ok
+    return api, ini, case, v1
+
+
+def _by_text(cc) -> dict[str, object]:
+    return {j.diff.left_text: j for j in cc.judged}
+
+
+def _counts_agree(cc) -> None:
+    s = cc.summary
+    verdicts = [j.verdict for j in cc.judged]
+    assert s.fatte == verdicts.count("fatta")
+    assert s.da_fare == verdicts.count("da_fare")
+    assert s.in_corso == verdicts.count("in_corso")
+    assert s.regressioni == verdicts.count("regressione")
+    assert s.tollerate == verdicts.count("tollerata")
+    assert s.da_verificare == sum(j.marked for j in cc.judged)
+    assert s.non_risolte == sum(j.unresolved for j in cc.judged)
+    assert s.variabili == sum(j.diff.klass == "variabile" for j in cc.judged)
+    assert s.rumore == sum(j.diff.klass == "rumore" for j in cc.judged)
+    counted = s.fatte + s.da_fare + s.in_corso + s.regressioni
+    assert s.avanzamento == (s.fatte / counted if counted else 1.0)
+
+
+def test_fake_compare_case_three_way_verdicts(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 0, [
+        fake_diff("cambiato", "testo", "corretto", "sbagliato"),
+        fake_diff("cambiato", "testo", "uguale", "vecchio"),
+        fake_diff("cambiato", "testo", "avviato", "primo"),
+    ])
+    api.set_canned(case.id, 1, [
+        fake_diff("cambiato", "testo", "uguale", "vecchio"),
+        fake_diff("cambiato", "testo", "avviato", "secondo"),
+        fake_diff("mancante", "testo", "rotto", ""),
+        fake_diff("cambiato", "stile", "grassetto", "grassetto"),
+        fake_diff("cambiato", "variabile", "Nome ....", "Nome Mario"),
+        fake_diff("cambiato", "rumore", "Pag. 1 di 2", "Pag. 1 di 3"),
+    ], note="nota finta")
+
+    cc = api.compare_case(ini, case, v1)
+
+    verdicts = {text: j.verdict for text, j in _by_text(cc).items()}
+    assert verdicts == {"corretto": "fatta", "uguale": "da_fare", "avviato": "in_corso", "rotto": "regressione",
+                        "grassetto": "tollerata", "Nome ....": None, "Pag. 1 di 2": None}
+    assert _by_text(cc)["avviato"].previous_text == "primo"
+    assert cc.version == 1 and cc.profile == "tollerante" and cc.verification is None
+    assert cc.tobe.note == "nota finta" and cc.asis is not None
+    assert not cc.summary.two_way
+    _counts_agree(cc)
+    reloaded = next(c for c in api.load(ini.id).cases if c.id == case.id)
+    assert reloaded.review.summary == cc.summary  # saved to caso.json
+
+
+def test_fake_compare_case_without_asis_is_two_way(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 1, [fake_diff("in_piu", "testo", "", "aggiunto")])
+
+    cc = api.compare_case(ini, case, v1)
+
+    assert cc.asis is None and cc.summary.two_way
+    assert [j.verdict for j in cc.judged] == ["da_fare"]
+
+
+def test_fake_tolerate_then_compare_moves_the_diff_to_tollerata(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 1, [fake_diff("cambiato", "testo", "prezzo", "costo")])
+    judged = api.compare_case(ini, case, v1).judged[0]
+
+    api.tolerate(case, judged, "va bene così")
+    again = api.compare_case(ini, case, v1).judged[0]
+
+    assert again.verdict == "tollerata" and again.tolerated_note == "va bene così"
+    api.untolerate(case, again)
+    assert api.compare_case(ini, case, v1).judged[0].verdict == "da_fare"
+    api.tolerate(case, again)
+    api.reset_tolerances(case)
+    assert api.compare_case(ini, case, v1).judged[0].verdict == "da_fare"
+
+
+def test_fake_tolerance_lapses_when_the_generated_text_changes(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 1, [fake_diff("cambiato", "testo", "prezzo", "costo")])
+    api.tolerate(case, api.compare_case(ini, case, v1).judged[0])
+    api.set_canned(case.id, 1, [fake_diff("cambiato", "testo", "prezzo", "spesa")])
+
+    assert api.compare_case(ini, case, v1).judged[0].verdict == "da_fare"
+
+
+def test_fake_mark_done_then_a_newer_version_verifies(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    fixed = fake_diff("cambiato", "testo", "sistemata", "errata")
+    stuck = fake_diff("cambiato", "testo", "bloccata", "errata")
+    moved = fake_diff("cambiato", "testo", "avanzata", "errata")
+    api.set_canned(case.id, 1, [fixed, stuck, moved])
+    for judged in api.compare_case(ini, case, v1).judged:
+        api.mark_done(case, judged, 1)
+
+    same = api.compare_case(ini, case, v1)
+    assert all(j.marked for j in same.judged) and same.verification is None
+    assert same.summary.da_verificare == 3 and same.summary.da_fare == 3  # a promise, not a result
+
+    v2, result = api.generate(ini, case, "tobe")
+    assert result.ok
+    api.set_canned(case.id, 2, [stuck, fake_diff("cambiato", "testo", "avanzata", "quasi")])
+    cc = api.compare_case(ini, case, v2)
+
+    assert cc.verification is not None
+    assert (cc.verification.checked, cc.verification.resolved, cc.verification.unresolved,
+            cc.verification.changed, cc.verification.version) == (3, 1, 1, 1, 2)
+    by = _by_text(cc)
+    assert by["bloccata"].verdict == "da_fare" and by["bloccata"].unresolved
+    assert by["avanzata"].verdict == "in_corso" and by["avanzata"].previous_text == "errata"
+    assert not any(j.marked for j in cc.judged)
+    _counts_agree(cc)
+    reloaded = next(c for c in api.load(ini.id).cases if c.id == case.id)
+    assert reloaded.review.marks == [] and len(reloaded.review.unresolved) == 1
+    # the unresolved flag is remembered on the next comparison of the same version
+    assert _by_text(api.compare_case(ini, case, v2))["bloccata"].unresolved
+
+
+def test_fake_unmark_and_unmark_all(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 1, [fake_diff("mancante", "testo", "a", ""), fake_diff("mancante", "testo", "b", "")])
+    first, second = api.compare_case(ini, case, v1).judged
+    api.mark_done(case, first, 1)
+    api.mark_done(case, second, 1)
+
+    api.unmark(case, first)
+    assert [j.marked for j in api.compare_case(ini, case, v1).judged] == [False, True]
+    api.unmark_all(case)
+    assert not any(j.marked for j in api.compare_case(ini, case, v1).judged)
+
+
+def test_fake_not_variable_and_profiles(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 1, [fake_diff("cambiato", "variabile", "Nome ....", "Nome Mario"),
+                                fake_diff("cambiato", "stile", "titolo", "titolo")])
+    variable, style = api.compare_case(ini, case, v1).judged
+
+    api.not_variable(case, variable)
+    assert api.compare_case(ini, case, v1).judged[0].verdict == "da_fare"  # now it counts
+    api.variable_again(case, variable)
+    assert api.compare_case(ini, case, v1).judged[0].verdict is None
+
+    api.set_profile(ini, None, "stretto")
+    assert api.compare_case(ini, case, v1).judged[1].verdict == "da_fare"
+    api.set_profile(ini, case, "solo_testo")
+    assert api.compare_case(ini, case, v1).profile == "solo_testo"
+    api.set_profile(ini, case, None)  # "come l'iniziativa"
+    assert api.compare_case(ini, case, v1).profile == "stretto"
+    assert api.load(ini.id).profile == "stretto"
+
+
+def test_fake_noise_rules_presets_and_hits(fake, tmp_path: Path):
+    from qtrequestory.ui.contracts import NoiseRule
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    presets = api.noise_presets()
+    assert presets and all(isinstance(p, NoiseRule) and not p.enabled for p in presets)
+
+    rules = [NoiseRule("anno", r"20\d\d"), NoiseRule("rotta", "(")]
+    api.set_noise_rules(ini, None, rules, [presets[0].name])
+    api.set_noise_rules(ini, case, [NoiseRule("caso", "x")])
+    loaded = api.load(ini.id)
+    assert loaded.noise_rules == rules and loaded.noise_presets == [presets[0].name]
+    assert next(c for c in loaded.cases if c.id == case.id).review.noise_rules == [NoiseRule("caso", "x")]
+
+    api.set_noise_text(case.id, "anno 2026 e 2027")
+    hits = api.count_noise_hits(case, rules)
+    assert hits["anno"] == 2 and isinstance(hits["rotta"], str)
+
+
+def test_fake_compare_case_errors_and_dom_view(fake, tmp_path: Path):
+    from qtrequestory.ui.contracts import CompareError
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_compare_error("Edge non trovato")
+    with pytest.raises(CompareError, match="Edge non trovato"):
+        api.compare_case(ini, case, v1)
+    api.set_compare_error(None)
+    assert api.dom_view(case, v1) == ("", "")  # a PDF case
+    api.set_dom_view(case.id, ("<p>a</p>", "<p>b</p>"))
+    assert api.dom_view(case, v1) == ("<p>a</p>", "<p>b</p>")
+
+
+def test_new_officina_methods_are_in_the_protocol_with_matching_signatures(fake):
+    """The signature-fidelity test of ``test_contracts`` iterates the Protocol:
+    pin that the phase-2 names are really in it (and match on the fake)."""
+    import inspect
+
+    from qtrequestory.ui.contracts import OfficinaApi
+
+    names = ("compare_case", "tolerate", "untolerate", "mark_done", "unmark", "unmark_all", "not_variable",
+             "variable_again", "reset_tolerances", "set_profile", "set_noise_rules", "noise_presets",
+             "count_noise_hits", "dom_view")
+    assert set(names) <= set(OfficinaApi.__protocol_attrs__)
+    for name in names:
+        expected = inspect.signature(getattr(OfficinaApi, name)).parameters
+        got = inspect.signature(getattr(fake.officina, name)).parameters
+        assert [(p.name, p.kind, p.default) for p in got.values()] == \
+               [(p.name, p.kind, p.default) for p in expected.values() if p.name != "self"], name
+
+
+# ------------------------------------------------------- T0 fix round 1 (R7-R11) ---
+
+def test_fake_marks_are_verified_per_mark(fake, tmp_path: Path):
+    """R7: a mark is verified by the first TO-BE newer than ITS version; a mark
+    made in the version being compared stays "da verificare"."""
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    old = fake_diff("cambiato", "testo", "vecchia", "errata")
+    new = fake_diff("cambiato", "testo", "nuova", "errata")
+    api.set_canned(case.id, 1, [old, new])
+    v2, _ = api.generate(ini, case, "tobe")
+    api.set_canned(case.id, 2, [old, new])
+    # the user goes back to v1 and marks one there, then marks the other on v2
+    api.mark_done(case, _by_text(api.compare_case(ini, case, v1))["vecchia"], 1)
+    api.mark_done(case, _by_text(api.compare_case(ini, case, v1))["nuova"], 2)
+
+    cc = api.compare_case(ini, case, v2)
+
+    by = _by_text(cc)
+    assert by["vecchia"].unresolved and not by["vecchia"].marked
+    assert by["nuova"].marked
+    assert cc.verification is not None and cc.verification.checked == 1
+    reloaded = next(c for c in api.load(ini.id).cases if c.id == case.id)
+    assert [m.anchor for m in reloaded.review.marks] == [new.anchor]
+
+
+def test_fake_verification_counts_only_the_marks_it_verified(fake, tmp_path: Path):
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    a = fake_diff("mancante", "testo", "a", "")
+    b = fake_diff("mancante", "testo", "b", "")
+    api.set_canned(case.id, 1, [a, b])
+    api.mark_done(case, api.compare_case(ini, case, v1).judged[0], 1)
+    v2, _ = api.generate(ini, case, "tobe")
+    api.set_canned(case.id, 2, [b])
+    api.mark_done(case, api.compare_case(ini, case, v2).judged[0], 2)  # verifies a, marks b in v2
+    v3, _ = api.generate(ini, case, "tobe")
+    api.set_canned(case.id, 3, [])
+
+    cc = api.compare_case(ini, case, v3)
+
+    from qtrequestory.ui.contracts import Verification
+
+    assert cc.verification == Verification(1, 1, 0, 0, 3)
+
+
+def test_fake_unresolved_remembers_the_version_the_mark_was_made_in(fake, tmp_path: Path):
+    """R10: non_risolte[].versione is N of "Segnata fatta in vN, ma in vM"."""
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    stuck = fake_diff("cambiato", "testo", "bloccata", "errata")
+    api.set_canned(case.id, 1, [stuck])
+    api.mark_done(case, api.compare_case(ini, case, v1).judged[0], 1)
+    v2, _ = api.generate(ini, case, "tobe")
+    api.set_canned(case.id, 2, [stuck])
+    api.compare_case(ini, case, v2)
+
+    reloaded = next(c for c in api.load(ini.id).cases if c.id == case.id)
+    assert reloaded.review.unresolved == [(stuck.anchor, 1, "errata")]
+
+
+def test_fake_ids_are_unique_within_judged(fake, tmp_path: Path):
+    """R9: "fatta" entries (AS-IS diffs) and TO-BE diffs never share an id."""
+    from tests.fakes.fake_core import fake_diff
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    api.set_canned(case.id, 0, [fake_diff("mancante", "testo", "sistemata", "", diff_id=1),
+                                fake_diff("mancante", "testo", "comune", "", diff_id=2)])
+    api.set_canned(case.id, 1, [fake_diff("mancante", "testo", "comune", "", diff_id=1),
+                                fake_diff("in_piu", "testo", "", "nuova", diff_id=2)])
+
+    judged = api.compare_case(ini, case, v1).judged
+
+    assert [j.diff.id for j in judged] == [1, 2, 3]
+    assert [j.verdict for j in judged] == ["da_fare", "regressione", "fatta"]
+
+
+def test_fake_preset_names_match_the_engine():
+    from tests.fakes.fake_verdict import FAKE_PRESETS
+
+    assert [p.name for p in FAKE_PRESETS] == ["Numero di pagina", "Data", "IBAN", "Codice fiscale", "CAP",
+                                              "Importo", "Marcatore di firma", "Parametri di tracciamento"]
+    assert not any(p.enabled for p in FAKE_PRESETS)
+
+
+def test_fake_duplicate_noise_rule_names_are_refused(fake, tmp_path: Path):
+    from qtrequestory.ui.contracts import NoiseRule
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    twins = [NoiseRule("data", "a"), NoiseRule("data", "b")]
+
+    with pytest.raises(ValueError, match="data"):
+        api.set_noise_rules(ini, None, twins)
+    with pytest.raises(ValueError, match="data"):
+        api.set_noise_rules(ini, case, twins)
+    with pytest.raises(ValueError, match="data"):
+        api.count_noise_hits(case, twins)
+    assert ini.noise_rules == [] and case.review.noise_rules == []
+
+
+def test_fake_initiative_settings_unchanged_when_the_save_is_refused(fake, tmp_path: Path):
+    from qtrequestory.ui.contracts import NoiseRule
+
+    api, ini, case, v1 = _review_case(fake, tmp_path)
+    (ini.folder / "iniziativa.json").write_text("{rotto", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        api.set_profile(ini, None, "stretto")
+    with pytest.raises(ValueError):
+        api.set_noise_rules(ini, None, [NoiseRule("x", "x")], ["Data"])
+    assert (ini.profile, ini.noise_rules, ini.noise_presets) == ("tollerante", [], [])
+
+
+# ------------------------------------------- E7: the fake agrees with the real engine ---
+
+def _judged_view(cc) -> list[tuple]:
+    return [(j.diff.id, j.diff.left_text, j.diff.klass, j.verdict, j.marked, j.unresolved, j.tolerated_note,
+             j.previous_text, j.diff.left_spans, j.diff.right_spans) for j in cc.judged]
+
+
+def _summary_view(cc) -> dict:
+    raw = cc.summary.to_json()
+    raw.pop("quando")
+    return raw
+
+
+def _review_view(review) -> dict:
+    return {
+        "marks": [(m.anchor, m.generated, m.version) for m in review.marks],
+        "unresolved": list(review.unresolved),
+        "tolerances": [(t.anchor, t.generated, t.note) for t in review.tolerances],
+        "not_variables": [a for a, _ in review.not_variables],
+        "profile": review.profile,
+        "noise_rules": list(review.noise_rules),
+    }
+
+
+def test_fake_and_real_compare_case_agree_on_a_scripted_scenario(tmp_path: Path):
+    """R1: the real ``compare_case`` and review actions against the fake's,
+    the fake canned with the REAL engine's comparisons: the same judged
+    list, summary, verification and saved review at every step."""
+    from qtrequestory.ui.contracts import NoiseRule
+    from qtrequestory.ui.pages.officina_undo import stand_in
+
+    real, server, fake, bundle, src = _officina_pair(tmp_path)
+    lines = ["Contratto di prova per Acme-Servizi", "Il prezzo resta fisso per dodici mesi",
+             "La carta sarà abilitata agli acquisti online", "Pagamento con addebito mensile anticipato",
+             "Il contratto di fornitura resta valido", "Località .........."]
+
+    def doc(*changes: tuple[str, str]) -> bytes:
+        out = list(lines)
+        for old, new in changes:
+            out = [line.replace(old, new) for line in out]
+        return canned_pdf("\n".join(out))
+
+    bodies = {"asis": doc(("dodici", "ventiquattro"), ("abilitata", "abilitato"), ("mensile", "trimestrale"),
+                          ("..........", "Shelbyville")),
+              "v1": doc(("dodici", "ventiquattro"), ("abilitata", "abilitato"), ("fornitura", "forni tura"),
+                        ("..........", "Springfield")),
+              "v2": doc(("abilitata", "abilitato"), ("fornitura", "forni tura"), ("Acme-Servizi", "Acme"),
+                        ("..........", "Springfield"))}
+    target_file = tmp_path / "atteso.pdf"
+    target_file.write_bytes(doc())
+    steps: dict[str, list] = {"real": [], "fake": []}
+    canned: dict[int, object] = {}
+    try:
+        for name, api in (("real", real), ("fake", fake)):
+            ini = api.create_initiative("Fedeltà")
+            case = api.case_from_file(ini, src, "MOD_TEST_A")
+            api.set_target(case, target_file)
+            versions = {}
+            for kind, key in (("asis", "asis"), ("tobe", "v1"), ("tobe", "v2")):
+                server.canned.body = bodies[key]
+                versions[key], result = api.generate(ini, case, kind)
+                assert result.ok, result.reason
+            if name == "fake":
+                for number, comparison in canned.items():
+                    fake.set_canned(case.id, number, comparison)
+            seen = steps[name]
+
+            def record(cc, api=api, ini=ini, case=case, seen=seen) -> None:
+                reloaded = next(c for c in api.load(ini.id).cases if c.id == case.id)
+                seen.append((_judged_view(cc), _summary_view(cc), cc.verification, cc.profile, cc.inactive,
+                             _review_view(reloaded.review)))
+
+            cc = api.compare_case(ini, case, versions["v1"])
+            if name == "real":
+                canned[0], canned[1] = cc.asis, cc.tobe
+            record(cc)
+            by = {j.diff.left_text: j for j in cc.judged}
+            api.tolerate(case, by["abilitata"], "va bene")
+            api.mark_done(case, by["dodici"], 1)
+            api.set_profile(ini, case, "stretto")
+            record(api.compare_case(ini, case, versions["v1"]))
+            by = {j.diff.left_text: j for j in api.compare_case(ini, case, versions["v1"]).judged}
+            api.mark_done(case, by["fornitura"], 1)
+            cc = api.compare_case(ini, case, versions["v2"])
+            if name == "real":
+                canned[2] = cc.tobe           # the real runs first: the fake is canned with these
+            record(cc)
+            api.set_profile(ini, case, None)
+            api.untolerate(case, next(j for j in cc.judged if j.diff.left_text == "abilitata"))
+            record(api.compare_case(ini, case, versions["v2"]))
+            api.mark_done(case, next(j for j in cc.judged if j.diff.left_text == "dodici"), 2)
+            record(api.compare_case(ini, case, versions["v2"]))  # a mark on a "fatta" does nothing: inactive
+            variable = next(j for j in cc.judged if j.diff.klass == "variabile")
+            api.not_variable(case, variable)
+            api.not_variable(case, variable)
+            record(api.compare_case(ini, case, versions["v2"]))  # testo now, with its char spans (R36)
+            api.variable_again(case, variable)
+            api.tolerate(case, next(j for j in cc.judged if j.diff.left_text == "abilitata"))
+            api.set_noise_rules(ini, case, [NoiseRule("mai", "zzqqzz")])
+            api.set_noise_rules(ini, None, [NoiseRule("mai neanche", "qqzzqq")], [])
+            record(api.compare_case(ini, case, versions["v2"]))
+            for clash in ([NoiseRule("mai neanche", "x")], [NoiseRule("Data", "x")]):  # I1: names across levels
+                with pytest.raises(ValueError, match="nome già usato"):
+                    api.set_noise_rules(ini, case, clash)
+            with pytest.raises(ValueError, match="nome già usato"):
+                api.set_noise_rules(ini, None, [NoiseRule("mai", "x")], [])
+            api.not_variable(case, variable)
+            api.reset_tolerances(case)
+            marks = list(next(c for c in api.load(ini.id).cases if c.id == case.id).review.marks)
+            api.unmark_all(case)
+            record(api.compare_case(ini, case, versions["v2"]))
+            for mark in marks:  # the undo of "Annulla i segni" (U4): stand-ins built from the marks
+                api.mark_done(case, stand_in(mark), mark.version)
+            record(api.compare_case(ini, case, versions["v2"]))
+            again = next(c for c in api.load(ini.id).cases if c.id == case.id).review.marks
+            assert marks and [(m.anchor, m.generated, m.version) for m in again] == [
+                (m.anchor, m.generated, m.version) for m in marks], name
+    finally:
+        server.close()
+    assert len(steps["real"]) == len(steps["fake"]) == 9
+    for n, (got_real, got_fake) in enumerate(zip(steps["real"], steps["fake"], strict=True)):
+        assert got_real == got_fake, f"step {n}"
+    first, _, third, _, fifth, flipped, seventh, reset, remarked = steps["real"]
+    assert remarked[5]["marks"] == seventh[5]["marks"] != [], "undoing \"Annulla i segni\" puts the marks back"
+    assert fifth[4] == 1, "a mark on a difference that is not open is inactive"
+    verdicts = {row[1]: row[3] for row in first[0]}
+    assert {k: verdicts[k] for k in ("dodici", "abilitata", "fornitura", "mensile")} == {
+        "dodici": "da_fare", "abilitata": "da_fare", "fornitura": "tollerata", "mensile": "fatta"}
+    assert [row[3] for row in first[0] if row[2] == "variabile"] == [None]
+    turned = [row for row in flipped[0] if row[2] == "testo" and row[8] and "Springfield" not in row[1]]
+    assert turned and turned[0][3] in ("da_fare", "in_corso", "regressione"), "the variable counts now"
+    assert reset[5]["tolerances"] == [] and reset[5]["not_variables"] == [] and reset[5]["marks"] == []
+    second = steps["real"][1]
+    assert {row[1]: row[3] for row in second[0]}["fornitura"] == "regressione"  # counts in "stretto"
+    assert third[2] is not None and (third[2].resolved, third[2].unresolved) == (1, 1)

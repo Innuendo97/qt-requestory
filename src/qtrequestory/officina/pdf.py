@@ -9,8 +9,10 @@ module rather than importing ``pypdfium2`` directly, so that importing
 from __future__ import annotations
 
 import ctypes
+import math
+import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -64,11 +66,60 @@ class PageChars:
     come with ``None`` boxes: they only separate words. PDFium reports
     a hyphen at a line end as U+0002; it is returned as ``"-"``. A glyph with
     no Unicode mapping becomes U+FFFD, so its word stays whole.
+
+    ``fonts`` runs parallel to ``chars``: ``(size in points, bold)`` for a
+    character that may open a word — the first of the page and every one
+    after a separator — and ``None`` elsewhere (sampling every glyph would
+    cost ~30% of the extraction). The size is the one DISPLAYED (the font
+    size times the text matrix and CTM scale); bold comes from :func:`is_bold`.
+    Empty when nothing was sampled.
     """
     width: float
     height: float
     chars: list[tuple[str, Box | None, Box | None]]
     image_count: int
+    fonts: list[tuple[float, bool] | None] = field(default_factory=list)
+
+
+#: Font-name markers of a bold face (matched case-insensitively).
+_BOLD_NAMES = ("bold", "black", "heavy")  # "bold" also covers "Semibold"
+#: A font subset's tag: six capitals and a plus ("ABCDEF+Arial-BoldMT").
+_SUBSET = re.compile(r"^[A-Z]{6}\+")
+
+
+def font_name(raw: bytes) -> str:
+    """A font's base name as PDFium returns it, without the subset tag."""
+    return _SUBSET.sub("", raw.decode("latin-1").rstrip("\0"))
+
+
+def is_bold(weight: int, name: str) -> bool:
+    """Whether a font is bold: by its weight when PDFium knows it (≥ 600), and
+    by its name either way ("Bold", "Black", "Heavy", "Semibold"): PDFium
+    derives the weight from the stem width, which puts a real bold face well
+    under 600 (Arial Bold reads 520)."""
+    lowered = name.lower()
+    return weight >= 600 or any(marker in lowered for marker in _BOLD_NAMES)
+
+
+class _FontSampler:
+    """Reads one character's font from a text page (buffers reused)."""
+
+    def __init__(self, textpage_raw) -> None:
+        self._raw = textpage_raw
+        self._name = ctypes.create_string_buffer(256)
+        self._flags = ctypes.c_int()
+        self._matrix = pdfium_c.FS_MATRIX()
+
+    def __call__(self, index: int) -> tuple[float, bool]:
+        size = pdfium_c.FPDFText_GetFontSize(self._raw, index)
+        if pdfium_c.FPDFText_GetMatrix(self._raw, index, ctypes.byref(self._matrix)):
+            m = self._matrix
+            size *= math.sqrt(abs(m.a * m.d - m.b * m.c))
+        length = pdfium_c.FPDFText_GetFontInfo(self._raw, index, self._name, len(self._name),
+                                               ctypes.byref(self._flags))
+        name = font_name(self._name.raw[:length]) if 0 < length <= len(self._name) else ""
+        weight = pdfium_c.FPDFText_GetFontWeight(self._raw, index)
+        return round(size, 2), is_bold(weight, name)
 
 
 def read_chars(path: Path) -> list[PageChars]:
@@ -125,6 +176,76 @@ def page_sizes(path: Path) -> list[tuple[float, float]]:
             raise PdfReadError(f"impossibile leggere il PDF {Path(path).name}: {exc}") from exc
         finally:
             doc.close()
+
+
+class TextSearch:
+    """Where a text occurs in a PDF: ``search(text)`` gives ``(page, box)``
+    per occurrence, the box in points of the page as DISPLAYED, origin
+    top-left (the viewer's space), the union of the occurrence's rects on its
+    page. Case-sensitive; PDFium's own search (a text broken over two lines
+    in the file is not found as a whole). For ``compare.extract_html.locate``.
+
+    The document stays open until :meth:`close` (a context manager); every
+    PDFium call holds :data:`_LOCK`. After ``close`` a search finds nothing.
+    :class:`PdfReadError` when the file cannot be read.
+    """
+
+    def __init__(self, path: Path) -> None:
+        with _LOCK:
+            self._doc: pdfium.PdfDocument | None = _open_pdf(path)
+
+    def __enter__(self) -> TextSearch:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def close(self) -> None:
+        with _LOCK:
+            if self._doc is not None:
+                self._doc.close()
+                self._doc = None
+
+    def __call__(self, text: str) -> list[tuple[int, Box]]:
+        out: list[tuple[int, Box]] = []
+        if not text:
+            return out
+        with _LOCK:
+            if self._doc is None:
+                return out
+            try:
+                for number in range(len(self._doc)):
+                    out.extend((number, box) for box in _occurrences(self._doc[number], text))
+            except pdfium.PdfiumError:
+                return []
+        return out
+
+
+def _occurrences(page: pdfium.PdfPage, text: str) -> list[Box]:
+    """Display boxes of ``text`` on ``page`` (the caller holds the lock)."""
+    textpage = searcher = None
+    try:
+        width, height = page.get_size()
+        to_display = _display_transform(page, width, height)
+        textpage = page.get_textpage()
+        searcher = textpage.search(text, match_case=True)
+        boxes: list[Box] = []
+        while (found := searcher.get_next()) is not None:
+            index, count = found
+            corners = []
+            for i in range(textpage.count_rects(index, count)):
+                left, bottom, right, top = textpage.get_rect(i)
+                corners += [to_display(left, bottom), to_display(right, top)]
+            if corners:
+                xs, ys = [x for x, _ in corners], [y for _, y in corners]
+                boxes.append((min(xs), min(ys), max(xs), max(ys)))
+        return boxes
+    finally:
+        if searcher is not None:
+            searcher.close()
+        if textpage is not None:
+            textpage.close()
+        page.close()
 
 
 @dataclass(frozen=True)
@@ -223,11 +344,13 @@ def _page_chars(page: pdfium.PdfPage) -> PageChars:
         images = sum(1 for _ in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE]))
         to_display = _display_transform(page, width, height)
         chars: list[tuple[str, Box | None, Box | None]] = []
+        fonts: list[tuple[float, bool] | None] = []
         rotation = page.get_rotation()
         if rotation:
             page.set_rotation(0)
         textpage = page.get_textpage()
         raw = textpage.raw
+        sample = _FontSampler(raw)
         for i in range(textpage.count_chars()):
             code = pdfium_c.FPDFText_GetUnicode(raw, i)
             generated = pdfium_c.FPDFText_IsGenerated(raw, i) == 1
@@ -239,6 +362,7 @@ def _page_chars(page: pdfium.PdfPage) -> PageChars:
                 ch = " " if generated else "\ufffd"
             if ch.isspace() or (generated and code != 2):
                 chars.append((" ", None, None))
+                fonts.append(None)
                 continue
             left, bottom, right, top = textpage.get_charbox(i, loose=True)
             x_a, y_a = to_display(left, bottom)
@@ -248,7 +372,9 @@ def _page_chars(page: pdfium.PdfPage) -> PageChars:
                 (left, -top, right, -bottom),
                 (min(x_a, x_b), min(y_a, y_b), max(x_a, x_b), max(y_a, y_b)),
             ))
-        return PageChars(width, height, chars, images)
+            opens_word = len(chars) == 1 or chars[-2][1] is None
+            fonts.append(sample(i) if opens_word else None)
+        return PageChars(width, height, chars, images, fonts)
     finally:
         if textpage is not None:
             textpage.close()

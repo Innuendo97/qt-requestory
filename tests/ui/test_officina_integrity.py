@@ -20,7 +20,6 @@ from qtrequestory.ui.contracts import DeliveryReport
 from qtrequestory.ui.pages import officina_dialogs
 from qtrequestory.ui.pages.officina_delivery import DeliveryDialog
 from qtrequestory.ui.pages.officina_format import delivery_summary
-from qtrequestory.ui.pages.officina_jobs import SUMMARY_JOB
 from qtrequestory.ui.pages.officina_page import OfficinaPage
 
 from .test_officina_page import FakeWindow, make_initiative, open_case, wait_idle
@@ -226,22 +225,21 @@ def test_the_busy_labels_name_the_generator(qtbot, page, fake_core, tmp_path):
     wait_idle(qtbot, page)
 
 
-# ------------------------------------------------------ the board's summary job ---
+# ------------------------------------------------------ the board's pills ---
 
-def test_leaving_the_board_cancels_its_comparison_job(qtbot, page, fake_core, tmp_path,
-                                                     monkeypatch):
+def test_the_board_submits_no_comparison_job(qtbot, page, fake_core, tmp_path, monkeypatch):
+    """U5: the pills are read from ``riepilogo``; showing the board runs nothing."""
     case = open_case(page, fake_core, tmp_path)
-    page.show_board()
-    cancelled: list[str] = []
-    real_cancel = page.runner.cancel
-    monkeypatch.setattr(page.runner, "cancel", lambda name: (cancelled.append(name),
-                                                             real_cancel(name)))
-    page.open_case(case.id)
-    assert SUMMARY_JOB in cancelled
-    cancelled.clear()
+    wait_idle(qtbot, page)
+    submitted: list[str] = []
+    real_submit = page.runner.submit
+    monkeypatch.setattr(page.runner, "submit", lambda name, *a, **k: (submitted.append(name),
+                                                                     real_submit(name, *a, **k))[1])
     page.show_board()
     page.show_list()
-    assert SUMMARY_JOB in cancelled
+    page.open_initiative("Banco")
+    assert submitted == []
+    assert page.board.row_texts(case.id)[2] == strings.OFFICINA_PILL_NO_TOBE
 
 
 # ------------------------------------------------------------ delivery summary ---

@@ -14,8 +14,15 @@ boxes), pages stacked top to bottom:
   (HiDPI), snapped to a scale bucket, then scaled back into page points;
 * differences are :class:`~qtrequestory.ui.pages.officina_overlays.HighlightItem`
   boxes (managed by ``HighlightsMixin`` there); a click — not a drag — on one
-  emits :attr:`DocView.difference_clicked`, and
-  :meth:`DocView.focus_difference` scrolls to one and rings it.
+  emits :attr:`DocView.difference_clicked` (elsewhere: ``blank_clicked``), a
+  double click ``difference_double_clicked``, a right click
+  ``difference_menu``, and F / T / V ``key_action`` (U4: the case view turns
+  them into review actions); :meth:`DocView.focus_difference` scrolls to one
+  and rings it;
+* the :class:`~qtrequestory.ui.pages.officina_minimap.MiniMap` sits between
+  the pages and the vertical scroll bar (a viewport margin): a segment per
+  highlight at its height in the document; a click on one goes there and
+  emits :attr:`DocView.minimap_chosen`, elsewhere it centres that point.
 
 :class:`SyncController` keeps two views in step — scroll by *relative page
 position* (page index + fraction of that page), and zoom — and can be switched
@@ -30,10 +37,12 @@ from typing import TYPE_CHECKING, Literal
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QTransform
-from PySide6.QtWidgets import QApplication, QFrame, QGraphicsScene, QGraphicsView, QWidget
+from PySide6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView, QWidget
 
 from qtrequestory.ui import strings, theme
-from qtrequestory.ui.pages.officina_overlays import HighlightItem, HighlightsMixin, PageSlot
+from qtrequestory.ui.pages.officina_minimap import MINIMAP_W, MiniMap, document_segments
+from qtrequestory.ui.pages.officina_overlays import HighlightsMixin, PageSlot
+from qtrequestory.ui.pages.officina_viewer_input import ViewerInputMixin
 from qtrequestory.ui.pages.officina_render import PageRenderer, bucket
 
 if TYPE_CHECKING:
@@ -62,11 +71,16 @@ ZOOM_SETTLE_MS = 150
 RETRY_MS = 500
 
 
-class DocView(HighlightsMixin, QGraphicsView):
+class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
     """One document's pages, rendered on demand, with difference overlays."""
 
     difference_clicked = Signal(int)  # Difference.id
+    difference_double_clicked = Signal(int)
+    difference_menu = Signal(int, QPoint)  # Difference.id, global position of the right click
+    blank_clicked = Signal()          # a click (not a drag) on no highlight
+    key_action = Signal(str)          # F / T / V: "fatta" | "tollera" | "non_variabile"
     zoom_changed = Signal()           # set_zoom / Ctrl+wheel (not a fit refresh)
+    minimap_chosen = Signal(int)      # a click on a minimap segment (the view went there)
 
     def __init__(self, renderer: PageRenderer | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,6 +105,10 @@ class DocView(HighlightsMixin, QGraphicsView):
         self._pages: list[PageSlot] = []
         self._tops: list[float] = []
         self._asked: set[tuple[int, float]] = set()
+        self.minimap = MiniMap(self)
+        self.setViewportMargins(0, 0, MINIMAP_W, 0)
+        self.minimap.diff_chosen.connect(self._on_minimap_diff)
+        self.minimap.position_chosen.connect(self._on_minimap_position)
         self._init_highlights()
         self._mode: str | None = "fit_width"
         self._zoom = 1.0
@@ -105,6 +123,7 @@ class DocView(HighlightsMixin, QGraphicsView):
         self._retry.timeout.connect(self._schedule)
         self._press: QPoint | None = None
         self.verticalScrollBar().valueChanged.connect(self._schedule)
+        self.verticalScrollBar().valueChanged.connect(self._minimap_band)
         self.horizontalScrollBar().valueChanged.connect(self._schedule)
         theme.signals.changed.connect(self._recolour)
         self._recolour()
@@ -138,6 +157,7 @@ class DocView(HighlightsMixin, QGraphicsView):
         self._apply_zoom(keep_position=False)
         self._settle_until = 0.0  # a new document renders at once
         self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
+        self._refresh_minimap()
         self._schedule()
 
     def page_count(self) -> int:
@@ -215,7 +235,34 @@ class DocView(HighlightsMixin, QGraphicsView):
         super().resizeEvent(event)
         if self._mode is not None:
             self._apply_zoom(keep_position=True)
+        area = self.viewport().geometry()
+        self.minimap.setGeometry(area.right() + 1, area.top(), MINIMAP_W, area.height())
+        self._minimap_band()
         self._schedule()
+
+    # -- minimap -----------------------------------------------------------------
+
+    def _refresh_minimap(self) -> None:
+        self.minimap.set_segments(document_segments(
+            self._items, show_done=self._show_done, page_tops=self._tops,
+            height=self.sceneRect().height() if self._pages else 0.0))
+        self._minimap_band()
+
+    def _minimap_band(self, *_args) -> None:
+        height = self.sceneRect().height()
+        if not self._pages or height <= 0:
+            self.minimap.set_band(0.0, 0.0)
+            return
+        area = self._visible_scene_rect()
+        self.minimap.set_band(area.top() / height, area.bottom() / height)
+
+    def _on_minimap_diff(self, diff_id: int) -> None:
+        self.focus_difference(diff_id, reveal=True)
+        self.minimap_chosen.emit(diff_id)
+
+    def _on_minimap_position(self, fraction: float) -> None:
+        centre = self.mapToScene(self.viewport().rect().center())
+        self.centerOn(centre.x(), fraction * self.sceneRect().height())
 
     def wheelEvent(self, event) -> None:  # noqa: D102, N802 - Ctrl+wheel zooms
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -283,6 +330,7 @@ class DocView(HighlightsMixin, QGraphicsView):
         return bucket(min(MAX_RENDER_SCALE, self.transform().m11() * ratio))
 
     def _update_pages(self) -> None:
+        self._minimap_band()  # after a zoom, too
         visible = self.visible_pages()
         if not visible:
             return
@@ -327,23 +375,7 @@ class DocView(HighlightsMixin, QGraphicsView):
         page.set_label(self.page_error(number))
         self._recolour()
 
-    # -- input and theme -------------------------------------------------------
-
-    def mousePressEvent(self, event) -> None:  # noqa: D102, N802
-        left = event.button() == Qt.MouseButton.LeftButton
-        self._press = event.position().toPoint() if left else None
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: D102, N802 - a click, not a drag
-        pos = event.position().toPoint()
-        press, self._press = self._press, None
-        if (event.button() == Qt.MouseButton.LeftButton and press is not None
-                and (pos - press).manhattanLength() < QApplication.startDragDistance()):
-            for item in self.items(pos):
-                if isinstance(item, HighlightItem):
-                    self.difference_clicked.emit(item.diff_id)
-                    break
-        super().mouseReleaseEvent(event)
+    # -- theme (input: officina_viewer_input) -----------------------------------
 
     def _recolour(self) -> None:
         tokens = theme.tokens()

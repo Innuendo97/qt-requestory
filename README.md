@@ -270,8 +270,9 @@ L'**Officina** (`Ctrl+3`) serve a chi modifica i template: porta un documento
 dal suo stato attuale al **target**, cioè il PDF o l'HTML che il cliente ha
 fornito come riferimento. Sostituisce, per questo lavoro, Postman più un
 confronto a mano più le cartelle preparate a mano per i tester: genera i
-documenti con gli header giusti, li mette accanto al target con le differenze
-di testo evidenziate e prepara la cartella di consegna.
+documenti con gli header giusti, li mette accanto al target, dice per ogni
+differenza se è **fatta, da fare, in corso o una regressione** rispetto a
+com'era prima delle tue modifiche, e prepara la cartella di consegna.
 
 Usala quando devi far combaciare uno o più documenti con quelli attesi dal
 cliente (una richiesta di modifica, un aggiornamento dei testi…) e poi
@@ -324,20 +325,28 @@ Le parole che usa:
    l'hanno. L'AS-IS si può rigenerare (*Rigenera AS-IS…*) solo scrivendo una
    nota con il motivo; quello vecchio resta conservato nella cartella del caso.
 4. **Confronta con il target**: nel caso, il target è a sinistra e il documento
-   generato a destra, con le differenze di testo evidenziate (verde = in più,
-   rosso = mancante, ambra = cambiato) e l'elenco delle differenze a destra.
-   Cliccando una differenza, nell'elenco o sulla pagina, entrambi i documenti ci
-   vanno; scorrimento e zoom (`Ctrl`+rotella) restano allineati. Sopra il
-   documento di destra scegli cosa vedere: AS-IS, `v1`, `v2`, ….
+   generato a destra; ogni differenza è evidenziata con il colore del suo
+   **verdetto** e ha una riga nell'elenco a destra (vedi
+   [Leggere il confronto](#leggere-il-confronto)). Cliccando una differenza,
+   nell'elenco o sulla pagina, entrambi i documenti ci vanno; scorrimento e
+   zoom (`Ctrl`+rotella) restano allineati. Sopra il documento di destra scegli
+   cosa vedere: AS-IS, `v1`, `v2`, …. Con un TO-BE hai i verdetti; con l'AS-IS
+   vedi, senza verdetto, le sue differenze dal target che il profilo del caso
+   conta (ogni riga dice che tipo di differenza è: «cambiato · stile»,
+   «(stesse parole)»…).
 5. **Modifica in Designer** template, master template, data master o
-   workflow, e **pubblica** su svil.
+   workflow, e **pubblica** su svil. Mentre lavori, segna con `F` le
+   differenze che hai corretto (**segna fatta**): la prossima rigenerazione le
+   verifica.
 6. **Rigenera il TO-BE** con `F5` (o *Rigenera TO-BE (F5)*): stesso payload,
    stessi header, una nuova versione. Il confronto si aggiorna da solo. Dalla
    bacheca, *Rigenera TO-BE selezionati* rigenera più casi insieme (al massimo
    tre alla volta; un caso che fallisce non ferma gli altri; *Annulla
    generazioni* toglie quelli ancora in coda).
-7. Ripeti 5–6 finché il TO-BE è uguale al target, poi **Segna accettato**. Se
-   restano differenze di testo il programma chiede conferma (non lo impedisce).
+7. Ripeti 5–6 finché non resta niente da fare, poi **Segna accettato**. Se
+   restano differenze aperte il programma le riassume e chiede conferma
+   («Restano 1 regressione, 2 da fare, 1 da verificare. Segnare il caso
+   accettato lo stesso?»); non lo impedisce.
    L'accettazione vale per **quella** versione del TO-BE: se poi arriva un nuovo
    TO-BE o un nuovo AS-IS il caso torna aperto con l'avviso «Nuova versione
    dopo l'accettazione: da ricontrollare» (sulla bacheca: *da ricontrollare*).
@@ -365,10 +374,15 @@ Un header con valore vuoto non viene inviato. `Postman-Token` si toglie solo
 con l'opzione esplicita *Non inviare Postman-Token*.
 
 La bacheca dell'iniziativa mostra per ogni caso quali documenti ci sono
-(T, A, `vN`; «—» se manca, in rosso se il file è sparito dal disco), il
-riassunto «TO-BE contro target» (uguale / N differenze / senza testo…),
-l'ultima generazione (o il motivo per cui è fallita) e lo stato. `Invio` o
-doppio clic apre il caso.
+(T, A, `vN`; «—» se manca, in rosso se il file è sparito dal disco), la
+pillola «TO-BE contro target», l'ultima generazione (o il motivo per cui è
+fallita) e lo stato. `Invio` o doppio clic apre il caso. La pillola dice lo
+**stato peggiore** del caso con il suo conteggio e l'avanzamento («▲ 1
+regressione · 60%»; il tooltip ha la ripartizione completa). È quella
+dell'ultimo confronto fatto: se nel frattempo sono arrivati un TO-BE, un
+AS-IS o un target nuovi dice «v3 · da riconfrontare», e «da confrontare» se
+il caso non è mai stato aperto con un TO-BE. La bacheca non confronta niente
+da sola: apri il caso per aggiornarla.
 
 Un'iniziativa è la sua **cartella**: se ne copi una in Esplora risorse, la
 copia è un'iniziativa a sé (nell'elenco, due iniziative con lo stesso nome
@@ -381,6 +395,155 @@ riscrive mai**: con `iniziativa.json` illeggibile non si genera niente (gli
 header predefiniti non sono noti); un caso con `caso.json` illeggibile si può
 guardare ma non modificare, accettare né generare. Correggi o ripristina il
 file e riapri.
+
+### Leggere il confronto
+
+Per il TO-BE scelto il programma fa due confronti, AS-IS contro target e TO-BE
+contro target, e li mette insieme. Ogni differenza ha un **verdetto**, sempre
+con colore, simbolo e parola:
+
+| Verdetto | Sul documento | Vuol dire |
+|---|---|---|
+| ▲ **regressione** | riempimento rosso | nell'AS-IS era uguale al target, ora no: l'hai introdotta tu |
+| ○ **da fare** | riempimento ambra | c'era già nell'AS-IS, identica: nessuno l'ha ancora toccata |
+| ◐ **in corso** | riempimento azzurro | c'era nell'AS-IS, ora il testo generato è un altro ma è ancora diverso dal target («Prima … → ora …») |
+| ✓? **da verificare** | bordo verde tratteggiato | l'hai segnata fatta: la verifica la prossima rigenerazione |
+| ✓ **fatta** | sottolineatura verde sul target, con *Mostra fatte* | c'era nell'AS-IS e ora non c'è più |
+| ⊘ **tollerata** | bordo grigio tratteggiato | non conta: per il profilo o perché l'hai tollerata tu |
+| {x} **variabile** | sottolineatura viola | un dato del cliente dove il target ha un buco (vedi sotto) |
+| ~ **rumore** | bordo grigio tratteggiato | testo coperto da una regola di rumore |
+
+Dentro una parola, i **caratteri cambiati** sono in giallo, in grassetto e
+sottolineati: «abilitat**a**» contro «abilitat**o**» si vede anche da lontano.
+Variabili e rumore non hanno verdetto e non contano mai.
+
+Sopra i documenti, la **barra dell'avanzamento**: la percentuale (fatte / (fatte
++ da fare + in corso + regressioni)), la versione confrontata («v3 contro
+target»), una pillola per stato e una **striscia** con una tacca per differenza
+in ordine di documento (clic = ci vai). Accanto a ciascun documento una
+**minimappa** fa lo stesso lungo la barra di scorrimento. Senza AS-IS il
+verdetto è **a due vie**: tutto ciò che conta è «da fare», niente regressioni;
+la pillola «⚠ a due vie» lo dice e offre *Genera l'AS-IS*.
+
+L'**elenco** ha sei schede con il conteggio: *Da guardare* (regressioni, non
+risolte, da fare, in corso), *Da verificare*, *Fatte*, *Tollerate*,
+*Variabili*, *Tutte* (anche il rumore). Sotto le schede, *Mostra fatte*
+sottolinea in verde sul target (e nella minimappa) le differenze già fatte;
+aprire la scheda *Fatte* lo accende. Ogni riga ha il verdetto, il tipo
+(Aa testo, ▦ composizione — sezione mancante o in più, pagine —, ⇄ spostato,
+¶ stile, ↔ spaziatura, 🔗 link), la pagina e un pezzo di testo attorno alla
+differenza, con il testo del target barrato e quello generato in grassetto.
+
+Il programma riconosce da solo:
+
+- le **variabili** del target: righe di puntini o trattini bassi
+  (`Località ..........`) ed etichette seguite dal vuoto (`CAP:` a fine riga,
+  `Città, ` in testa a una lettera). Quello che il documento generato ci mette è
+  una *variabile*; un'etichetta «probabile» accetta al massimo un valore corto
+  (6 parole, una riga), oltre resta una differenza normale;
+- **caselle** e **campi a caselle**: `❏`, `☐` o una `q` Wingdings contro `[ ]`,
+  `[x]` contro `☒`, un IBAN scritto una lettera per casella;
+- **sezioni** mancanti o in più (una differenza sola, non un muro di parole),
+  **blocchi spostati**, un numero di **pagine** diverso; il testo andato a capo
+  in un altro punto o su un'altra pagina non conta.
+
+### Segna fatta, tollera, non è una variabile
+
+Dall'elenco o dal documento, sulla differenza selezionata:
+
+| Azione | Tastiera | Mouse |
+|---|---|---|
+| **Segna fatta** / togli il segno | `F` | doppio clic, o *✓ Fatta* nella mini-barra |
+| **Tollera** (senza nota) / non tollerare più | `T` | *⊘ Tollera* nella mini-barra |
+| **Tollera…** con una nota | — | clic destro › *Tollera…* |
+| **Non è una variabile** / di nuovo variabile | `V` | clic destro |
+| Copia testo del target / generato | — | clic destro |
+| Annulla l'ultima azione | `Ctrl+Z` | *Annulla* nel messaggio |
+
+Un clic su un'evidenziazione la seleziona e apre la **mini-barra**
+(«✓ Fatta F · ⊘ Tollera T · ⋯»). `↑`/`↓` scorrono l'elenco, `Invio` porta alla
+differenza in entrambi i documenti. `F`, `T` e `V` passano subito alla riga
+dopo, quindi `F` `F` `F` segna tre righe di fila; le azioni vanno in coda e si
+applicano in ordine, anche mentre il caso si sta riconfrontando.
+
+- **Segna fatta** serve mentre lavori in Designer: la differenza passa a «da
+  verificare» e una striscia lo ricorda («2 modifiche da verificare: pubblica
+  su svil e rigenera il TO-BE (F5)», con *Annulla i segni*). Al primo TO-BE più
+  nuovo di quelli che c'erano quando hai segnato (anche se stavi guardando una
+  versione più vecchia) il programma verifica ogni segno: sparita → **fatta**; ancora lì,
+  uguale → torna al suo verdetto con il contrassegno **non risolta**, in cima
+  all'elenco («Segnata fatta in v3, ma in v4 è ancora qui.»); ancora lì ma
+  cambiata → **in corso**. L'esito resta in una striscia («v4: verificate 3
+  modifiche segnate — 2 risolte, 1 non risolta») finché non fai altro. Una
+  regressione non risolta resta una regressione («regressione · non risolta»)
+  e conta in tutti e due i totali. Un segno su una differenza
+  che al momento non conta (tollerata) resta fermo finché non torna a contare.
+- **Tollera** vale solo per quel caso e sopravvive alle rigenerazioni finché
+  il testo generato in quel punto resta lo stesso; se cambia, la differenza
+  torna a contare. Non passa ad altri casi né ad altre iniziative. *⋯ ›
+  Azzera tolleranze…* nell'intestazione del caso toglie, dopo una conferma,
+  tutte le tolleranze a mano e le correzioni «non è una variabile» del caso
+  (non si annulla).
+- **Non è una variabile**: quando il programma ha preso per variabile un punto
+  che non lo è, `V` lo fa contare come differenza di testo; `V` di nuovo lo
+  riporta variabile.
+
+*Segna accettato* chiede conferma con il riepilogo di cosa resta nell'ultimo
+TO-BE (o dice che non è ancora stato confrontato, o che un lato non ha testo
+estraibile), ma non blocca. Sostituire il **target** di un caso che ha segni o un riepilogo
+chiede conferma: segni, «non risolte» e riepilogo si azzerano; tolleranze e
+«non è una variabile» restano, ma valgono solo dove il testo coincide ancora
+(la scheda *Tutte* dice quante non si applicano più: «Tutte 7 ⊘1»).
+
+### Profili e regole di rumore
+
+Il **profilo** decide che cosa conta; si sceglie nell'intestazione del caso
+(*Profilo: … ▾*):
+
+| Profilo | Contano | Tollerate da sole |
+|---|---|---|
+| **Tollerante** (predefinito) | testo, composizione, link | stile (dimensione e grassetto), spaziatura |
+| **Stretto** | anche stile e spaziatura | — |
+| **Solo testo** | solo il testo | tutto il resto |
+
+«Come l'iniziativa» segue il profilo dell'iniziativa (`profilo` in
+`iniziativa.json`, di serie `tollerante`).
+
+Le **regole di rumore** (*Regole di rumore…*, sulla bacheca per l'iniziativa e
+nell'intestazione del caso) tolgono dal conteggio il testo che cambia a ogni
+generazione. Ci sono dei **preset**, tutti spenti finché non li accendi:
+numero di pagina, data, IBAN, codice fiscale, CAP, importo, marcatore di firma,
+parametri di tracciamento nei link. Puoi aggiungere regole tue (un nome e
+un'espressione regolare, per esempio `PR-\d{6}` per un numero di pratica):
+prima di salvare, ogni regola mostra quante volte la trova nel target e
+nell'ultimo TO-BE, e un'espressione sbagliata è segnata in rosso sulla sua
+riga. Le regole cercano nel testo normalizzato (virgolette e trattini
+uniformati). Le regole del caso si sommano a quelle dell'iniziativa; i preset
+valgono per tutta l'iniziativa; due regole non possono avere lo stesso nome.
+*Salva e riconfronta* rifà il confronto.
+
+Un'espressione che rischia di bloccare il programma viene rifiutata con
+«espressione potenzialmente troppo lenta: semplificala». Le regole tue non
+girano mai dentro il programma: le cerca un processo a parte, sullo stesso
+testo che il confronto usa, con un limite di 2 secondi; una che lo supera (o
+che non si può usare) resta fuori dal confronto, e una nota lo dice.
+
+### Casi HTML
+
+Un'email HTML si confronta attraverso il suo **DOM** (il testo visibile, senza
+commenti, stili, script ed elementi nascosti), con le stesse regole dei PDF:
+variabili, rumore, sezioni, verdetti, segni. Si confrontano anche **link e
+immagini**: `href`, `src` e `alt` devono coincidere (con il preset dei
+parametri di tracciamento acceso, `utm_*` e simili non contano). Il
+documento resta mostrato come stampa PDF di Microsoft Edge; il selettore
+*Documenti | DOM* apre la scheda **DOM**: i blocchi del target con il loro
+verdetto e i due sorgenti affiancati, con le righe che differiscono
+evidenziate. Una differenza che non si vede sulla pagina (un link) sta
+nell'elenco e nella scheda DOM. Senza Microsoft Edge (o se la stampa non
+riesce) un TO-BE HTML si confronta lo stesso dal DOM: i documenti dicono
+«Stampa dell'HTML non disponibile (…)», la scheda DOM diventa la vista
+principale, elenco, verdetti e azioni funzionano. La vista AS-IS di un caso
+HTML, invece, ha bisogno della stampa.
 
 ### La consegna ai tester
 
@@ -434,22 +597,29 @@ usata per quell'iniziativa. Il risultato è:
   OneDrive: il programma lo permette ma avvisa, perché tutto verrebbe copiato
   nel cloud.
 
-### Limiti di questa prima versione
+### Limiti
 
-- Il confronto è **solo sul testo**, parola per parola: immagini, impaginazione,
-  caratteri e spaziature non vengono confrontati. Un testo andato a capo in
-  modo diverso o spostato su un'altra pagina non conta come differenza; un
-  blocco spostato altrove nel documento risulta come «mancante» più «in più».
-- Numeri di pagina, date di generazione e simili compaiono come differenze.
-- Un PDF senza testo (una scansione) non si confronta: il programma dice che
-  quel documento «non ha testo estraibile».
-- I casi HTML (target e documenti generati) vengono convertiti in PDF con
-  Microsoft Edge installato sul PC, senza rete (riferimenti esterni e script
-  tolti), per mostrarli e confrontarli: senza Edge il confronto di un caso HTML
-  non riesce.
-- *Segna accettato* non è bloccato dalle differenze; il motivo di una
-  generazione fallita si perde alla chiusura del programma; i predefiniti
-  degli header dell'iniziativa non hanno ancora una schermata.
+- Si confronta il **testo**, con dimensione e grassetto delle parole. Le
+  immagini, le tabelle cella per cella e lo stile carattere per carattere non
+  sono confrontati.
+- Un PDF senza testo (una scansione, o un TO-BE uscito vuoto) non si
+  confronta: il programma dice che quel documento «non ha testo estraibile»,
+  non dà verdetti e non aggiorna il riepilogo; i segni «fatta» non si
+  verificano contro una versione senza testo e aspettano la prossima. Un
+  AS-IS senza testo rende il verdetto «a due vie». Non c'è OCR.
+- Il primo confronto di documenti lunghi richiede qualche secondo (due PDF di
+  60 pagine circa 10 s la prima volta); poi le estrazioni restano in `cache\`
+  nella cartella del caso, anche dopo un riavvio, e un nuovo confronto costa
+  circa 2 s.
+- Il profilo dell'iniziativa e i predefiniti degli header dell'iniziativa non
+  hanno ancora una schermata: si scrivono in `iniziativa.json`.
+- Dopo aver cambiato le regole di rumore la bacheca mostra il riepilogo
+  vecchio di ogni caso finché non lo riapri.
+- *Segna accettato* non è bloccato dalle differenze (è voluto); il motivo di
+  una generazione fallita si perde alla chiusura del programma.
+
+Gli altri punti aperti (immagini, tabelle, riepilogo in PDF nella consegna…)
+sono in `docs/BACKLOG.md`.
 
 ---
 

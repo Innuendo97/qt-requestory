@@ -366,3 +366,131 @@ def test_json_writes_use_a_unique_temporary_file(tmp_path: Path):
 
     assert json.loads(target.read_text(encoding="utf-8")) == {"a": 2}
     assert sorted(p.name for p in tmp_path.iterdir()) == ["caso.json", "caso.json.tmp"]
+
+
+# ------------------------------------------- concurrent writers (ruling R16) ---
+
+def _new_case(ws: Workspace, tmp_path: Path):
+    ini = ws.create_initiative("Banco")
+    return ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="", source_fdi=None)
+
+
+def test_a_worker_saving_the_review_never_loses_the_case_fields(ws: Workspace, tmp_path: Path):
+    """A worker hammers save_review while the main thread save_case()s and
+    reloads the same case: every write lands, nothing raises (Windows: reads
+    during another thread's os.replace)."""
+    import dataclasses
+    import threading
+
+    from qtrequestory.officina.model_case import load_case
+
+    case = _new_case(ws, tmp_path)
+    errors: list[BaseException] = []
+    stop = threading.Event()
+    written = []
+
+    def hammer():
+        n = 0
+        while not stop.is_set():
+            n += 1
+            profile = ("tollerante", "stretto")[n % 2]
+            try:
+                ws.save_review(dataclasses.replace(case, review=dataclasses.replace(case.review,
+                                                                                    profile=profile)))
+                written.append(profile)
+            except BaseException as exc:  # noqa: BLE001 - the test reports it
+                errors.append(exc)
+
+    worker = threading.Thread(target=hammer)
+    worker.start()
+    try:
+        for n in range(60):
+            main = load_case(case.folder)
+            assert main.load_error is None
+            main.notes = f"nota {n}"
+            ws.save_case(main)
+            assert load_case(case.folder).notes == f"nota {n}", "the main thread's write was lost"
+    finally:
+        stop.set()
+        worker.join(10)
+    assert errors == []
+    final = load_case(case.folder)
+    assert final.notes == "nota 59" and final.review.profile == written[-1]
+    assert final.key == "MOD_TEST_A" and len(written) > 0
+
+
+def test_a_read_retries_a_transient_sharing_error(tmp_path: Path, monkeypatch):
+    path = tmp_path / "caso.json"
+    path.write_text('{"key": "MOD_TEST_A"}', encoding="utf-8")
+    real = Path.read_text
+    failures = iter([PermissionError(13, "Accesso negato"), OSError(22, "violazione di condivisione")])
+    sharing = failures.__next__
+
+    def flaky(self, *args, **kwargs):
+        if self == path:
+            try:
+                exc = sharing()
+            except StopIteration:
+                return real(self, *args, **kwargs)
+            if isinstance(exc, OSError) and not isinstance(exc, PermissionError):
+                exc.winerror = 32  # ERROR_SHARING_VIOLATION
+            raise exc
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    assert model_io.read_json_strict(path) == {"key": "MOD_TEST_A"}
+    assert model_io.read_json_object(path) == {"key": "MOD_TEST_A"}
+
+
+def test_the_existence_check_is_inside_the_retry(tmp_path: Path, monkeypatch):
+    """U1 deferred minor (I1): a stat that fails transiently while another
+    thread replaces the file is retried too, not raised as a bare OSError."""
+    path = tmp_path / "caso.json"
+    path.write_text('{"key": "MOD_TEST_A"}', encoding="utf-8")
+    real_exists = Path.exists
+    real_read = Path.read_text
+    denied = iter([True, True])
+
+    def busy_exists(self, *args, **kwargs):
+        if self == path and next(denied, False):
+            raise PermissionError(13, "Accesso negato")
+        return real_exists(self, *args, **kwargs)
+
+    def busy_read(self, *args, **kwargs):
+        if self == path and next(denied, False):
+            raise PermissionError(13, "Accesso negato")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", busy_exists)
+    monkeypatch.setattr(Path, "read_text", busy_read)
+    assert model_io.read_json_strict(path) == {"key": "MOD_TEST_A"}
+    assert model_io.read_json_strict(tmp_path / "manca.json") == {}
+
+
+def test_a_read_that_keeps_failing_is_unreadable_after_the_bounded_retries(tmp_path: Path,
+                                                                            monkeypatch):
+    path = tmp_path / "caso.json"
+    path.write_text("{}", encoding="utf-8")
+    calls = []
+
+    def locked(self, *args, **kwargs):
+        calls.append(1)
+        raise PermissionError(13, "Accesso negato")
+
+    monkeypatch.setattr(Path, "read_text", locked)
+    monkeypatch.setattr(model_io, "TRANSIENT_WAIT_S", 0.0)
+    with pytest.raises(model_io.UnreadableJsonError):
+        model_io.read_json_strict(path)
+    assert len(calls) == model_io.TRANSIENT_TRIES
+
+
+def test_reopen_after_acceptance_does_not_skip_silently_on_an_unreadable_file(ws: Workspace,
+                                                                             tmp_path: Path,
+                                                                             caplog):
+    from qtrequestory.officina.model_case import reopen_if_accepted
+
+    case = _new_case(ws, tmp_path)
+    (case.folder / "caso.json").write_text("{ non è json", encoding="utf-8")
+    with caplog.at_level("WARNING", logger="qtrequestory.officina.model_case"):
+        reopen_if_accepted(case)
+    assert "non riaperto" in caplog.text

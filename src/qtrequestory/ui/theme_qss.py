@@ -30,6 +30,8 @@ QLabel[pill="ok"] {{ background: {ok_bg}; color: {ok}; }}
 QLabel[pill="warn"] {{ background: {warn_bg}; color: {warn}; }}
 QLabel[pill="bad"] {{ background: {bad_bg}; color: {bad}; }}
 QLabel[pill="neutral"] {{ background: {neutral_bg}; color: {muted}; }}
+QLabel[pill="progress"] {{ background: {progress_bg}; color: {progress}; }}
+QLabel[pill="variable"] {{ background: {variable_bg}; color: {variable}; }}
 
 QFrame[role="card"] {{ background: {surface}; border: 1px solid {border}; border-radius: 6px; }}
 
@@ -55,6 +57,10 @@ QFrame#toast QLabel {{ color: {bg}; background: transparent; }}
 QFrame#toast[tone="ok"] QLabel#toastMark {{ color: {ok_bg}; }}
 QFrame#toast[tone="warn"] QLabel#toastMark {{ color: {warn_bg}; }}
 QFrame#toast[tone="bad"] QLabel#toastMark {{ color: {bad_bg}; }}
+QFrame#toast QPushButton#toastAction {{ background: transparent; color: {selection}; border: none;
+    padding: 0 2px; min-height: 0; font-weight: 700; text-decoration: underline; }}
+QFrame#toast QPushButton#toastAction:hover {{ background: transparent; color: {bg}; }}
+QFrame#toast QLabel#toastHint {{ color: {border}; }}
 
 QPushButton, QToolButton {{ background: {surface}; color: {text}; border: 1px solid {border};
     border-radius: 4px; padding: 4px 12px; min-height: 20px; }}
@@ -216,6 +222,37 @@ QFrame[banner="warn"] {{ background: {warn_bg}; border: none; border-radius: 6px
 QFrame[banner="warn"] QLabel {{ background: transparent; color: {warn}; }}
 QFrame[banner="bad"] {{ background: {bad_bg}; border: none; border-radius: 6px; }}
 QFrame[banner="bad"] QLabel {{ background: transparent; color: {bad}; }}
+QFrame[banner="ok"] {{ background: {ok_bg}; border: none; border-radius: 6px; }}
+QFrame[banner="ok"] QLabel {{ background: transparent; color: {ok}; }}
+QFrame[banner="progress"] {{ background: {progress_bg}; border: none; border-radius: 6px; }}
+QFrame[banner="progress"] QLabel {{ background: transparent; color: {text}; }}
+QToolButton[role="menuButton"]::menu-indicator {{ image: none; width: 0px; }}
+QFrame[role="vrule"] {{ background: {border}; border: none; }}
+QToolButton[role="stripButton"] {{ background: transparent; border: 1px solid transparent;
+    border-radius: 4px; padding: 1px 6px; color: {accent}; font-weight: 600; }}
+QToolButton[role="stripButton"]:hover {{ background: {surface}; border-color: {border}; }}
+QToolButton[role="stripButton"]:disabled {{ color: {muted}; }}
+QToolButton[diffTab="true"] {{ background: transparent; border: none; border-radius: 4px;
+    padding: 3px 8px; color: {muted}; font-weight: 600; }}
+QToolButton[diffTab="true"]:hover {{ color: {text}; background: {surface2}; }}
+QToolButton[diffTab="true"]:checked {{ background: {selection}; color: {selection_text}; }}
+QListWidget#diffList {{ outline: 0; }}
+QListWidget#diffList::item {{ border-bottom: 1px solid {border}; padding: 0; }}
+QListWidget#diffList::item:selected {{ background: {selection}; color: {selection_text}; }}
+QLabel[role="diffGlyph"] {{ color: {muted}; font-weight: 700; border: 1px solid {border};
+    border-radius: 3px; padding: 0 3px; }}
+QLabel[role="diffNoteBad"] {{ color: {bad}; }}
+QLabel[role="diffGroup"] {{ color: {muted}; background: {surface2}; font-size: 8pt;
+    font-weight: 700; padding: 4px 8px; }}
+QLabel[role="diffLegend"] {{ color: {muted}; font-size: 8pt; border-top: 1px solid {border};
+    padding-top: 4px; }}
+QFrame#actionsBar {{ background: {surface}; border: 1px solid {border}; border-radius: 6px; }}
+QFrame#actionsBar QToolButton {{ background: transparent; color: {text}; border: none;
+    border-radius: 4px; padding: 3px 8px; min-height: 0; font-size: 8.5pt; }}
+QFrame#actionsBar QToolButton:hover {{ background: {neutral_bg}; }}
+QFrame#actionsBar QToolButton[barAction="fatta"] {{ background: {ok_bg}; color: {ok};
+    font-weight: 700; }}
+QFrame#actionsBar QToolButton[barAction="more"] {{ font-weight: 700; padding: 3px 6px; }}
 QPushButton[role="row"] {{ background: transparent; border: 1px solid transparent;
     text-align: left; padding: 4px 8px; color: {text}; }}
 QPushButton[role="row"]:hover {{ background: {surface2}; border-color: {border}; }}

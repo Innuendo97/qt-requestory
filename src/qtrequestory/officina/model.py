@@ -41,16 +41,26 @@ from pathlib import Path
 from typing import Literal
 
 from qtrequestory.core.fsutil import remove_quietly, replace_with_retry
+from qtrequestory.officina.compare.model import Profile
 from qtrequestory.officina.model_case import Case, append_history, headers_from, reopen_if_accepted
+from qtrequestory.officina.model_case import case_write_lock
 from qtrequestory.officina.model_case import case_raw as _case_raw
 from qtrequestory.officina.model_case import load_case as _load_case
 from qtrequestory.officina.model_case import read_caso_strict as _read_caso_strict
+from qtrequestory.officina.model_case import write_review as _write_review
 from qtrequestory.officina.model_io import UnreadableJsonError
 from qtrequestory.officina.model_io import atomic_copy_text as _atomic_copy_text
 from qtrequestory.officina.model_io import read_json_object as _read_json_object
 from qtrequestory.officina.model_io import read_json_strict as _read_json_strict
 from qtrequestory.officina.model_io import write_bytes_atomic as _write_bytes_atomic
 from qtrequestory.officina.model_io import write_json_atomic as _write_json_atomic
+from qtrequestory.officina.model_review import (
+    DEFAULT_PROFILE,
+    NoiseRule,
+    initiative_settings_from_json,
+    initiative_settings_to_json,
+    review_to_json,
+)
 from qtrequestory.officina.model_versions import SlotKind, Version, content_type_on_disk, is_safe_component
 from qtrequestory.officina.model_versions import existing_tobe_numbers as _existing_tobe_numbers
 from qtrequestory.officina.model_versions import sniff_doc_type_by_name as _sniff_doc_type_by_name
@@ -87,6 +97,11 @@ class Initiative:
     load_error: str | None = None
     #: What loading had to leave out (a header default whose value is null).
     load_notes: list[str] = field(default_factory=list)
+    #: Phase 2 (``iniziativa.json``: ``profilo``, ``regole_rumore``,
+    #: ``preset_rumore``), saved with ``Workspace.save_initiative_settings``.
+    profile: Profile = DEFAULT_PROFILE
+    noise_rules: list[NoiseRule] = field(default_factory=list)
+    noise_presets: list[str] = field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -119,7 +134,7 @@ class Workspace:
             "name": name,
             "created": datetime.now().isoformat(),
             "header_defaults": {},
-            "noise_rules": [],
+            **initiative_settings_to_json(DEFAULT_PROFILE, [], []),
             "delivery": {},
             "notes": "",
         })
@@ -145,6 +160,7 @@ class Workspace:
             raw, load_error = {}, str(exc)
         name = str(raw.get("name") or folder.name)
         header_defaults, notes = headers_from(raw.get("header_defaults"), "iniziativa.json")
+        profile, noise_rules, noise_presets = initiative_settings_from_json(raw, notes)
         cases_dir = folder / "casi"
         cases: list[Case] = []
         if cases_dir.exists():
@@ -152,7 +168,8 @@ class Workspace:
                 if case_dir.is_dir() and (case_dir / "caso.json").exists():
                     cases.append(_load_case(case_dir))
         return Initiative(name=name, folder=folder, header_defaults=header_defaults, cases=cases,
-                          load_error=load_error, load_notes=notes)
+                          load_error=load_error, load_notes=notes, profile=profile,
+                          noise_rules=noise_rules, noise_presets=noise_presets)
 
     # --------------------------------------------------------------- delivery ---
 
@@ -171,20 +188,22 @@ class Workspace:
         nothing written) when the file cannot be read: merging into ``{}``
         would wipe the name and the header defaults."""
         meta = ini.folder / "iniziativa.json"
-        if ini.load_error:
-            raise UnreadableJsonError(f"{ini.load_error}: destinazione non ricordata")
-        try:
-            raw = _read_json_strict(meta)
-        except UnreadableJsonError as exc:
-            raise UnreadableJsonError(f"{exc}: destinazione non ricordata") from None
-        if not raw:
-            raw = {"name": ini.name, "header_defaults": dict(ini.header_defaults)}
+        raw = _read_initiative_for_merge(ini, "destinazione non ricordata")
         delivery = raw.get("delivery")
         delivery = dict(delivery) if isinstance(delivery, dict) else {}
         delivery["last_destination"] = str(destination)
         delivery["last_at"] = datetime.now().isoformat()
         raw["delivery"] = delivery
         _write_json_atomic(meta, raw)
+
+    def save_initiative_settings(self, ini: Initiative) -> None:
+        """Merge ``profile``, ``noise_rules`` and ``noise_presets`` into
+        ``iniziativa.json`` (the legacy ``noise_rules`` key goes: it was read
+        once). ``ValueError`` and nothing written when the file cannot be read."""
+        raw = _read_initiative_for_merge(ini, "impostazioni non salvate")
+        raw.pop("noise_rules", None)
+        raw.update(initiative_settings_to_json(ini.profile, ini.noise_rules, ini.noise_presets))
+        _write_json_atomic(ini.folder / "iniziativa.json", raw)
 
     # ------------------------------------------------------------------ cases ---
 
@@ -211,28 +230,35 @@ class Workspace:
             link_policy="remove", status="open", notes="",
             folder=case_dir, load_error=None, source_fdi=source_fdi,
         )
-        raw = _case_raw(case)
-        raw["history"] = []
+        raw = {**_case_raw(case), **review_to_json(case.review), "history": []}
         _write_json_atomic(case_dir / "caso.json", raw)
         _write_json_atomic(case_dir / "payload.json", payload)
         ini.cases.append(case)
         return case
 
+    def save_review(self, case: Case) -> None:
+        """Merge ONLY ``case.review`` into ``caso.json`` (``profilo``, ``tolleranze``,
+        ``non_variabili``, ``segnate``, ``non_risolte``, ``regole_rumore``, ``riepilogo``);
+        refused like :meth:`save_case`. The one writer of the review state (R8)."""
+        _write_review(case)
+
     def save_case(self, case: Case) -> None:
-        """Merge ``case`` into its ``caso.json`` (history and unknown keys
-        kept). ``ValueError`` and nothing written for a case loaded with a
-        ``load_error``, or whose file is unreadable now: the merge would
-        start from ``{}`` and wipe env, headers and source FDI."""
+        """Merge ``case`` into its ``caso.json`` (history, unknown keys and the
+        review keys kept: those are :meth:`save_review`'s). ``ValueError`` and
+        nothing written for a case loaded with a ``load_error``, or whose file
+        is unreadable now: the merge would start from ``{}`` and wipe env,
+        headers and source FDI."""
         if case.load_error:
             raise UnreadableJsonError(
                 f"caso.json non è leggibile ({case.load_error}): il caso non viene salvato, "
                 "correggere o ripristinare il file")
         case_dir = case.folder
         case_dir.mkdir(parents=True, exist_ok=True)
-        raw = _read_caso_strict(case_dir)
-        raw.update(_case_raw(case))
-        raw.setdefault("history", [])
-        _write_json_atomic(case_dir / "caso.json", raw)
+        with case_write_lock(case_dir):  # the merge inside the lock (R16)
+            raw = _read_caso_strict(case_dir)
+            raw.update(_case_raw(case))
+            raw.setdefault("history", [])
+            _write_json_atomic(case_dir / "caso.json", raw)
 
     # ---------------------------------------------------------------- payload ---
 
@@ -340,6 +366,18 @@ class Workspace:
 
 
 # --------------------------------------------------------------------- helpers ---
+
+def _read_initiative_for_merge(ini: Initiative, what: str) -> dict:
+    """``iniziativa.json`` to merge into; ``UnreadableJsonError`` when it (or
+    the initiative as loaded) cannot be read."""
+    if ini.load_error:
+        raise UnreadableJsonError(f"{ini.load_error}: {what}")
+    try:
+        raw = _read_json_strict(ini.folder / "iniziativa.json")
+    except UnreadableJsonError as exc:
+        raise UnreadableJsonError(f"{exc}: {what}") from None
+    return raw or {"name": ini.name, "header_defaults": dict(ini.header_defaults)}
+
 
 def _slug(variant: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", variant.lower()).strip("-")

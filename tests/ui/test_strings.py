@@ -13,7 +13,9 @@ import pytest
 
 from qtrequestory.ui import strings
 
-PAGE_MODULES = ("common", "search", "sync", "settings", "wizard", "about", "imports", "officina")
+PAGE_MODULES = ("common", "search", "sync", "settings", "wizard", "about", "imports", "officina",
+                "officina_verdetto", "officina_avanzamento", "officina_elenco", "officina_azioni",
+                "officina_rumore")
 
 
 @pytest.mark.parametrize("name", PAGE_MODULES)

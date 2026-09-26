@@ -341,6 +341,16 @@ def test_version_prints_the_version(capsys):
     assert __version__ in capsys.readouterr().out
 
 
+def test_the_hidden_noise_guard_selftest_runs_a_rule_in_a_child_process(capsys):
+    """I1: a dev-only check of the frozen exe's child process (ruling R22):
+    one custom noise rule counted by ``noise_guard`` in a spawned child.
+    Hidden from --help; exit 0 only when the child answered the right count."""
+    assert cli.main(["--selftest-noise-guard"]) == 0
+    out = capsys.readouterr().out
+    assert "noise guard: ok" in out and "'prova': 2" in out
+    assert "--selftest-noise-guard" not in cli.build_parser().format_help()
+
+
 # ------------------------------------------------------------------ --sync ---
 
 

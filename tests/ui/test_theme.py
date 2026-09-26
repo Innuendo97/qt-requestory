@@ -50,8 +50,12 @@ def test_text_tokens_meet_contrast(tokens):
         assert contrast(tokens.text, surface) >= 7, surface
     assert contrast(tokens.muted, tokens.surface) >= 4.5
     for fg, bg in ((tokens.ok, tokens.ok_bg), (tokens.warn, tokens.warn_bg),
-                   (tokens.bad, tokens.bad_bg), (tokens.muted, tokens.neutral_bg)):
+                   (tokens.bad, tokens.bad_bg), (tokens.muted, tokens.neutral_bg),
+                   (tokens.progress, tokens.progress_bg), (tokens.variable, tokens.variable_bg)):
         assert contrast(fg, bg) >= 4.5, (fg, bg)
+    # the changed characters: a bright fill under dark ink in both modes
+    ink = min((tokens.text, tokens.bg), key=_luminance)
+    assert contrast(ink, tokens.mark_yellow) >= 7
     assert contrast(tokens.on_accent, tokens.accent) >= 4.5
     assert contrast(tokens.selection_text, tokens.selection) >= 7
 
@@ -158,7 +162,8 @@ def test_build_qss_mentions_every_role():
     qss = theme.build_qss(LIGHT)
     for needle in ('role="pageTitle"', 'role="section"', 'role="muted"', 'role="card"',
                    'role="primary"', 'role="icon"', 'pill="ok"', 'pill="warn"', 'pill="bad"',
-                   'pill="neutral"', 'segment="true"', 'tab="true"', "#appBar",
+                   'pill="neutral"', 'pill="progress"', 'pill="variable"', 'segment="true"',
+                   'tab="true"', "#appBar",
                    "QHeaderView::section", "QProgressBar::chunk", "QToolTip", "QMenu::item",
                    "QScrollBar"):
         assert needle in qss, needle

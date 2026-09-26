@@ -60,14 +60,15 @@ class SyncController(QObject):
         """Both views still exist and are kept in step (when enabled)."""
         return self._left is not None and self._right is not None
 
-    def focus_difference(self, diff_id: int) -> None:
-        """Focus ``diff_id`` in both views, each at its own place."""
+    def focus_difference(self, diff_id: int, *, reveal: bool = False) -> None:
+        """Focus ``diff_id`` in both views, each at its own place; ``reveal``
+        centres it in both even when it is already on screen."""
         if not self.is_attached():
             return
         self._busy = True
         try:
-            self._left.focus_difference(diff_id)
-            self._right.focus_difference(diff_id)
+            self._left.focus_difference(diff_id, reveal=reveal)
+            self._right.focus_difference(diff_id, reveal=reveal)
         finally:
             self._busy = False
 

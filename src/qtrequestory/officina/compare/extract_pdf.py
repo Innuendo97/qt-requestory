@@ -6,6 +6,9 @@ importing this module stays light). They are grouped into words on whitespace
 and on horizontal gaps, then put in reading order: top to bottom, left to right
 on each page.
 
+Each word carries its font size (points, as displayed) and whether it is bold,
+sampled once per word (see ``pdf.PageChars.fonts``).
+
 Coordinates are PDF points with the origin at the TOP-left of the page (PDFium's
 bottom-left origin is flipped), which is what the viewer draws highlights in.
 """
@@ -14,20 +17,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+# ``Word`` lives in the comparison contract (phase 2 added ``size``/``bold``);
+# re-exported here so ``extract_pdf.Word`` keeps working.
+from qtrequestory.officina.compare.model import Word
+
+__all__ = ["DocText", "MIN_WORDS", "GAP_RATIO", "Word", "extract"]
+
 #: A page is "image only" when it holds an image and fewer words than this.
 MIN_WORDS = 5
 #: A horizontal gap wider than this share of the glyph height splits a word.
 GAP_RATIO = 0.25
-
-
-@dataclass(frozen=True)
-class Word:
-    text: str
-    page: int
-    x0: float
-    y0: float
-    x1: float
-    y1: float
 
 
 @dataclass(frozen=True)
@@ -61,7 +60,9 @@ def extract(path: Path) -> DocText:
     counts: list[tuple[int, int]] = []  # (words, images) per page
     for number, page in enumerate(pdf.read_chars(Path(path))):
         sizes.append((page.width, page.height))
-        visible = [c for c in page.chars if c[2] is None or _on_page(c[2], page.width, page.height)]
+        fonts = page.fonts or [None] * len(page.chars)
+        visible = [(*c, f) for c, f in zip(page.chars, fonts, strict=True)
+                   if c[2] is None or _on_page(c[2], page.width, page.height)]
         page_words = [_Pending.word(p, number) for p in _reading_order(_group(visible))]
         counts.append((len(page_words), page.image_count))
         words.extend(page_words)
@@ -70,18 +71,24 @@ def extract(path: Path) -> DocText:
 
 
 Box = tuple[float, float, float, float]
+#: The font of a word when the text layer gave no sample.
+_NO_FONT = (0.0, False)
 
 
 @dataclass
 class _Pending:
-    """A word being built: text, box in text space (grouping), box on display."""
+    """A word being built: text, box in text space (grouping), box on display,
+    and its font ``(size, bold)`` — sampled ONCE per word, on its first
+    character (or the last sample before it, for a word split off a run by a
+    gap: same run of glyphs, same font)."""
     text: str
     tbox: Box
     dbox: Box
+    font: tuple[float, bool]
 
     @staticmethod
     def word(p: _Pending, page: int) -> Word:
-        return Word(p.text, page, *p.dbox)
+        return Word(p.text, page, *p.dbox, *p.font)
 
 
 def _on_page(box: Box, width: float, height: float) -> bool:
@@ -97,7 +104,10 @@ def _union(a: Box, b: Box) -> Box:
 def _group(chars) -> list[_Pending]:
     words: list[_Pending] = []
     current: _Pending | None = None
-    for ch, tbox, dbox in chars:
+    font: tuple[float, bool] = _NO_FONT
+    for ch, tbox, dbox, sample in chars:
+        if sample is not None:
+            font = sample
         if tbox is None:
             current = None
             continue
@@ -106,7 +116,7 @@ def _group(chars) -> list[_Pending]:
             current.tbox = _union(current.tbox, tbox)
             current.dbox = _union(current.dbox, dbox)
             continue
-        current = _Pending(ch, tbox, dbox)
+        current = _Pending(ch, tbox, dbox, font)
         words.append(current)
     return words
 

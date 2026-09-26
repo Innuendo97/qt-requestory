@@ -11,8 +11,10 @@ The toast is a child of the window's central widget, anchored bottom-right
 resize. It is never wider than the parent minus both margins: a longer message
 ("Salvato: <full path>") is elided in the middle, where a path is least useful.
 It ignores the mouse, so it never covers a click meant for the table
-underneath. It fades in and out unless motion is reduced — the application
-property ``reduce_motion`` or the system's own animation switch.
+underneath — except a toast carrying an **action** ("Segnata fatta «…» ·
+Annulla (Ctrl+Z)", Officina): its button takes the click, and it stays up
+longer (:data:`ACTION_MS`). It fades in and out unless motion is reduced —
+the application property ``reduce_motion`` or the system's own animation switch.
 """
 from __future__ import annotations
 
@@ -24,16 +26,21 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QWidget,
 )
 
+from collections.abc import Callable
+
 from qtrequestory.ui import theme
 
-__all__ = ["DEFAULT_MS", "MARGIN", "Toast"]
+__all__ = ["ACTION_MS", "DEFAULT_MS", "MARGIN", "Toast"]
 
 #: Distance from the parent's right and bottom edges.
 MARGIN = 16
 DEFAULT_MS = 2500
+#: At least this long when the toast carries an action (time to reach the button).
+ACTION_MS = 6000
 FADE_MS = 150
 TONES = ("ok", "warn", "bad", "neutral")
 #: The leading mark per tone; tinted by the theme (``QLabel#toastMark``).
@@ -55,8 +62,22 @@ class Toast(QFrame):
         self._mark.setObjectName("toastMark")
         self._label = QLabel()
         self._text = ""
+        #: The optional action: "·", the button, the key that does the same.
+        self._sep = QLabel("·")
+        self.action_button = QPushButton()
+        self.action_button.setObjectName("toastAction")
+        self.action_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        # a click must not pull the focus out of the page (F, T, Ctrl+Z keep working)
+        self.action_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.action_button.clicked.connect(self._on_action)
+        self._hint = QLabel()
+        self._hint.setObjectName("toastHint")
+        self._action: Callable[[], None] | None = None
         layout.addWidget(self._mark)
         layout.addWidget(self._label)
+        for widget in (self._sep, self.action_button, self._hint):
+            layout.addWidget(widget)
+            widget.setVisible(False)
 
         self._effect = QGraphicsOpacityEffect(self)
         self._effect.setOpacity(1.0)
@@ -73,10 +94,24 @@ class Toast(QFrame):
 
     # -- API ---------------------------------------------------------------
 
-    def show_message(self, text: str, tone: str = "neutral", ms: int = DEFAULT_MS) -> None:
-        """Show ``text`` for ``ms`` milliseconds, replacing whatever is up."""
+    def show_message(self, text: str, tone: str = "neutral", ms: int = DEFAULT_MS,
+                     action: tuple[str, Callable[[], None]] | None = None,
+                     hint: str = "") -> None:
+        """Show ``text`` for ``ms`` milliseconds, replacing whatever is up.
+        ``action`` = ``(button text, callback)``: a button after the text
+        (the toast then takes clicks, and stays at least :data:`ACTION_MS`);
+        ``hint`` follows it ("(Ctrl+Z)")."""
         tone = tone if tone in TONES else "neutral"
         self._text = text
+        self._action = action[1] if action is not None else None
+        self.action_button.setText(action[0] if action is not None else "")
+        self._hint.setText(hint)
+        for widget in (self._sep, self.action_button):
+            widget.setVisible(action is not None)
+        self._hint.setVisible(action is not None and bool(hint))
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
+        if action is not None:
+            ms = max(ms, ACTION_MS)
         self._mark.setText(MARKS[tone])
         self.setProperty("tone", tone)
         theme.repolish(self)
@@ -133,13 +168,22 @@ class Toast(QFrame):
         room = max(0, parent.width() - 2 * MARGIN)
         self.setMaximumWidth(room)
         margins = self.layout().contentsMargins()
-        chrome = (margins.left() + margins.right() + self.layout().spacing()
-                  + self._mark.sizeHint().width())
+        spacing = self.layout().spacing()
+        chrome = margins.left() + margins.right() + spacing + self._mark.sizeHint().width()
+        for widget in (self._sep, self.action_button, self._hint):
+            if not widget.isHidden():
+                chrome += spacing + widget.sizeHint().width()
         self._label.setText(QFontMetrics(self._label.font()).elidedText(
             self._text, Qt.TextElideMode.ElideMiddle, max(0, room - chrome)))
         self.adjustSize()
         self.move(parent.width() - self.width() - MARGIN,
                   parent.height() - self.height() - MARGIN)
+
+    def _on_action(self) -> None:
+        action, self._action = self._action, None
+        self.dismiss()
+        if action is not None:
+            action()
 
     def _on_fade_finished(self) -> None:
         if self._effect.opacity() <= 0.0:

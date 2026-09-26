@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from qtrequestory.officina import model
+from qtrequestory.officina.compare.model import Anchor, CaseSummary
 from qtrequestory.officina.model import AsisAlreadyExistsError, Workspace
+from qtrequestory.officina.model_review import Mark, NoiseRule, Review, Tolerance
 
 
 @pytest.fixture
@@ -411,3 +413,283 @@ def test_add_version_tobe_numbering_survives_a_missing_meta_file(ws: Workspace):
     assert v3.number == 3
     # the number-2 content file (whose meta is gone) must be left untouched
     assert (case.folder / "tobe" / "v002.pdf").read_bytes() == b"two"
+
+
+# ------------------------------------------------ phase 2: review state on disk ---
+
+_A1 = Anchor("cambiato", "testo", "il prezzo | al mese", "12,00 euro")
+_A2 = Anchor("mancante", "composizione", "Art. 3 | Art. 5", "Art. 4 Recesso")
+_A3 = Anchor("cambiato", "variabile", "Nome | Cognome", "Nome ..........")
+
+
+def _caso_120() -> dict:
+    """``caso.json`` exactly as 1.2.0 writes it: no phase-2 key at all."""
+    return {
+        "key": "MOD_TEST_A", "variant": "", "env": "svil", "headers": {"X-Flag": "1"},
+        "drop_postman_token": False, "correlation": "new", "correlation_value": "",
+        "link_policy": "remove", "status": "open", "notes": "", "source_fdi": None,
+        "accepted_version": None, "reopened_after_acceptance": False, "history": [],
+    }
+
+
+def _write_caso(case_dir: Path, raw: dict) -> None:
+    (case_dir / "caso.json").write_text(json.dumps(raw), encoding="utf-8")
+
+
+def _reload(ws: Workspace, ini_id: str, case_id: str):
+    return next(c for c in ws.load(ini_id).cases if c.id == case_id)
+
+
+def test_120_case_json_loads(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    _write_caso(case.folder, _caso_120())
+
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_error is None
+    assert loaded.load_notes == []
+    assert loaded.review == Review()
+
+
+def test_junk_new_fields_become_load_notes(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = _caso_120()
+    raw["tolleranze"] = 5
+    raw["segnate"] = [{"generato": "x", "versione": 1, "quando": "2026-09-25T10:00:00"},
+                      {"anchor": _A1.to_json(), "generato": "13,00 euro", "versione": 2,
+                       "quando": "2026-09-25T10:00:00"}]
+    raw["profilo"] = "boh"
+    _write_caso(case.folder, raw)
+
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_error is None
+    assert loaded.review.tolerances == []
+    assert loaded.review.profile is None
+    assert [m.anchor for m in loaded.review.marks] == [_A1]  # the good one stays
+    assert len(loaded.load_notes) == 3
+    assert any("tolleranze" in n for n in loaded.load_notes)
+    assert any("segnat" in n for n in loaded.load_notes)
+    assert any("boh" in n for n in loaded.load_notes)
+
+
+@pytest.mark.parametrize("progress", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_avanzamento_is_junk_not_a_crash(ws: Workspace, progress: float):
+    """Final review I3: Python's json reads NaN / Infinity; a hand-edited
+    riepilogo holding one is dropped with a load note."""
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = _caso_120()
+    raw["riepilogo"] = {**CaseSummary(2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0.5, False, "2026-09-25T10:03:00").to_json(),
+                        "avanzamento": progress}
+    _write_caso(case.folder, raw)
+
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_error is None and loaded.review.summary is None
+    assert any("riepilogo" in n for n in loaded.load_notes)
+
+
+def test_a_summary_with_a_negative_count_is_junk_and_avanzamento_is_clamped():
+    good = CaseSummary(2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0.5, False, "2026-09-25T10:03:00").to_json()
+    assert CaseSummary.from_json({**good, "da_fare": -1}) is None
+    assert CaseSummary.from_json({**good, "avanzamento": 1.5}).avanzamento == 1.0
+    assert CaseSummary.from_json({**good, "avanzamento": -0.5}).avanzamento == 0.0
+
+
+def _full_review() -> Review:
+    return Review(
+        profile="stretto",
+        tolerances=[Tolerance(_A1, "13,00 euro", "ok dal cliente", "2026-09-25T10:00:00")],
+        not_variables=[(_A3, "2026-09-25T10:01:00")],
+        marks=[Mark(_A2, "", 3, "2026-09-25T10:02:00")],
+        unresolved=[(_A1, 4, "13,00 euro")],
+        noise_rules=[NoiseRule("data", r"\d{2}/\d{2}/\d{4}"), NoiseRule("pag", r"Pag\. \d+", enabled=False)],
+        summary=CaseSummary(4, 6, 2, 1, 1, 0, 1, 3, 14, 2, 0.6, False, "2026-09-25T10:03:00"),
+    )
+
+
+def test_review_round_trip(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    case.review = _full_review()
+
+    ws.save_review(case)
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_notes == []
+    assert loaded.review == _full_review()
+
+
+def test_unresolved_without_generated_text_loads_as_unknown():
+    """R31 added ``generato`` to ``non_risolte``; an entry without it reads as "" (unknown)."""
+    from qtrequestory.officina.model_review import review_from_json
+
+    notes: list[str] = []
+    review = review_from_json({"non_risolte": [{"anchor": _A1.to_json(), "versione": 2},
+                                               {"anchor": _A1.to_json(), "versione": 2, "generato": 5}]}, notes)
+    assert review.unresolved == [(_A1, 2, "")]
+    assert len(notes) == 1
+
+
+def test_review_json_keys(ws: Workspace):
+    from qtrequestory.officina.model_review import review_to_json
+
+    assert list(review_to_json(_full_review())) == [
+        "profilo", "tolleranze", "non_variabili", "segnate", "non_risolte", "regole_rumore", "riepilogo"]
+    assert review_to_json(Review())["riepilogo"] is None
+
+
+def test_save_merges_review(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+    raw["chiave_futura"] = {"tenuta": True}
+    raw["history"] = [{"at": "2026-09-25T09:00:00", "note": "nota"}]
+    _write_caso(case.folder, raw)
+    case.review = _full_review()
+
+    ws.save_review(case)
+
+    saved = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+    assert saved["chiave_futura"] == {"tenuta": True}
+    assert saved["history"] == [{"at": "2026-09-25T09:00:00", "note": "nota"}]
+    assert saved["profilo"] == "stretto" and saved["riepilogo"]["versione"] == 4
+
+
+def _write_ini(ws: Workspace, name: str, **extra) -> None:
+    folder = ws.root / name
+    (folder / "casi").mkdir(parents=True)
+    (folder / "iniziativa.json").write_text(json.dumps({"name": name, "header_defaults": {}, **extra}),
+                                            encoding="utf-8")
+
+
+def test_initiative_profile_defaults_to_tollerante(ws: Workspace):
+    _write_ini(ws, "Vecchia")  # 1.2.0 file: no profilo
+
+    ini = ws.load("Vecchia")
+
+    assert ini.profile == "tollerante"
+    assert ini.noise_rules == [] and ini.noise_presets == []
+    assert ini.load_notes == []
+    assert ws.create_initiative("Nuova").profile == "tollerante"
+
+
+def test_initiative_legacy_noise_rules_are_read_once_as_rules(ws: Workspace):
+    _write_ini(ws, "Legacy", noise_rules=[{"name": "data", "pattern": r"\d+/\d+"}, r"Pag\. \d+"])
+
+    ini = ws.load("Legacy")
+
+    assert ini.noise_rules == [NoiseRule("data", r"\d+/\d+"), NoiseRule(r"Pag\. \d+", r"Pag\. \d+")]
+
+
+def test_initiative_regole_rumore_win_over_legacy(ws: Workspace):
+    _write_ini(ws, "Entrambe", noise_rules=[{"name": "vecchia", "pattern": "x"}],
+               regole_rumore=[{"name": "nuova", "pattern": "y", "enabled": False}])
+
+    ini = ws.load("Entrambe")
+
+    assert ini.noise_rules == [NoiseRule("nuova", "y", enabled=False)]
+
+
+def test_initiative_junk_profile_is_a_load_note(ws: Workspace):
+    _write_ini(ws, "Junk", profilo="boh", regole_rumore=5, preset_rumore=["data", 3])
+
+    ini = ws.load("Junk")
+
+    assert ini.profile == "tollerante"
+    assert ini.noise_rules == [] and ini.noise_presets == ["data"]
+    assert len(ini.load_notes) == 3
+
+
+def test_initiative_settings_round_trip(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    ini.profile = "solo_testo"
+    ini.noise_rules = [NoiseRule("iban", r"IT\d{2}")]
+    ini.noise_presets = ["data", "IBAN"]
+
+    ws.save_initiative_settings(ini)
+
+    loaded = ws.load("Alpha")
+    assert (loaded.profile, loaded.noise_rules, loaded.noise_presets) == (
+        "solo_testo", [NoiseRule("iban", r"IT\d{2}")], ["data", "IBAN"])
+    raw = json.loads((ini.folder / "iniziativa.json").read_text(encoding="utf-8"))
+    assert raw["name"] == "Alpha" and "noise_rules" not in raw
+
+
+def test_initiative_settings_refuse_an_unreadable_file(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    (ini.folder / "iniziativa.json").write_text("{rotto", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        ws.save_initiative_settings(ini)
+    assert (ini.folder / "iniziativa.json").read_text(encoding="utf-8") == "{rotto"
+
+
+def test_tolerance_without_anchor_is_a_load_note(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = _caso_120()
+    raw["tolleranze"] = [{"generato": "x"}]
+    _write_caso(case.folder, raw)
+
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_error is None
+    assert loaded.review.tolerances == []
+    assert len(loaded.load_notes) == 1 and "tolleranze" in loaded.load_notes[0]
+
+
+def test_save_review_writes_only_the_review_keys(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    other = _reload(ws, "Alpha", case.id)
+    other.status, other.notes = "accepted", "da un'altra istanza"
+    ws.save_case(other)
+    case.notes = "modifica non salvata"  # in memory only: save_review must not write it
+    case.review = _full_review()
+
+    ws.save_review(case)
+
+    loaded = _reload(ws, "Alpha", case.id)
+    assert (loaded.status, loaded.notes) == ("accepted", "da un'altra istanza")
+    assert loaded.review == _full_review()
+
+
+def test_stale_case_saved_with_save_case_keeps_the_newer_review(ws: Workspace):
+    """R8: the editor or "Segna accettato" saving an instance opened before a
+    comparison/mark must not wipe the review state written since."""
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    stale = _reload(ws, "Alpha", case.id)
+    fresh = _reload(ws, "Alpha", case.id)
+    fresh.review = _full_review()
+    ws.save_review(fresh)
+
+    stale.notes = "salvata dall'editor"
+    ws.save_case(stale)
+
+    loaded = _reload(ws, "Alpha", case.id)
+    assert loaded.notes == "salvata dall'editor"
+    assert loaded.review == _full_review()
+
+
+def test_save_review_refuses_an_unreadable_case(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    (case.folder / "caso.json").write_text("{rotto", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        ws.save_review(case)
+    assert (case.folder / "caso.json").read_text(encoding="utf-8") == "{rotto"
+
+
+def test_new_case_starts_with_an_empty_review_on_disk(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+
+    raw = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+
+    assert raw["tolleranze"] == [] and raw["riepilogo"] is None

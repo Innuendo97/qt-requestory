@@ -13,6 +13,7 @@ from PySide6.QtCore import QPoint, Qt, QThreadPool
 from PySide6.QtGui import QColor
 
 from qtrequestory.officina.compare.extract_pdf import Word, extract
+from qtrequestory.officina.compare.model import Anchor, Diff, Judged
 from qtrequestory.ui import theme
 from qtrequestory.ui.pages.officina_render import PageRenderer
 from qtrequestory.ui.pages.officina_viewer import DocView, SyncController
@@ -73,6 +74,14 @@ def _rendered_all_visible(view: DocView) -> bool:
     return all(view.has_image(p) for p in view.visible_pages())
 
 
+def _judged(diff_id: int, verdict: str, words) -> tuple[Judged, str]:
+    """A judged difference drawn on the target side over ``words``."""
+    text = " ".join(w.text for w in words)
+    diff = Diff(diff_id, "cambiato", "testo", tuple(words), (), text, "", ((0, len(text)),), (),
+                Anchor("cambiato", "testo", "", text))
+    return Judged(diff, verdict), "left"
+
+
 def _first_word_on(doc, page: int) -> Word:
     return next(w for w in doc.words if w.page == page)
 
@@ -109,7 +118,8 @@ def test_focus_difference_scrolls_its_words_into_view(qtbot, pool, big_pdf):
     view, _ = _view(qtbot, pool)
     view.load("left", path, doc.page_sizes)
     word = _first_word_on(doc, 40)
-    view.set_highlights([(7, "changed", [word]), (8, "added", [_first_word_on(doc, 2)])])
+    view.set_highlights([_judged(7, "da_fare", [word]),
+                         _judged(8, "regressione", [_first_word_on(doc, 2)])])
     assert 40 not in view.visible_pages()
     view.focus_difference(7)
     rect = view.mapFromScene(view.difference_rect(7)).boundingRect()
@@ -164,7 +174,7 @@ def test_click_on_a_highlight_emits_its_difference(qtbot, pool, big_pdf):
     view, _ = _view(qtbot, pool)
     view.load("left", path, doc.page_sizes)
     word = _first_word_on(doc, 0)
-    view.set_highlights([(3, "removed", [word])])
+    view.set_highlights([_judged(3, "regressione", [word])])
     centre = view.mapFromScene(view.difference_rect(3).center())
     with qtbot.waitSignal(view.difference_clicked, timeout=1000) as blocker:
         qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=centre)
@@ -179,33 +189,34 @@ def _fill(item) -> QColor:
     return item.brush().color()
 
 
-def test_a_theme_switch_recolours_the_overlays(qtbot, pool, big_pdf, themed):
+def test_a_theme_switch_recolours_the_chrome_not_the_paper(qtbot, pool, big_pdf, themed):
     path, doc = big_pdf
     theme.apply(themed, theme.Mode.LIGHT)
     view, _ = _view(qtbot, pool)
     view.load("left", path, doc.page_sizes)
     words = [_first_word_on(doc, p) for p in range(3)]
-    view.set_highlights([(1, "added", [words[0]]), (2, "removed", [words[1]]),
-                         (3, "changed", [words[2]])])
+    view.set_highlights([_judged(1, "in_corso", [words[0]]), _judged(2, "regressione", [words[1]]),
+                         _judged(3, "da_fare", [words[2]])])
     view.focus_difference(1)
 
     def colours():
         return {kind: (_fill(view.highlight_items(i)[0]).name(),
                        view.highlight_items(i)[0].pen().color().name())
-                for i, kind in ((1, "ok"), (2, "bad"), (3, "warn"))}
+                for i, kind in ((1, "progress"), (2, "bad"), (3, "warn"))}
 
     light = theme.LIGHT
-    assert colours() == {"ok": (light.ok_bg.lower(), light.ok.lower()),
+    assert colours() == {"progress": (light.progress_bg.lower(), light.accent.lower()),
                          "bad": (light.bad_bg.lower(), light.bad.lower()),
                          "warn": (light.warn_bg.lower(), light.warn.lower())}
     assert view.placeholder_colour().name() == light.surface2.lower()
     theme.apply(themed, theme.Mode.DARK)
     dark = theme.DARK
-    assert colours() == {"ok": (dark.ok_bg.lower(), dark.ok.lower()),
-                         "bad": (dark.bad_bg.lower(), dark.bad.lower()),
-                         "warn": (dark.warn_bg.lower(), dark.warn.lower())}
+    # R13: on the page (white paper) the overlays keep the LIGHT values; the chrome follows
+    assert colours() == {"progress": (light.progress_bg.lower(), light.accent.lower()),
+                         "bad": (light.bad_bg.lower(), light.bad.lower()),
+                         "warn": (light.warn_bg.lower(), light.warn.lower())}
     assert view.placeholder_colour().name() == dark.surface2.lower()
-    assert view.focus_ring().pen().color().name() == dark.accent.lower()
+    assert view.focus_ring().pen().color().name() == light.accent.lower()
 
 
 def test_words_on_one_line_become_one_highlight(qtbot, pool, big_pdf):
@@ -214,7 +225,7 @@ def test_words_on_one_line_become_one_highlight(qtbot, pool, big_pdf):
     view.load("left", path, doc.page_sizes)
     line = [w for w in doc.words if w.page == 1][2:5]  # after the heading
     assert line[0].y0 == pytest.approx(line[2].y0, abs=2), "fixture: three words on one line"
-    view.set_highlights([(4, "changed", line)])
+    view.set_highlights([_judged(4, "da_fare", line)])
     assert len(view.highlight_items(4)) == 1
     rect = view.difference_rect(4)
     top = view.page_rect(1).top()
@@ -421,7 +432,7 @@ def test_a_drag_over_a_highlight_is_not_a_click(qtbot, pool, big_pdf):
     path, doc = big_pdf
     view, _ = _view(qtbot, pool)
     view.load("left", path, doc.page_sizes)
-    view.set_highlights([(3, "removed", [_first_word_on(doc, 0)])])
+    view.set_highlights([_judged(3, "regressione", [_first_word_on(doc, 0)])])
     centre = view.mapFromScene(view.difference_rect(3).center())
     with qtbot.assertNotEmitted(view.difference_clicked):
         qtbot.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=centre)

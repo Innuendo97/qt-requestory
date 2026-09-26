@@ -15,19 +15,24 @@ on. "Annulla" drops the cases still waiting and sets the cancel token of the
 running ones; ``generate`` checks it right before sending, so a call already
 on the wire runs to its end (its document is still saved).
 
-**Documents and comparisons.** :func:`load_case_docs` and :func:`summarise`
-are plain functions for ``JobRunner.submit``: the PDF the viewer shows (an
+**Documents and comparisons.** :func:`load_case_docs` is a plain function
+for ``JobRunner.submit``: the PDF the viewer shows (an
 HTML is printed by Edge first — slow, hence the worker), its page sizes, and
-the text comparison with the TARGET. ``CompareError`` becomes a readable
-message, never a traceback. PDFium is only reached from here, inside the
-worker, through ``qtrequestory.officina.pdf`` — importing this module loads
-nothing heavy.
+the text comparison with the TARGET and, for a TO-BE, the three-way
+comparison of phase 2 (``compare_case``; ``None`` when the core cannot judge
+yet). ``CompareError`` becomes a readable message, never a traceback. The
+board runs no comparison: its pill is read from ``case.review.summary``
+(``riepilogo``, saved by ``compare_case``; ``officina_board_pill``). PDFium
+is only reached from here, inside the worker, through
+``qtrequestory.officina.pdf`` — importing this module loads nothing heavy.
+The workers that write a case's ``caso.json`` take the case's lock
+(``officina_judge``).
 """
 from __future__ import annotations
 
-import logging
 from collections import deque
 from collections.abc import Sequence
+import dataclasses
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -38,32 +43,29 @@ from PySide6.QtCore import QObject, Signal
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import (
     Case,
+    CaseComparison,
     CompareError,
+    Comparison,
     CoreServices,
     Initiative,
     SendResult,
-    TextComparison,
     Version,
     mask_text,
 )
+from qtrequestory.ui.pages.officina_judge import generate_locked, judge
 from qtrequestory.ui.workers import (
     OFFICINA_COMPARE_JOB,
     OFFICINA_GENERATE_JOBS,
-    OFFICINA_SUMMARY_JOB,
     Job,
     JobRunner,
 )
 
 __all__ = [
-    "COMPARE_JOB", "GENERATE_JOBS", "SUMMARY_JOB", "CaseDocs", "GenerationQueue", "SideDoc",
-    "Summary", "load_case_docs", "summarise",
+    "COMPARE_JOB", "GENERATE_JOBS", "CaseDocs", "GenerationQueue", "SideDoc", "load_case_docs",
 ]
-
-log = logging.getLogger(__name__)
 
 GENERATE_JOBS = OFFICINA_GENERATE_JOBS
 COMPARE_JOB = OFFICINA_COMPARE_JOB
-SUMMARY_JOB = OFFICINA_SUMMARY_JOB
 
 Kind = Literal["asis", "tobe"]
 
@@ -171,7 +173,7 @@ class GenerationQueue(QObject):
             if lane in self._running or self._runner.is_running(lane):
                 continue  # ours until its `finished` is delivered; or not ours at all
             request = self._pending.popleft()
-            job = self._runner.submit(lane, self._services.officina.generate, request.ini,
+            job = self._runner.submit(lane, generate_locked, self._services, request.ini,
                                       request.case, request.kind,
                                       replace_asis_note=request.note)
             if job is None:  # the application is closing: nothing more will run
@@ -242,6 +244,8 @@ class SideDoc:
     path: Path | None = None
     sizes: list[tuple[float, float]] = field(default_factory=list)
     error: str = ""
+    #: An HTML whose Edge print is not available, judged through its DOM anyway (R45).
+    no_print: bool = False
 
 
 @dataclass(frozen=True)
@@ -251,8 +255,13 @@ class CaseDocs:
     case_id: str
     left: SideDoc
     right: SideDoc
-    comparison: TextComparison | None
+    comparison: Comparison | None
     compare_error: str = ""
+    #: Phase 2: the judged comparison of a TO-BE (None: the AS-IS, or no verdict available).
+    judged: CaseComparison | None = None
+    #: The case's effective profile (case → initiative → Tollerante): what the
+    #: comparison without verdicts shows (``Comparison.counting``).
+    profile: str = "tollerante"
 
 
 def _side(services: CoreServices, case: Case, version: Version | None) -> SideDoc:
@@ -267,49 +276,32 @@ def _side(services: CoreServices, case: Case, version: Version | None) -> SideDo
         return SideDoc(version, error=str(exc))
 
 
-def load_case_docs(services: CoreServices, case: Case, version: Version | None) -> CaseDocs:
-    """The TARGET, ``version`` (AS-IS or a TO-BE) and their text comparison."""
+def load_case_docs(services: CoreServices, case: Case, version: Version | None,
+                   ini: Initiative | None = None) -> CaseDocs:
+    """The TARGET, ``version`` (AS-IS or a TO-BE) and, with ``ini`` and a
+    TO-BE, its judged comparison (``compare_case``); the comparison without
+    verdicts (``compare``) only when there is no judged one (the AS-IS, a
+    case being generated, a failed judge): the same engine, run once."""
     left = _side(services, case, case.target())
     right = _side(services, case, version)
-    comparison, error = None, ""
-    if left.version is not None and right.version is not None and not (left.error or right.error):
-        try:
-            comparison = services.officina.compare(left.version, right.version)
-        except (CompareError, OSError, ValueError) as exc:
-            error = str(exc)
+    comparison, error, judged = None, "", None
+    both = left.version is not None and right.version is not None
+    # R45: an HTML side without its Edge print is still judged through the DOM
+    printless = [s for s in (left, right) if s.error and s.version is not None and s.version.doc_type == "html"]
+    if both and not [s for s in (left, right) if s.error and s not in printless]:
+        if ini is not None and version is not None and version.kind == "tobe":
+            judged = judge(services, ini, case, version)
+        if judged is not None and printless:
+            left, right = (dataclasses.replace(s, no_print=True, error=strings.OFFICINA_PRINT_MISSING.format(
+                reason=s.error)) if s in printless else s for s in (left, right))
+        elif printless:
+            error = printless[0].error
+        elif judged is None:
+            try:
+                comparison = services.officina.compare(left.version, right.version)
+            except (CompareError, OSError, ValueError) as exc:
+                error = str(exc)
     elif left.error or right.error:
         error = left.error or right.error
-    return CaseDocs(case.id, left, right, comparison, error)
-
-
-@dataclass(frozen=True)
-class Summary:
-    """The board's "TO-BE contro target" pill of one case."""
-
-    state: Literal["equal", "diffs", "no_text", "error"]
-    count: int = 0
-    detail: str = ""
-
-
-def summarise(services: CoreServices, cases: Sequence[Case], cancel=None) -> dict[str, Summary]:
-    """The latest TO-BE of every case against its TARGET (cases missing either
-    are left out: the board says so without a comparison)."""
-    out: dict[str, Summary] = {}
-    for case in cases:
-        if cancel is not None and cancel.is_set():
-            break
-        target, tobe = case.target(), case.latest_tobe()
-        if target is None or tobe is None:
-            continue
-        try:
-            comparison = services.officina.compare(target, tobe)
-        except (CompareError, OSError, ValueError) as exc:
-            out[case.id] = Summary("error", detail=str(exc))
-            continue
-        if comparison.equal:
-            out[case.id] = Summary("equal")
-        elif not (comparison.left_has_text and comparison.right_has_text):
-            out[case.id] = Summary("no_text", detail=comparison.note)
-        else:
-            out[case.id] = Summary("diffs", len(comparison.differences))
-    return out
+    profile = case.review.profile or (ini.profile if ini is not None else None) or "tollerante"
+    return CaseDocs(case.id, left, right, comparison, error, judged, profile)

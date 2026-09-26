@@ -2,13 +2,14 @@
 
 Columns (approved mockup, "La vista Iniziativa", phase-1 subset): the key and
 variant; the documents as small tiles — T(arget), A(S-IS), the latest TO-BE
-version, "—" for a slot still empty; the "TO-BE contro target" pill from the
-text comparison ("uguale" / "N differenze" / "senza testo"); the last
-generation, or why the last one failed; the case status.
+version, "—" for a slot still empty; the "TO-BE contro target" pill, read
+from the case's saved summary (worst state, count and percentage, spec §7.4:
+``officina_board_pill``); the last generation, or why the last one failed;
+the case status.
 
 The board only displays and emits; ``OfficinaPage`` runs the generations and
-the comparisons and hands the results back through :meth:`Board.show_initiative`,
-:meth:`Board.set_summaries` and :meth:`Board.refresh_run_states`.
+hands the results back through :meth:`Board.show_initiative` and
+:meth:`Board.refresh_run_states`. It runs no comparison.
 """
 from __future__ import annotations
 
@@ -36,8 +37,9 @@ from qtrequestory.ui.pages.officina_format import (
     initiative_notice,
     last_run,
 )
-from qtrequestory.ui.pages.officina_jobs import Summary
+from qtrequestory.ui.pages.officina_board_pill import board_badge
 from qtrequestory.ui.pages.officina_list import WarnBanner
+from qtrequestory.ui.pages.officina_progress import glyph_html
 from qtrequestory.ui.pages.officina_widgets import MiddleElidedLabel, cell as _cell, pill
 
 __all__ = ["Board", "summary_pill"]
@@ -57,23 +59,21 @@ def _tile(text: str, version: Version | None, tip: str, tone: str) -> QLabel:
     return pill(text, tone, tip)
 
 
-def summary_pill(case: Case, summary: Summary | None) -> QLabel:
-    """The "TO-BE contro target" pill of ``case``."""
-    if case.target() is None:
-        return pill(strings.OFFICINA_PILL_NO_TARGET)
-    if case.latest_tobe() is None:
-        return pill(strings.OFFICINA_PILL_NO_TOBE)
-    if summary is None:
-        return pill(strings.OFFICINA_PILL_PENDING)
-    if summary.state == "equal":
-        return pill(strings.OFFICINA_PILL_EQUAL, "ok")
-    if summary.state == "no_text":
-        return pill(strings.OFFICINA_PILL_NO_TEXT, "warn", summary.detail)
-    if summary.state == "error":
-        return pill(strings.OFFICINA_PILL_ERROR, "bad", summary.detail)
-    text = (strings.OFFICINA_PILL_ONE_DIFF if summary.count == 1
-            else strings.OFFICINA_PILL_DIFFS.format(n=summary.count))
-    return pill(text, "warn")
+def summary_pill(case: Case) -> QLabel:
+    """The "TO-BE contro target" cell of ``case``: a pill, or a muted label
+    when nothing counts (``officina_board_pill.board_badge``). The plain text
+    is the ``plain`` property (the label itself holds rich text)."""
+    badge = board_badge(case)
+    if badge.pill:
+        label = pill("", badge.tone, badge.tooltip)
+    else:
+        label = QLabel()
+        label.setToolTip(badge.tooltip)
+        theme.set_role(label, "muted")
+    label.setTextFormat(Qt.TextFormat.RichText)
+    label.setText(glyph_html(badge.text))
+    label.setProperty("plain", badge.text)
+    return label
 
 
 class Board(QWidget):
@@ -88,11 +88,11 @@ class Board(QWidget):
     cancel_requested = Signal()
     folder_requested = Signal()
     deliver_requested = Signal()
+    noise_rules_requested = Signal()     # "Regole di rumore…" of the initiative
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ini: Initiative | None = None
-        self._summaries: dict[str, Summary] = {}
         #: case id -> "queued" | "running" | None (from the generation queue)
         self.run_state: Callable[[str], str | None] = lambda _case_id: None
         #: case id -> the reason of its last failed generation, if any
@@ -112,6 +112,8 @@ class Board(QWidget):
         self.deliver_button = QPushButton(strings.OFFICINA_DELIVER)
         self.deliver_button.setToolTip(strings.OFFICINA_DELIVER_TIP)
         self.folder_button = QPushButton(strings.OFFICINA_OPEN_FOLDER)
+        self.noise_button = QPushButton(strings.RUMORE_BUTTON)
+        self.noise_button.setToolTip(strings.RUMORE_BUTTON_TIP)
         theme.set_role(self.regenerate_button, "primary")
         self.progress = QLabel()
         self.cancel_button = QPushButton(strings.OFFICINA_BATCH_CANCEL)
@@ -146,6 +148,7 @@ class Board(QWidget):
         top.addWidget(self.title)
         top.addWidget(self.accepted)
         top.addStretch(1)
+        top.addWidget(self.noise_button)
         top.addWidget(self.folder_button)
         actions = QHBoxLayout()
         for button in (self.add_search_button, self.add_file_button, self.missing_button,
@@ -175,6 +178,7 @@ class Board(QWidget):
         self.cancel_button.clicked.connect(self.cancel_requested)
         self.folder_button.clicked.connect(self.folder_requested)
         self.deliver_button.clicked.connect(self.deliver_requested)
+        self.noise_button.clicked.connect(self.noise_rules_requested)
         self.table.doubleClicked.connect(self._open_row)
         enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
         enter.setContext(Qt.ShortcutContext.WidgetShortcut)
@@ -187,8 +191,6 @@ class Board(QWidget):
         """Rebuild the rows; the selected cases stay selected."""
         same = self._ini is not None and self._ini.id == ini.id
         selected = set(self.selected_case_ids()) if same else set()
-        if not same:
-            self._summaries = {}
         self._ini = ini
         self.title.setText(ini.name)
         self.title.setToolTip(str(ini.folder))
@@ -209,16 +211,6 @@ class Board(QWidget):
         self.table.setSelectionMode(mode)
         self.body.setCurrentWidget(self.table if ini.cases else self.empty)
         self._sync_buttons()
-
-    def set_summaries(self, summaries: dict[str, Summary], *, replace: bool = False) -> None:
-        """The comparison pills (a partial dict updates only those cases)."""
-        self._summaries = dict(summaries) if replace else {**self._summaries, **summaries}
-        for row, case in enumerate(self._cases()):
-            self._set_cell(row, COL_PILL, _cell(summary_pill(case, self._summaries.get(case.id))))
-        self._fit_columns()
-
-    def forget_summary(self, case_id: str) -> None:
-        self._summaries.pop(case_id, None)
 
     def refresh_run_states(self) -> None:
         """The "Ultima generazione" column: queued / running / failed / last run."""
@@ -250,7 +242,8 @@ class Board(QWidget):
             if case.id == case_id:
                 cells = [self.table.cellWidget(row, col) or QWidget()
                          for col in range(len(COLUMNS))]
-                return [" ".join(label.text() for label in cell.findChildren(QLabel))
+                return [" ".join(label.property("plain") or label.text()
+                                 for label in cell.findChildren(QLabel))
                         for cell in cells]
         return []
 
@@ -283,7 +276,7 @@ class Board(QWidget):
                   strings.OFFICINA_THUMB_TOBE_TIP.format(n=tobe.number) if tobe else "", "ok"),
         )
         self._set_cell(row, COL_DOCS, _cell(*tiles))
-        self._set_cell(row, COL_PILL, _cell(summary_pill(case, self._summaries.get(case.id))))
+        self._set_cell(row, COL_PILL, _cell(summary_pill(case)))
         self._set_cell(row, COL_RUN, _cell(self._run_label(case)))
         if case.load_error:
             status = pill(strings.OFFICINA_STATUS_BROKEN, "bad", case.load_error)

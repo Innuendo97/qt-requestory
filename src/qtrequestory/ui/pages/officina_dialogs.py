@@ -1,4 +1,5 @@
-"""Small questions the Officina asks: a folder, a file, a name, a note.
+"""Small questions the Officina asks: a folder, a file, a name, a note, a
+tolerance's optional note.
 
 Each one is a module-level function so a test can replace it (a modal dialog
 cannot be answered from an offscreen test); the widgets call them through this
@@ -14,7 +15,8 @@ from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QLineEdit, Q
 
 from qtrequestory.ui import strings
 
-__all__ = ["ask_conflict", "ask_folder", "ask_note", "ask_open_file", "ask_text", "confirm",
+__all__ = ["ask_conflict", "ask_folder", "ask_note", "ask_open_file", "ask_text",
+           "ask_tolerate_note", "confirm",
            "in_onedrive", "on_network"]
 
 
@@ -44,6 +46,17 @@ def ask_note(parent: QWidget | None, title: str, label: str) -> str | None:
     value, ok = QInputDialog.getMultiLineText(parent, title, label, "")
     value = value.strip() if ok else ""
     return value or None
+
+
+def ask_tolerate_note(parent: QWidget | None, what: str) -> str | None:
+    """"Tollera…": the optional note ("" = none); None when cancelled."""
+    from qtrequestory.ui.pages.officina_actions_bar import TolerateDialog
+
+    dialog = TolerateDialog(what, parent)
+    try:
+        return dialog.note() if dialog.exec() else None
+    finally:
+        dialog.deleteLater()
 
 
 def confirm(parent: QWidget | None, title: str, text: str) -> bool:

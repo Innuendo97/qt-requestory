@@ -8,16 +8,21 @@ reading six small files instead of grepping twenty widgets.
 all appended to one ``strings.py`` every one of them would conflict with the
 others. One module per page means each task owns a file:
 
-===================  ==================================================
-``common.py``        the shell: window, app bar, status bar, generic buttons
-``search.py``        Ricerca page + preview pane
-``sync.py``          Sincronizzazione page
-``settings.py``      Impostazioni page
-``wizard.py``        first-run wizard
-``about.py``         Info page
-``imports.py``       importing logs from other folders (dialog, banner, wizard)
-``officina.py``      Officina tab (viewer, page, board, workbench)
-===================  ==================================================
+===========================  ===================================================
+``common.py``                the shell: window, app bar, status bar, generic buttons
+``search.py``                Ricerca page + preview pane
+``sync.py``                  Sincronizzazione page
+``settings.py``              Impostazioni page
+``wizard.py``                first-run wizard
+``about.py``                 Info page
+``imports.py``               importing logs from other folders (dialog, banner, wizard)
+``officina.py``              Officina tab (viewer, page, board, workbench)
+``officina_verdetto.py``     Officina phase 2: verdict words and glyphs
+``officina_avanzamento.py``  Officina phase 2: progress bar, review banners, profile
+``officina_elenco.py``       Officina phase 2: the differences list (tabs, rows, keys)
+``officina_azioni.py``       Officina phase 2: mini-bar, right-click menu, toast, undo
+``officina_rumore.py``       Officina phase 2: noise rules dialog, DOM tab
+===========================  ===================================================
 
 Usage — always through the package, never the submodule::
 
@@ -37,6 +42,11 @@ from .wizard import *  # noqa: F401,F403
 from .about import *  # noqa: F401,F403
 from .imports import *  # noqa: F401,F403
 from .officina import *  # noqa: F401,F403
+from .officina_verdetto import *  # noqa: F401,F403
+from .officina_avanzamento import *  # noqa: F401,F403
+from .officina_elenco import *  # noqa: F401,F403
+from .officina_azioni import *  # noqa: F401,F403
+from .officina_rumore import *  # noqa: F401,F403
 
 
 def lower_first(sentence: str) -> str:

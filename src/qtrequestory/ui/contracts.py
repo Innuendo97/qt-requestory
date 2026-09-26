@@ -99,8 +99,23 @@ from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
-from qtrequestory.officina.compare.extract_pdf import DocText, Word
-from qtrequestory.officina.compare.textdiff import Difference, TextComparison
+from qtrequestory.officina.compare.extract_pdf import DocText
+from qtrequestory.officina.compare.model import (
+    COUNTING,
+    Anchor,
+    Block,
+    CaseComparison,
+    CaseSummary,
+    Comparison,
+    Diff,
+    Judged,
+    Klass,
+    Op,
+    Profile,
+    Verdict,
+    Verification,
+    Word,
+)
 from qtrequestory.officina.delivery import (
     DeliveryItem,
     DeliveryPlan,
@@ -112,6 +127,7 @@ from qtrequestory.officina.delivery import (
 )
 from qtrequestory.officina.generator import SendResult
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version
+from qtrequestory.officina.model_review import Mark, NoiseRule, Review, Tolerance
 from qtrequestory.officina.links import mask_text
 from qtrequestory.officina.service import CompareError
 
@@ -120,9 +136,12 @@ __all__ = [
     "ConfigApi", "SyncApi", "SchedulerApi", "IndexApi", "ExtractApi", "ArchiveApi", "OfficinaApi",
     "CoreServices",
     # Officina (qtrequestory.officina: model, generator, compare, service)
-    "Initiative", "Case", "Version", "SendResult", "TextComparison", "Difference", "Word", "DocText",
+    "Initiative", "Case", "Version", "SendResult", "Word", "DocText",
     "CompareError", "AsisAlreadyExistsError", "OfficinaSettings", "GeneratorEndpoint",
     "mask_text", "DeliveryItem", "DeliveryPlan", "DeliveryReport", "MissingSlot",
+    # Officina phase 2: the comparison contract (officina.compare.model) and review state (model_review)
+    "Anchor", "Block", "CaseComparison", "CaseSummary", "Comparison", "Diff", "Judged", "Verification",
+    "Op", "Klass", "Verdict", "Profile", "COUNTING", "Mark", "NoiseRule", "Review", "Tolerance",
     # archive import (core/archive.py, core/importer.py)
     "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
@@ -532,9 +551,11 @@ class OfficinaApi(Protocol):
         """
         ...
 
-    def compare(self, left: Version, right: Version) -> TextComparison:
-        """Word diff of ``left`` (the reference, usually the TARGET) against
-        ``right``. HTML is printed to PDF by Edge first, under the case's
+    def compare(self, left: Version, right: Version) -> Comparison:
+        """The staged engine's comparison (``compare_docs``, no noise rules,
+        no verdict) of ``left`` (the reference, usually the TARGET) against
+        ``right``: the AS-IS view and "cos'altro ho cambiato" (AS-IS against
+        TO-BE). HTML is printed to PDF by Edge first, under the case's
         ``cache`` folder. Cached by content hash.
 
         ``CompareError`` (Italian message) when it cannot be made: a file gone,
@@ -579,6 +600,100 @@ class OfficinaApi(Protocol):
 
     def last_delivery_destination(self, ini: Initiative) -> Path | None:
         """Where the initiative was last delivered, or None."""
+        ...
+
+    # -- phase 2: case comparison and review (spec §4, §5) ------------------
+    # Every review action and ``compare_case`` persist with
+    # ``Workspace.save_review`` (only the review keys of ``caso.json``, ruling
+    # R8): ``save_case`` never writes them, so a stale Case cannot wipe them.
+
+    def compare_case(self, ini: Initiative, case: Case, version: Version) -> CaseComparison:
+        """Both comparisons (AS-IS↔target and ``version``↔target; two-way
+        without an AS-IS) and the verdicts, with the effective profile (case
+        → initiative → "tollerante") and the noise rules of both.
+
+        Marks are verified PER MARK (R7): each mark older than ``version``
+        (``mark.version < version.number``) is verified and removed
+        (``CaseComparison.verification`` counts only those); the others stay
+        "da verificare". A mark still there with the same text becomes "non
+        risolta": the difference KEEPS its verdict (R31: a regressione stays
+        regressione) and gets the flag; ``case.review.unresolved`` holds
+        ``(anchor, N, generated text)`` where N is the version the mark was
+        MADE in (R10) — the message "Segnata fatta in vN, ma in vM è ancora
+        qui" takes M from ``CaseComparison.version``. The flag lasts while the
+        difference is there with that text. A mark whose difference does not
+        count right now (tollerata) is dormant (R32): not verified, kept.
+
+        ``Diff.id`` is unique within ``CaseComparison.judged`` (R9: numbered
+        1..n in judged order; "fatta" entries come from the AS-IS comparison,
+        whose own ids may repeat TO-BE ones): key selection and actions on it.
+
+        Saves ``case.review`` (summary, marks left, unresolved) with
+        ``save_review``. ``CompareError`` like :meth:`compare`. Run it in a worker."""
+        ...
+
+    def tolerate(self, case: Case, judged: Judged, note: str = "") -> None:
+        """Tolerate a difference by hand (anchor + generated text); saved at once."""
+        ...
+
+    def untolerate(self, case: Case, judged: Judged) -> None:
+        """Remove the tolerance of that difference; saved at once."""
+        ...
+
+    def mark_done(self, case: Case, judged: Judged, version: int) -> None:
+        """"Segna fatta" in TO-BE ``version``: the difference is "da verificare"
+        until a TO-BE newer than ``version`` is compared; saved at once."""
+        ...
+
+    def unmark(self, case: Case, judged: Judged) -> None:
+        """Undo :meth:`mark_done` for that difference; saved at once."""
+        ...
+
+    def unmark_all(self, case: Case) -> None:
+        """"Annulla i segni": every mark of the case goes; saved at once."""
+        ...
+
+    def not_variable(self, case: Case, judged: Judged) -> None:
+        """"Non è una variabile": the slot that absorbed this difference is
+        switched off, so the text counts again; saved at once."""
+        ...
+
+    def variable_again(self, case: Case, judged: Judged) -> None:
+        """The inverse of :meth:`not_variable` (undo); saved at once."""
+        ...
+
+    def reset_tolerances(self, case: Case) -> None:
+        """"Azzera tolleranze": clears the tolerances AND the not-variables."""
+        ...
+
+    def set_profile(self, ini: Initiative, case: Case | None, profile: Profile | None) -> None:
+        """``case`` None: the initiative's profile (None = "tollerante"); with a
+        case, that case's (None = "come l'iniziativa"). Saved at once; when the
+        save is refused (``ValueError``) ``ini``/``case`` are left unchanged."""
+        ...
+
+    def set_noise_rules(self, ini: Initiative, case: Case | None, rules: list[NoiseRule],
+                        presets: list[str] | None = None) -> None:
+        """``case`` None: the initiative's rules and (when not None) the names
+        of its presets turned on; with a case, that case's own rules
+        (``presets`` ignored: presets are per initiative). Saved at once.
+        Rule names are unique within ``rules``: duplicates → ``ValueError``
+        (Italian), nothing changed. A refused save leaves ``ini``/``case`` unchanged."""
+        ...
+
+    def noise_presets(self) -> list[NoiseRule]:
+        """The built-in noise presets, all disabled."""
+        ...
+
+    def count_noise_hits(self, case: Case, rules: list[NoiseRule]) -> dict[str, int | str]:
+        """Per rule name: its hits over the target and the latest TO-BE text,
+        or an Italian error string for a regex that does not compile.
+        Duplicate names in ``rules`` → ``ValueError`` (keys would collide)."""
+        ...
+
+    def dom_view(self, case: Case, version: Version) -> tuple[str, str]:
+        """``(target source, version source)`` as pretty text for the DOM
+        tab; ``("", "")`` for a PDF case."""
         ...
 
 

@@ -12,21 +12,52 @@ Two ways to read a JSON object:
 * :func:`read_json_strict` raises :class:`UnreadableJsonError` for a file that
   exists but cannot be parsed, for the writers that merge into it — a merge
   into ``{}`` would silently wipe everything the file held.
+
+Both retry a read that fails TRANSIENTLY (ruling R16): on Windows, opening a
+file while another thread ``os.replace``-s it fails with "access denied" or a
+sharing violation for a few milliseconds. Up to :data:`TRANSIENT_TRIES`
+attempts, :data:`TRANSIENT_WAIT_S` apart; then the error is what it was.
 """
 from __future__ import annotations
 
 import json
 import os
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
 from qtrequestory.core.fsutil import remove_quietly, replace_with_retry
 
 __all__ = [
-    "UnreadableJsonError", "atomic_copy_text", "parse_dt", "read_json_object", "read_json_strict",
-    "write_bytes_atomic", "write_json_atomic",
+    "TRANSIENT_TRIES", "TRANSIENT_WAIT_S", "UnreadableJsonError", "atomic_copy_text", "parse_dt",
+    "read_json_object", "read_json_strict", "read_text_retrying", "write_bytes_atomic",
+    "write_json_atomic",
 ]
+
+
+#: Attempts of a read that fails transiently, and the pause between two (R16).
+TRANSIENT_TRIES = 10
+TRANSIENT_WAIT_S = 0.02
+#: Windows ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION.
+_SHARING_ERRORS = (32, 33)
+
+
+def _transient(exc: OSError) -> bool:
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in _SHARING_ERRORS
+
+
+def read_text_retrying(path: Path) -> str:
+    """``path.read_text("utf-8")``, retrying the transient errors of a file
+    being replaced by another thread (bounded; the last error is raised)."""
+    for attempt in range(1, TRANSIENT_TRIES + 1):
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            if attempt == TRANSIENT_TRIES or not _transient(exc):
+                raise
+            time.sleep(TRANSIENT_WAIT_S)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class UnreadableJsonError(ValueError):
@@ -70,11 +101,14 @@ def read_json_object(path: Path) -> dict:
 
 def read_json_strict(path: Path) -> dict:
     """The JSON object in ``path``; ``{}`` when the file does not exist.
-    :class:`UnreadableJsonError` when it exists but is not a readable object."""
-    if not path.exists():
-        return {}
+    :class:`UnreadableJsonError` when it exists but is not a readable object.
+    No separate existence check: a stat can fail transiently too while
+    another thread replaces the file, so "missing" is the read's own
+    ``FileNotFoundError``, and everything else goes through the retry."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_text_retrying(path))
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError) as exc:
         raise UnreadableJsonError(f"{path.name} non è leggibile: {exc}") from None
     if not isinstance(raw, dict):

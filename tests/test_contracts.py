@@ -59,7 +59,7 @@ from qtrequestory.ui.contracts import (
     SchedulerApi,
     SyncApi,
 )
-from tests.fakes import fake_core
+from tests.fakes import fake_core, fake_officina, fake_verdict
 
 from .conftest import FDI_A, FDI_B, KEY_CTE, KEY_SINT, StubServer, autoindex_html, entry_name, make_daily_file, synthetic_body
 
@@ -117,7 +117,7 @@ def test_contracts_and_fakes_do_not_import_qt():
     """UI tasks build the fake core in plain unit tests, without a QApplication,
     so neither the contracts nor the fakes may pull Qt in."""
     forbidden = re.compile(r"^\s*(from|import)\s+(PySide6|PyQt\d|shiboken6)", re.M)
-    for module in (contracts, facade, fake_core):
+    for module in (contracts, facade, fake_core, fake_officina, fake_verdict):
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert not forbidden.search(source), module.__name__
 

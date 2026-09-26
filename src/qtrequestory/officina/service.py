@@ -27,7 +27,9 @@ or an unmasked link.
 
 **Comparison** (:meth:`OfficinaService.compare`, :meth:`render_path`): in
 ``officina.service_compare`` (the text engine, Edge's HTML print and their
-caches); see its docstring.
+caches); see its docstring. The phase-2 case comparison and review actions
+(:meth:`OfficinaService.compare_case`, ``tolerate``, ``mark_done``...) are in
+``officina.service_review``, their inputs in ``officina.service_case``.
 
 Stdlib only at import time: ``compare.extract_pdf`` loads pypdfium2 inside
 ``extract()``, so importing this module keeps the lazy boundary.
@@ -59,6 +61,7 @@ from qtrequestory.officina.generator import (
 from qtrequestory.officina.links import find_links, mask, mask_bytes, mask_text, mask_text_for_log
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version, Workspace
 from qtrequestory.officina.service_compare import EDGE_TIMEOUT_S, CompareError, CompareMixin, HtmlToPdf
+from qtrequestory.officina.service_review import ReviewMixin
 
 if TYPE_CHECKING:
     from qtrequestory.core.index.search import SearchHit
@@ -73,7 +76,7 @@ REASON_PDF_FOR_HTML = ("risposta PDF per un caso HTML: il generatore ha prodotto
                        "non il corpo dell'email (controllare template_key e payload)")
 REASON_VANISHED_CALL = "la chiamata non è più nel log locale: ripetere la ricerca"
 
-class OfficinaService(CompareMixin):
+class OfficinaService(CompareMixin, ReviewMixin):
     """Satisfies ``ui.contracts.OfficinaApi``. Thread-safe: the UI calls it
     from JobRunner workers (the caches are guarded by a lock)."""
 
@@ -93,6 +96,7 @@ class OfficinaService(CompareMixin):
         self._clock = clock
         self._new_uuid = new_uuid
         self._init_compare(html_to_pdf)
+        self._init_case()
 
     # --------------------------------------------------------------- workspace ---
 
@@ -164,7 +168,11 @@ class OfficinaService(CompareMixin):
         self._workspace().save_payload(case, payload)
 
     def set_target(self, case: Case, src: Path) -> Version:
-        return self._workspace().set_target(case, Path(src))
+        """Copy ``src`` in as the TARGET; a case with marks or a summary loses
+        them (ruling R29: ``ReviewMixin._target_replaced``)."""
+        version = self._workspace().set_target(case, Path(src))
+        self._target_replaced(case)
+        return version
 
     # ---------------------------------------------------------------- generate ---
 

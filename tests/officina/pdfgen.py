@@ -144,3 +144,63 @@ def lorem(n_words: int, *, seed: int = 0) -> str:
         out.append(word)
     return " ".join(out)
 
+
+# ------------------------------------------------ styles, boxes, comb fields ---
+
+_EXTRA_FONT_FILES = {
+    "bold": [
+        Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "arialbd.ttf",
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ],
+    "symbol": [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "wingding.ttf"],
+}
+
+
+def load_extra_font(kind: str) -> int | None:
+    """Register the ``"bold"`` face of the test font (so a bold run is a real
+    bold font, not a synthetic one) or the ``"symbol"`` font (Wingdings);
+    the id to remove it with :func:`unload_font`, None if not on this system."""
+    for file in _EXTRA_FONT_FILES[kind]:
+        if file.is_file():
+            font_id = QFontDatabase.addApplicationFont(str(file))
+            if font_id >= 0:
+                return font_id
+    return None
+
+
+def runs_html(runs: list[tuple[str, float, bool]]) -> str:
+    """One paragraph of ``(text, size in points, bold)`` runs."""
+    spans = "".join(
+        f'<span style="font-size:{size}pt; font-weight:{700 if bold else 400}">{text}</span> '
+        for text, size, bold in runs
+    )
+    return f"<p>{spans}</p>"
+
+
+def checkbox_html(label: str, *, glyph: str = "q") -> str:
+    """A list line opened by a Wingdings box (``q`` = ❑ in Wingdings): the
+    extracted text is the bare ``q``, as with a symbol font without a Unicode
+    mapping. Needs :func:`load_extra_font` ``("symbol")``."""
+    return f'<p><span style="font-family:Wingdings">{glyph}</span> {label}</p>'
+
+
+def comb_pdf(path: Path, label: str, letters: str, *, pitch_pt: float = 14.0, font_pt: float = 11.0) -> Path:
+    """A form row: ``label`` then ``letters`` drawn one per box, centred at a
+    regular ``pitch_pt`` (a comb field), on the first line of an A4 page."""
+    writer = _writer(path)
+    px = writer.resolution() / 72  # device pixels per point
+    painter = QPainter(writer)
+    font = QFont(FONT_FAMILY)
+    font.setPointSizeF(font_pt)
+    painter.setFont(font)
+    baseline = 80 * px
+    painter.drawText(int(40 * px), int(baseline), label)
+    start = 40 + 12 * len(label) * font_pt / 11
+    metrics = painter.fontMetrics()
+    for i, letter in enumerate(letters):
+        centre = (start + i * pitch_pt) * px
+        painter.drawRect(QRectF(centre - pitch_pt * px / 2, baseline - font_pt * px, pitch_pt * px, font_pt * 1.4 * px))
+        painter.drawText(int(centre - metrics.horizontalAdvance(letter) / 2), int(baseline), letter)
+    painter.end()
+    return path

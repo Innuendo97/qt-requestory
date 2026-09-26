@@ -36,13 +36,18 @@ class FakeWindow:
     def __init__(self) -> None:
         self.statuses: list[str] = []
         self.toasts: list[tuple[str, str]] = []
+        #: The toasts that carried an action button: ``(text, tone, (label, callback))``.
+        self.actions: list[tuple[str, str, tuple]] = []
         self.shown: list[str] = []
 
     def set_status(self, text: str) -> None:
         self.statuses.append(text)
 
-    def show_toast(self, text: str, tone: str = "neutral") -> None:
+    def show_toast(self, text: str, tone: str = "neutral", ms: int = 0, action=None,
+                   hint: str = "") -> None:
         self.toasts.append((text, tone))
+        if action is not None:
+            self.actions.append((text, tone, action))
 
     def show_page(self, key: str) -> None:
         self.shown.append(key)
@@ -252,7 +257,14 @@ def test_a_failed_generation_shows_the_reason_in_a_banner(qtbot, page, fake_core
     assert fake_core.officina.load("Banco").cases[0].tobe_versions() == []
 
 
-def test_the_differences_are_listed_with_their_kind_and_text(qtbot, page, fake_core, tmp_path):
+def _no_verdicts_yet(*_args, **_kwargs):
+    raise NotImplementedError("Officina fase 2: in arrivo")
+
+
+def test_the_differences_are_listed_with_their_kind_and_text(qtbot, page, fake_core, tmp_path,
+                                                             monkeypatch):
+    """Phase-1 path: a core that cannot judge yet (the real one until E7)."""
+    monkeypatch.setattr(fake_core.officina, "compare_case", _no_verdicts_yet)
     open_case(page, fake_core, tmp_path)
     fake_core.officina.set_response(canned_pdf("MOD_TEST documento generato dal generatore vero"))
     page.case_view.regenerate_button.click()
@@ -282,7 +294,7 @@ def test_an_unexpected_failure_preparing_the_documents_is_a_sentence(qtbot, page
     def boom(*_args, **_kwargs):
         raise RuntimeError("PDFium non disponibile")
 
-    monkeypatch.setattr("qtrequestory.ui.pages.officina_page.load_case_docs", boom)
+    monkeypatch.setattr("qtrequestory.ui.pages.officina_compare_jobs.load_case_docs", boom)
     open_case(page, fake_core, tmp_path)
     expected = strings.OFFICINA_DIFF_ERROR.format(reason="PDFium non disponibile")
     qtbot.waitUntil(lambda: page.case_view.diffs.summary.text() == expected, timeout=5000)
@@ -734,3 +746,101 @@ def test_is_writing_counts_waiting_cases(qtbot, page, fake_core, runner, tmp_pat
     qtbot.waitUntil(lambda: not any(runner.is_running(n) for n in OFFICINA_GENERATE_JOBS),
                     timeout=5000)
     assert not page.is_writing()
+
+
+# ------------------------------------------------ phase 2: verdicts (U1) ---
+
+def _placed(diff, left_y: float | None, right_y: float | None):
+    """``diff`` with one word box per side (synthetic boxes on page 1)."""
+    from qtrequestory.ui.contracts import Word
+
+    left = (Word(diff.left_text, 0, 60, left_y, 140, left_y + 12),) if left_y is not None else ()
+    right = (Word(diff.right_text, 0, 60, right_y, 140, right_y + 12),) if right_y is not None else ()
+    return dataclasses.replace(diff, left=left, right=right)
+
+
+def test_the_case_view_draws_the_verdicts_of_compare_case(qtbot, page, fake_core, tmp_path):
+    from tests.fakes.fake_core import fake_diff
+
+    case = open_case(page, fake_core, tmp_path)
+    page.case_view.regenerate_button.click()
+    wait_idle(qtbot, page)
+    api = fake_core.officina
+    api.set_canned(case.id, 0, [_placed(fake_diff("cambiato", "testo", "12,00", "11,00"), 100, 100)])
+    api.set_canned(case.id, 1, [_placed(fake_diff("cambiato", "testo", "12,00", "11,50"), 100, 100),
+                                _placed(fake_diff("in_piu", "testo", "", "Nota"), None, 200)])
+    page.open_case(page.case_id, "v1")
+    view = page.case_view
+    qtbot.waitUntil(lambda: bool(view.right.view.highlight_items(2)), timeout=10000)
+    assert [i.look.label for i in view.right.view.highlight_items(1)] == ["in corso"]
+    assert [i.look.label for i in view.right.view.highlight_items(2)] == ["regressione"]
+    assert [i.look.label for i in view.left.view.highlight_items(1)] == ["in corso"]
+    assert view.left.view.highlight_items(2) == [], "an added text has no target words"
+    assert len(view.diffs.texts()) == 2, "the list shows the same differences (same ids)"
+    view.diffs.list.setCurrentRow(1)
+    assert view.right.view.focused_difference() == 2
+    assert (case.id, 1) in api.compare_case_calls
+
+
+def test_without_a_judged_comparison_the_phase_1_one_is_drawn(qtbot, page, fake_core, tmp_path,
+                                                                monkeypatch):
+    """The AS-IS view, or a core that cannot judge yet (the real one until the
+    engine lands: NotImplementedError), keeps the phase-1 text comparison."""
+    def not_yet(*_args, **_kwargs):
+        raise NotImplementedError("Officina fase 2: in arrivo")
+
+    monkeypatch.setattr(fake_core.officina, "compare_case", not_yet)
+    open_case(page, fake_core, tmp_path)
+    fake_core.officina.set_response(canned_pdf("MOD_TEST documento generato dal generatore vero"))
+    page.case_view.regenerate_button.click()
+    wait_idle(qtbot, page)
+    qtbot.waitUntil(lambda: bool(page.case_view.diffs.texts()), timeout=10000)
+    (item,) = page.case_view.right.view.highlight_items(1)
+    assert item.look.label == strings.VERDETTO_NESSUNO
+
+
+def test_compare_case_and_generation_of_a_case_take_turns(fake_core, tmp_path, monkeypatch):
+    """Both write caso.json from a worker: they hold the case's lock (on Windows
+    a read during another thread's replace fails and its merge is skipped)."""
+    from qtrequestory.ui.pages import officina_judge
+
+    ini = make_initiative(fake_core, "Banco", ("MOD_TEST_A",), tmp_path)
+    case = ini.cases[0]
+    held = []
+    api = fake_core.officina
+    monkeypatch.setattr(api, "compare_case",
+                        lambda _i, c, _v: held.append(officina_judge.case_lock(_i.id, c.id).locked()))
+    monkeypatch.setattr(api, "generate",
+                        lambda _i, c, _k, **_kw: held.append(officina_judge.case_lock(_i.id, c.id).locked()))
+    officina_judge.judge(fake_core, ini, case, None)
+    officina_judge.generate_locked(fake_core, ini, case, "tobe")
+    assert held == [True, True]
+    assert not officina_judge.case_lock(ini.id, case.id).locked()
+
+
+
+def test_a_judged_comparison_without_differences_shows_no_phase_1_ones(qtbot, page, fake_core,
+                                                                       tmp_path):
+    """The engine judged "nothing to look at" (e.g. only spacing, not counted):
+    the phase-1 text differences are not resurrected in grey."""
+    open_case(page, fake_core, tmp_path)
+    fake_core.officina.set_response(canned_pdf("MOD_TEST documento generato dal generatore vero"))
+    page.case_view.regenerate_button.click()
+    wait_idle(qtbot, page)
+    view = page.case_view
+    qtbot.waitUntil(lambda: view.diffs.summary.text() == strings.OFFICINA_DIFF_EQUAL, timeout=10000)
+    assert view.right.view.highlight_items(1) == [] and view.diffs.texts() == []
+
+
+def test_all_fatte_is_not_equal_in_the_list(qtbot, page, fake_core, tmp_path):
+    from tests.fakes.fake_core import fake_diff
+
+    case = open_case(page, fake_core, tmp_path)
+    page.case_view.regenerate_button.click()
+    wait_idle(qtbot, page)
+    fake_core.officina.set_canned(case.id, 0, [_placed(fake_diff("cambiato", "testo", "12,00", "11,00"),
+                                                       100, 100)])
+    page.open_case(page.case_id, "v1")
+    expected = strings.ELENCO_ALL_DONE_ONE
+    qtbot.waitUntil(lambda: page.case_view.diffs.summary.text() == expected, timeout=10000)
+    assert page.case_view.diffs.summary.text() != strings.OFFICINA_DIFF_EQUAL

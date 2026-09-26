@@ -6,9 +6,15 @@ value that cannot be used is left out with a line in ``load_notes``. Every
 WRITE of ``caso.json`` merges into what is on disk and therefore refuses an
 unreadable file (:class:`~qtrequestory.officina.model_io.UnreadableJsonError`,
 a ``ValueError``): a merge into ``{}`` would wipe env, headers and source FDI.
+
+Every read-modify-write of one case's ``caso.json`` holds that case's
+:func:`case_write_lock` (ruling R16): a worker saving the review and the main
+thread saving the case never merge into each other's stale copy.
 """
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +26,7 @@ from qtrequestory.officina.model_io import (
     read_json_strict,
     write_json_atomic,
 )
+from qtrequestory.officina.model_review import Review, review_from_json, review_to_json
 from qtrequestory.officina.model_versions import (
     Version,
     read_single_version,
@@ -56,6 +63,11 @@ class Case:
     #: What loading had to leave out of ``caso.json`` (e.g. a header whose
     #: value is null), for the user to see; the rest loaded normally.
     load_notes: list[str] = field(default_factory=list)
+    #: Phase 2: profile, tolerances, marks, noise rules and the last summary
+    #: (``model_review``). Written ONLY by ``Workspace.save_review`` (ruling R8):
+    #: ``save_case`` never touches the review keys, so a stale instance saved
+    #: by the editor cannot wipe newer marks or tolerances.
+    review: Review = field(default_factory=Review)
 
     def target(self) -> Version | None:
         return read_target(self.folder)
@@ -134,6 +146,7 @@ def load_case(case_dir: Path) -> Case:
         headers, notes = headers_from(raw.get("headers"), "caso.json")
         source_fdi_raw = raw.get("source_fdi")
         accepted = raw.get("accepted_version")
+        review = review_from_json(raw, notes)
         return Case(
             id=case_id,
             key=str(raw.get("key", case_id)),
@@ -152,6 +165,7 @@ def load_case(case_dir: Path) -> Case:
             accepted_version=accepted if type(accepted) is int else None,
             reopened=raw.get(REOPENED_KEY) is True,
             load_notes=notes,
+            review=review,
         )
     except (OSError, ValueError, KeyError, TypeError) as e:
         return Case(
@@ -163,32 +177,64 @@ def load_case(case_dir: Path) -> Case:
         )
 
 
+log = logging.getLogger(__name__)
+
+_write_locks: dict[str, threading.RLock] = {}
+_write_locks_guard = threading.Lock()
+
+
+def case_write_lock(case_dir: Path) -> threading.RLock:
+    """The lock of one case folder (by resolved path), held around every
+    read-modify-write of its ``caso.json`` in this process (R16)."""
+    key = str(Path(case_dir).resolve()).lower()
+    with _write_locks_guard:
+        return _write_locks.setdefault(key, threading.RLock())
+
+
 def read_caso_strict(case_dir: Path) -> dict:
     return read_json_strict(case_dir / "caso.json")
 
 
 def append_history(case_dir: Path, note: str) -> None:
-    raw = read_caso_strict(case_dir)
-    history = raw.get("history")
-    if not isinstance(history, list):
-        history = []
-    history.append({"at": datetime.now().isoformat(), "note": note})
-    raw["history"] = history
-    write_json_atomic(case_dir / "caso.json", raw)
+    with case_write_lock(case_dir):
+        raw = read_caso_strict(case_dir)
+        history = raw.get("history")
+        if not isinstance(history, list):
+            history = []
+        history.append({"at": datetime.now().isoformat(), "note": note})
+        raw["history"] = history
+        write_json_atomic(case_dir / "caso.json", raw)
+
+
+def write_review(case: Case) -> None:
+    """Merge ONLY the review keys of ``case`` into its ``caso.json`` (the
+    case fields, history and unknown keys stay as on disk). ``ValueError``
+    and nothing written for a case with ``load_error`` or an unreadable file."""
+    if case.load_error:
+        raise UnreadableJsonError(
+            f"caso.json non è leggibile ({case.load_error}): la revisione non viene salvata")
+    with case_write_lock(case.folder):
+        raw = read_caso_strict(case.folder)
+        raw.update(review_to_json(case.review))
+        write_json_atomic(case.folder / "caso.json", raw)
 
 
 def reopen_if_accepted(case: Case) -> None:
     """A new AS-IS or TO-BE landed: an accepted case goes back to "open"
     with the "nuova versione dopo l'accettazione" notice. ``accepted_version``
-    stays, for the record. An unreadable ``caso.json`` is left alone."""
-    try:
-        raw = read_caso_strict(case.folder)
-    except UnreadableJsonError:
-        return
-    if raw.get("status") != "accepted":
-        return
-    raw["status"] = "open"
-    raw[REOPENED_KEY] = True
-    write_json_atomic(case.folder / "caso.json", raw)
+    stays, for the record. A transient read error is retried (``model_io``);
+    a ``caso.json`` that stays unreadable is left alone, with a warning in the
+    log (never a silent skip: the case keeps showing "accettato")."""
+    with case_write_lock(case.folder):
+        try:
+            raw = read_caso_strict(case.folder)
+        except UnreadableJsonError as exc:
+            log.warning("Officina: caso %s non riaperto dopo la nuova versione: %s", case.id, exc)
+            return
+        if raw.get("status") != "accepted":
+            return
+        raw["status"] = "open"
+        raw[REOPENED_KEY] = True
+        write_json_atomic(case.folder / "caso.json", raw)
     case.status = "open"
     case.reopened = True
