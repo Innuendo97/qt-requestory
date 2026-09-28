@@ -46,6 +46,7 @@ from qtrequestory.officina.model_case import Case, append_history, headers_from,
 from qtrequestory.officina.model_case import case_write_lock
 from qtrequestory.officina.model_case import case_raw as _case_raw
 from qtrequestory.officina.model_case import load_case as _load_case
+from qtrequestory.officina.model_case import merge_case_raw as _merge_case_raw
 from qtrequestory.officina.model_case import read_caso_strict as _read_caso_strict
 from qtrequestory.officina.model_case import write_review as _write_review
 from qtrequestory.officina.model_io import UnreadableJsonError
@@ -226,8 +227,7 @@ class Workspace:
         case = Case(
             id=case_id, key=key, variant=variant, env=env,
             headers={}, drop_postman_token=False,
-            correlation="new", correlation_value="",
-            link_policy="remove", status="open", notes="",
+            correlation="new", correlation_value="", status="open", notes="",
             folder=case_dir, load_error=None, source_fdi=source_fdi,
         )
         raw = {**_case_raw(case), **review_to_json(case.review), "history": []}
@@ -256,8 +256,7 @@ class Workspace:
         case_dir.mkdir(parents=True, exist_ok=True)
         with case_write_lock(case_dir):  # the merge inside the lock (R16)
             raw = _read_caso_strict(case_dir)
-            raw.update(_case_raw(case))
-            raw.setdefault("history", [])
+            _merge_case_raw(raw, case)
             _write_json_atomic(case_dir / "caso.json", raw)
 
     # ---------------------------------------------------------------- payload ---

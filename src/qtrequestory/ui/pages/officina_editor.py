@@ -47,8 +47,6 @@ __all__ = ["PayloadHeaderDialog", "parse_payload"]
 CORRELATION_MODES = (("new", strings.OFFICINA_EDITOR_CORRELATION_NEW),
                      ("source", strings.OFFICINA_EDITOR_CORRELATION_SOURCE),
                      ("fixed", strings.OFFICINA_EDITOR_CORRELATION_FIXED))
-LINK_POLICIES = (("remove", strings.OFFICINA_EDITOR_LINKS_REMOVE),
-                 ("keep_if_expired", strings.OFFICINA_EDITOR_LINKS_KEEP))
 
 
 def parse_payload(text: str) -> tuple[dict | None, str]:
@@ -84,7 +82,6 @@ class PayloadHeaderDialog(QDialog):
         self.env = QComboBox()
         self.correlation = QComboBox()
         self.correlation_value = QLineEdit(case.correlation_value)
-        self.links = QComboBox()
         self.drop_token = QCheckBox(strings.OFFICINA_EDITOR_DROP_TOKEN)
         self.drop_token.setChecked(case.drop_postman_token)
         self.headers = QTableWidget(0, 2)
@@ -128,9 +125,6 @@ class PayloadHeaderDialog(QDialog):
                 continue
             self.correlation.addItem(label, mode)
         self.correlation.setCurrentIndex(max(0, self.correlation.findData(self._case.correlation)))
-        for policy, label in LINK_POLICIES:
-            self.links.addItem(label, policy)
-        self.links.setCurrentIndex(max(0, self.links.findData(self._case.link_policy)))
         for name, value in self._case.headers.items():
             self._add_row(name, value)
 
@@ -150,7 +144,6 @@ class PayloadHeaderDialog(QDialog):
         correlation.addWidget(self.correlation)
         correlation.addWidget(self.correlation_value, 1)
         form.addRow(strings.OFFICINA_EDITOR_CORRELATION, correlation)
-        form.addRow(strings.OFFICINA_EDITOR_LINKS, self.links)
         form.addRow("", self.drop_token)
         hint = QLabel(strings.OFFICINA_EDITOR_HEADERS_HINT)
         hint.setWordWrap(True)
@@ -215,7 +208,6 @@ class PayloadHeaderDialog(QDialog):
         case.correlation = self.correlation.currentData()
         case.correlation_value = (self.correlation_value.text().strip()
                                   if case.correlation == "fixed" else "")
-        case.link_policy = self.links.currentData()
         case.drop_postman_token = self.drop_token.isChecked()
         case.headers = {name: value for name, value in self.header_rows() if name}
         try:

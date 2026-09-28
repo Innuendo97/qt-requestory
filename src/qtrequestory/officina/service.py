@@ -13,12 +13,12 @@ early as possible so nothing leaves the machine when it should not:
 2. an AS-IS that exists is only replaced with a note (checked before sending);
 3. the headers are resolved (``generator.resolve_headers``), the correlation
    id from the case's source FDI when the case asks for it;
-4. the upload-link policy is applied (``generator.prepare_payload``): a
-   still-valid link is never sent;
-5. ``generator.send``; its answer must also be of the type the case expects
-   (the TARGET's type, else the AS-IS's; with neither, PDF or HTML) — an HTML
-   page for a PDF case is almost always a gateway error page;
-6. only then is a version written. A failed or refused run writes nothing and
+4. ``generator.send`` with the payload exactly as saved (svil and coll hold
+   only test data: signed upload links go out as they are, like Postman); its
+   answer must also be of the type the case expects (the TARGET's type, else
+   the AS-IS's; with neither, PDF or HTML) — an HTML page for a PDF case is
+   almost always a gateway error page;
+5. only then is a version written. A failed or refused run writes nothing and
    comes back as ``(None, SendResult(ok=False, reason=...))``.
 
 The service logs outcomes only: case id, slot, environment, status, duration
@@ -54,11 +54,10 @@ from qtrequestory.officina.generator import (
     PREVIEW_BYTES,
     HeaderError,
     SendResult,
-    prepare_payload,
     resolve_headers,
     send,
 )
-from qtrequestory.officina.links import find_links, mask, mask_bytes, mask_text, mask_text_for_log
+from qtrequestory.officina.links import mask, mask_bytes, mask_text, mask_text_for_log
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version, Workspace
 from qtrequestory.officina.service_compare import EDGE_TIMEOUT_S, CompareError, CompareMixin, HtmlToPdf
 from qtrequestory.officina.service_review import ReviewMixin
@@ -217,13 +216,10 @@ class OfficinaService(CompareMixin, ReviewMixin):
                                       new_uuid=self._new_uuid, source_fdi=case.source_fdi)
         except HeaderError as exc:
             return self._refused(case, kind, str(exc))
-        original = workspace.payload(case)
-        if not original:
+        to_send = workspace.payload(case)
+        if not to_send:
             return self._refused(case, kind, "payload mancante, vuoto o non leggibile: "
                                              "controllare payload.json del caso")
-        to_send, refusal = prepare_payload(original, case.link_policy, now=now)
-        if to_send is None:
-            return self._refused(case, kind, refusal)
         if cancel is not None and cancel.is_set():
             return self._refused(case, kind, REASON_CANCELLED)
 
@@ -248,8 +244,6 @@ class OfficinaService(CompareMixin, ReviewMixin):
             "bytes": len(result.content),
             "sent_at": now.isoformat(),
             "headers_sent": dict(result.headers_sent),
-            "link_policy": case.link_policy,
-            "links_removed": len(find_links(original)) if case.link_policy == "remove" else 0,
         }
         try:
             version = workspace.add_version(case, kind, result.content, result.doc_type, meta,

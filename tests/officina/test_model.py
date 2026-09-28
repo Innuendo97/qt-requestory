@@ -452,6 +452,37 @@ def test_120_case_json_loads(ws: Workspace):
     assert loaded.review == Review()
 
 
+@pytest.mark.parametrize("legacy", ["remove", "keep_if_expired", "qualcosa"])
+def test_a_legacy_link_policy_is_ignored_silently(ws: Workspace, legacy: str):
+    # 1.3.1: payloads are sent as they are; an old caso.json still loads
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = _caso_120()
+    raw["link_policy"] = legacy
+    _write_caso(case.folder, raw)
+    before = (case.folder / "caso.json").read_bytes()
+
+    loaded = _reload(ws, "Alpha", case.id)
+
+    assert loaded.load_error is None and loaded.load_notes == []
+    assert not hasattr(loaded, "link_policy")
+    assert (case.folder / "caso.json").read_bytes() == before  # loading never rewrites it
+    loaded.notes = "salvato per un altro motivo"
+    ws.save_case(loaded)
+    saved = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+    assert "link_policy" not in saved and saved["notes"] == "salvato per un altro motivo"
+
+
+def test_a_new_case_has_no_link_policy(ws: Workspace):
+    ini = ws.create_initiative("Alpha")
+    case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)
+    raw = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+    assert "link_policy" not in raw
+    ws.save_case(case)
+    raw = json.loads((case.folder / "caso.json").read_text(encoding="utf-8"))
+    assert "link_policy" not in raw
+
+
 def test_junk_new_fields_become_load_notes(ws: Workspace):
     ini = ws.create_initiative("Alpha")
     case = ws.add_case(ini, "MOD_TEST_A", "", _payload(), env="svil", source_fdi=None)

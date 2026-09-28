@@ -108,7 +108,7 @@ Interni:
 - Il lock di scrittura per caso vale per il processo (l'app è a istanza singola).
 - La chiave della memoria dei confronti non contiene il tipo di documento (irrilevante:
   gli stessi byte non sono un PDF e un HTML insieme).
-- `officina/delivery.py` (~460 righe), `officina/generator.py` (~420) e `cli.py` (~500)
+- `officina/delivery.py` (~460 righe) e `cli.py` (~500)
   sono sopra la soglia delle ~400 righe; `officina_diffs.py` e `officina/model.py` sono a
   400 esatte: dividerli prima di farli crescere.
 
@@ -121,8 +121,6 @@ Interni:
 - Una chiamata già partita non si interrompe: *Annulla* agisce tra un caso e l'altro, e
   chiudendo la finestra durante un invio lungo l'attesa di `JobRunner.shutdown()` (5 s) può
   scadere.
-- Il controllo dei link firmati rifiuta anche un link SAS valido di sola lettura fuori dagli
-  attributi di upload (es. in `customData`): più sicuro, e il motivo indica il percorso.
 - urllib invia i nomi degli header con le iniziali maiuscole (`Template_Key`): HTTP non
   distingue, ma se il generatore si rivelasse sensibile servirebbe `http.client` (la fase 2
   non l'ha toccato).
@@ -135,6 +133,9 @@ stato rimisurato (34,5 MB con pypdfium2 e il motore, +0,34 MB sulla 1.2.0);
 (`noise_rules`, prima ignorate) sono lette e hanno la loro finestra; blocchi spostati,
 numeri di pagina e date non escono più come differenze normali; un caso HTML senza Edge
 si confronta dal DOM (TO-BE).
+
+Chiuso dalla 1.3.1: il payload viene inviato esattamente com'è, link firmati compresi —
+svil e coll contengono solo dati di prova; le firme restano mascherate nei log e nei messaggi.
 
 ## Codici di uscita e CLI
 

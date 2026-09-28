@@ -78,8 +78,8 @@ src/qtrequestory/
 │   ├── model_review.py    Review, Tolerance, Mark, NoiseRule: the review keys of caso.json / iniziativa.json
 │   ├── model_versions.py  Version: reading/writing TARGET, AS-IS and TO-BE files and metas
 │   ├── model_io.py        atomic writes (unique temp file), tolerant / strict JSON reads, read_text_retrying
-│   ├── links.py           upload links (SAS): find_links, remove_links, signed_links, mask, mask_text
-│   ├── generator.py       resolve_headers, prepare_payload, send, sniff, SendResult, HeaderError
+│   ├── links.py           signed links (SAS) masking: mask, mask_text, mask_bytes, mask_text_for_log
+│   ├── generator.py       resolve_headers, send, sniff, SendResult, HeaderError
 │   ├── service.py         OfficinaService (behind ui/contracts.OfficinaApi): workspace, generate, delivery
 │   ├── service_compare.py CompareMixin (compare without verdict, render_path, Edge print cache), CompareError
 │   ├── service_case.py    CaseInputsMixin: engine inputs per version, cached pairs, custom rules via the guard
@@ -900,7 +900,7 @@ and reaches everything through `ui/contracts.OfficinaApi`.
                                      profilo, regole_rumore, preset_rumore
     casi\<case-id>\                  case-id = <KEY> or <KEY>__<variant-slug>
       caso.json                      key, variant, env, headers, drop_postman_token, correlation(+value),
-                                     link_policy, status, notes, source_fdi, history [{at, note}],
+                                     status, notes, source_fdi, history [{at, note}],
                                      + the review keys (below)
       payload.json                   (payload.original.json written on the first edit)
       target\<original name>         + target.meta.json {original_name, …}
@@ -920,11 +920,12 @@ and reaches everything through `ui/contracts.OfficinaApi`.
   the original's name and is still another initiative. The UI keys everything on the id
   (list rows, queue, failures, delivery folder).
 - `Case` (`id, key, variant, env, headers, drop_postman_token, correlation: new|source|fixed,
-  correlation_value, link_policy: remove|keep_if_expired, status: open|accepted, notes,
+  correlation_value, status: open|accepted, notes,
   folder, source_fdi, load_error, accepted_version, reopened, load_notes`) reads its slots
   from disk on every call: `target()`, `asis()`, `tobe_versions()` (ascending),
-  `latest_tobe()`, `history`. A new case has `link_policy="remove"`, `correlation="new"`,
-  `status="open"`. `Version(kind, number, path, doc_type, created, meta, missing, broken)`:
+  `latest_tobe()`, `history`. A new case has `correlation="new"`, `status="open"`. A
+  `link_policy` key in an older `caso.json` (until 1.3.0) is ignored on load, without a
+  note, and dropped when the case is saved (`model_case.OBSOLETE_KEYS`). `Version(kind, number, path, doc_type, created, meta, missing, broken)`:
   number 0 for target/AS-IS, 1… for TO-BE.
 - **Acceptance is of a version**: `mark_accepted()` records `accepted_version` (the latest
   TO-BE's number); `add_version` of a new AS-IS or TO-BE on an accepted case sets it back to
@@ -994,29 +995,17 @@ initiative: a new case starts with an empty review.
   `non_risolte` and `riepilogo` and appends a history line; tolerances and
   `non_variabili` stay (they are inactive where their anchors no longer match).
 
-### Upload links (`officina/links.py`)
+### Signed links (`officina/links.py`)
 
-A payload carries `{"key": "attachmentId"}` / `{"key": "attachmentUrl", "value": <SAS URL>}`
-attributes in `documents[].attributes[]` and in nested
-`dossierItems[].childItems[].documents[].attributes[]`. The SAS URL is a **write**
-permission on a real customer's blob, so replaying a still-valid one would overwrite a real
-document.
-- `find_links(payload)` finds every such attribute at any depth (key compared
-  case-insensitively) with its JSON path, expiry (`se=`) and write permission (`sp=`).
-  A missing, unreadable or **repeated** `se` means "not expired"; a repeated `sp` means
-  writable; a malformed URL is treated as valid (so refused). A link counts as expired only
-  when `expires + CLOCK_SKEW (5 min) <= now`. `UploadLink.url` is out of `repr`;
-  `.masked` is the safe form.
-- `remove_links(payload)` returns a deep copy without the `attachmentUrl`/`attachmentId`
-  attributes (policy **Rimuovi**, the default: the probe showed the generator still returns
-  the document in the body).
-- `signed_links(payload)` scans **every string** of the payload (decoded up to four rounds:
-  HTML entities, JSON `\uXXXX` / `\/`, percent-encoding) for `sig=`, protocol-relative and
-  scheme-less forms included — the defence in depth behind both policies.
+A payload may carry signed upload links (SAS URLs: `attachmentUrl` attributes,
+`customData` fields…). **The payload is sent exactly as it is** (user decision, 1.3.1: svil
+and coll hold only test data) — no link is removed and no send is refused because of one.
+The module only keeps signatures out of what is shown or logged:
 - `mask(url)` keeps scheme, host, port and path and turns any query into `sig=***` (userinfo
   and fragment dropped; an unreadable URL becomes `<url non leggibile>`, never an
   exception); `mask_text` / `mask_bytes` mask every URL in free text and then any `sig`
-  followed by `=`, `%3D`, `&#61;`, `&#x3d;` or `&equals;`.
+  followed by `=`, `%3D`, `&#61;`, `&#x3d;` or `&equals;`. `host_only` /
+  `mask_text_for_log` reduce every URL to its scheme and host, for the log.
 
 ### Generator client (`officina/generator.py`)
 
@@ -1033,11 +1022,6 @@ document.
   or value (the shared `header_name_problem` / `header_value_problem`: RFC token, not one of
   `HTTP_CLIENT_HEADERS`, no CR/LF, latin-1) raise `HeaderError`, whose message names the
   layer ("intestazioni (caso): …").
-- `prepare_payload(payload, policy, *, now) -> (payload | None, reason)`: `remove` →
-  `remove_links`; `keep_if_expired` → unchanged only if every link is provably expired; any
-  other policy is refused. Then, whatever the policy, a still-valid signed URL anywhere in the
-  payload (`signed_links`) refuses the send; the reason names the JSON path and the masked
-  URL. The input is never mutated.
 - `send(url, payload, headers, *, timeout_s, opener=None) -> SendResult(ok, status, doc_type,
   content, duration_ms, reason, headers_sent)`. Never raises. Before any call the URL goes
   through `generator_url_problem(url, allow_loopback_http=True)` (plain http only to
@@ -1068,15 +1052,16 @@ relative; then `initiatives()` is empty and writes raise `ValueError`.
   SendResult)` refuses as early as possible, in this order, so nothing leaves the machine
   when it should not: no root → the case env must be a configured, **enabled**, not
   prod-like generator with a usable URL → an existing AS-IS without a note →
-  `resolve_headers` → an empty payload → `prepare_payload` → the cancel token → `send` →
+  `resolve_headers` → an empty payload → the cancel token → `send` (the payload as
+  saved, unchanged) →
   the **expected type** (the target's type, else the AS-IS's — for a new AS-IS only the
   target's; with neither, pdf or html): an HTML answer for a PDF case is almost always a
   gateway error page → only then `Workspace.add_version`, with meta `env`, `generator`
-  (masked URL), `status`, `duration_ms`, `bytes`, `sent_at`, `headers_sent`,
-  `link_policy`, `links_removed` — never the payload. Every refusal or failure is
-  `(None, SendResult(ok=False, reason=<masked Italian>))` and writes nothing; a save error
-  after a good answer is "documento ricevuto ma non salvato: …". A call already on the wire
-  cannot be interrupted: `cancel` is checked just before sending.
+  (masked URL), `status`, `duration_ms`, `bytes`, `sent_at`, `headers_sent` — never the
+  payload (metas written by 1.2.0–1.3.0 may also carry `link_policy`, `links_removed`).
+  Every refusal or failure is `(None, SendResult(ok=False, reason=<masked Italian>))` and
+  writes nothing; a save error after a good answer is "documento ricevuto ma non salvato: …".
+  A call already on the wire cannot be interrupted: `cancel` is checked just before sending.
 - Logging carries only case id, slot, env name, status, duration, version number, doc type
   and the reason with every link reduced to its host (`links.mask_text_for_log`) — never the
   payload, the document, the headers or a link's path (a caplog test checks it). The reason

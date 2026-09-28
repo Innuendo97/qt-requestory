@@ -1,7 +1,7 @@
-"""The generator client: headers, upload-link policy, and the HTTP call to the
-Inspire Scaler ``documentGenerator`` (spec §5, §9, §11).
+"""The generator client: headers and the HTTP call to the Inspire Scaler
+``documentGenerator`` (spec §5, §9, §11).
 
-Three steps, kept separate so each can be tested and so the service (Task 5)
+Two steps, kept separate so each can be tested and so the service (Task 5)
 can refuse before anything leaves the machine:
 
 1. :func:`resolve_headers` — the headers of one call. Precedence, the last
@@ -9,20 +9,18 @@ can refuse before anything leaves the machine:
    initiative defaults, the case overrides. Names compare case-insensitively
    (HTTP does), and a header whose final value is empty is not sent — except
    ``Postman-Token``, which only the case's explicit toggle removes.
-2. :func:`prepare_payload` — applies the upload-link policy. Whatever the
-   policy, a still-valid upload link is never sent (a SAS link with write
-   permission on a real customer's blob).
-3. :func:`send` — POSTs the JSON and sniffs the answer from the bytes: svil
-   sends **no Content-Type** (probe, spec §11). A 200 that is not a document,
-   a suspiciously tiny HTML, an HTTP error, a timeout or a network error are all
-   a failed run (``ok=False``) with a readable Italian reason, never a version.
+2. :func:`send` — POSTs the payload exactly as it is (svil and coll hold only
+   test data, so a signed upload link in it is sent like Postman would), and
+   sniffs the answer from the bytes: svil sends **no Content-Type** (probe,
+   spec §11). A 200 that is not a document, a suspiciously tiny HTML, an HTTP
+   error, a timeout or a network error are all a failed run (``ok=False``)
+   with a readable Italian reason, never a version.
 
 Every URL that could reach a message, a log or ``headers_sent`` goes through
 ``links.mask`` first. Stdlib only.
 """
 from __future__ import annotations
 
-import copy
 import json
 import re
 import time
@@ -30,7 +28,6 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from http.client import HTTPException
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -40,15 +37,7 @@ from qtrequestory.core.config import (
     header_name_problem,
     header_value_problem,
 )
-from qtrequestory.officina.links import (
-    UploadLink,
-    find_links,
-    mask,
-    mask_bytes,
-    mask_text,
-    remove_links,
-    signed_links,
-)
+from qtrequestory.officina.links import mask, mask_bytes, mask_text
 
 if TYPE_CHECKING:
     from qtrequestory.officina.model import Case, Initiative
@@ -61,7 +50,6 @@ MIN_HTML_BYTES = 512
 #: How much of a failed answer is kept to show the user (spec §5).
 PREVIEW_BYTES = 4096
 SNIFF_BYTES = 1024
-POLICIES = ("remove", "keep_if_expired")
 
 REASON_NOT_A_DOCUMENT = "la risposta non è un PDF né un HTML"
 REASON_TINY_HTML = "risposta HTML sospetta: troppo corta"
@@ -179,49 +167,6 @@ def shown_headers(headers: dict[str, str]) -> dict[str, str]:
         name: "***" if name.lower() in _SECRET_HEADERS else mask_text(value)
         for name, value in headers.items()
     }
-
-
-
-# ----------------------------------------------------------- payload policy ---
-
-
-def prepare_payload(payload: dict, policy: str, *, now: datetime) -> tuple[dict | None, str]:
-    """``(payload to send, "")`` or ``(None, refusal reason)``. Never raises.
-
-    * ``remove``: a copy without the attachmentUrl/attachmentId attributes;
-    * ``keep_if_expired``: an unchanged copy, only when every upload link has
-      a single readable ``se=`` at least ``links.CLOCK_SKEW`` in the past.
-
-    Then, whatever the policy, every string left anywhere in the payload is
-    checked: one carrying a SAS signature (``sig=``, in any encoding) that is
-    not provably expired refuses the send. The input is never modified.
-    """
-    now = now if now.tzinfo is not None else now.astimezone()
-    if policy == "remove":
-        out = remove_links(payload)
-    elif policy == "keep_if_expired":
-        for link in find_links(payload):
-            if not link.expired(now):
-                return None, _still_valid_reason(link)
-        out = copy.deepcopy(payload)
-    else:
-        return None, f"politica dei link di caricamento sconosciuta: '{policy}'; invio rifiutato"
-    for link in signed_links(out):
-        if not link.expired(now):
-            return None, _still_valid_reason(link)
-    return out, ""
-
-
-def _still_valid_reason(link: UploadLink) -> str:
-    shown = link.masked
-    if len(shown) > 160:
-        shown = shown[:157] + "..."
-    where = f"il link di caricamento in {link.path} ({shown})"
-    if link.expires is None:
-        return (f"{where} non ha una scadenza leggibile (se=): non si può escludere che sia ancora "
-                "valido, invio rifiutato")
-    until = link.expires.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M")
-    return f"{where} è ancora valido fino al {until} UTC: invio rifiutato"
 
 
 # --------------------------------------------------------------------- sniff ---

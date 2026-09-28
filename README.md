@@ -359,7 +359,8 @@ generatore.
 *Payload e header…* apre il payload (JSON, con controllo di validità e
 *Formatta*) e le impostazioni di invio del caso: il generatore, il
 `correlation_id` (nuovo a ogni invio, l'FDI della chiamata di origine, oppure un
-valore fisso), cosa fare dei link di upload e gli header del caso. Gli header si
+valore fisso) e gli header del caso. Il payload parte esattamente com'è
+salvato, come da Postman. Gli header si
 compongono in quest'ordine, e ogni livello prevale su quelli prima:
 
 1. **automatici**: `template_key` (la key del caso), `current_timestamp` (ora,
@@ -580,14 +581,10 @@ usata per quell'iniziativa. Il risultato è:
   serie `qtRequestory`). Con quell'header il document generator non scrive la
   chiamata nei log nginx, così le prove non finiscono nell'archivio di nessuno.
   Si toglie solo dal singolo caso, con l'opzione esplicita.
-- **Link di upload**: i payload presi dai log contengono gli `attachmentUrl`,
-  link firmati dove il generatore scriverebbe il PDF, cioè il documento di un
-  cliente vero. Di serie vengono **rimossi** prima dell'invio (il generatore
-  restituisce comunque il documento). In alternativa *Lascia solo se tutti
-  scaduti*. Un link firmato ancora valido, ovunque sia nel payload, **non viene
-  mai inviato**: la generazione viene rifiutata e il motivo lo dice. Nei
-  messaggi i link compaiono sempre mascherati (`…?sig=***`); nel log del
-  programma resta solo il nome del server.
+- **Payload com'è**: il payload viene inviato esattamente com'è salvato, come
+  da Postman, link firmati compresi (`attachmentUrl`, `customData`…): svil e
+  coll contengono solo dati di prova. Nei messaggi i link compaiono sempre
+  mascherati (`…?sig=***`); nel log del programma resta solo il nome del server.
 - **Mai PROD**: un generatore il cui nome o URL contiene `prod` (in qualsiasi
   forma), o `prd` come parola a sé, non si può salvare e non viene chiamato; si accetta solo `https` e i
   reindirizzamenti non vengono seguiti. Un caso può usare solo un generatore

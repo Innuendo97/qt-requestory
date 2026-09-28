@@ -643,7 +643,7 @@ def _case_officina_create_case_and_generate(tmp_path: Path) -> None:
     assert real_headers == fake_headers and len(real_headers) == 3
     assert real_headers[0]["template_key"] == "MOD_TEST_A" and real_headers[0]["postman-token"]
     assert {"correlation_id", "current_timestamp"} <= set(real_headers[0])
-    assert "attachmentUrl" not in json.dumps(real_sent)
+    assert real_sent == [_OFFICINA_PAYLOAD] * 3  # sent as it is (1.3.1)
 
 
 def _case_officina_refusals_and_failures(tmp_path: Path) -> None:

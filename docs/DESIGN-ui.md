@@ -695,8 +695,7 @@ chooser ──► list ──► board ──► case
   with live validation — Save refused until it is a JSON object — and [Formatta]); tab
   *Header e invio*: Generatore (the enabled generators, the case's own value kept even when
   it is not among them), correlation_id (nuovo a ogni invio / FDI della chiamata di origine,
-  offered only with a known FDI / valore fisso + value), Link di upload (Rimuovi
-  (consigliato) / Lascia solo se tutti scaduti), [ ] Non inviare Postman-Token, and the
+  offered only with a known FDI / valore fisso + value), [ ] Non inviare Postman-Token, and the
   case's header table, checked with the core's `header_problems`. The hint spells out the
   precedence: automatic < profile (Impostazioni) < initiative < case. It reads
   `config.load()` whenever it opens and saves through `save_case`, and `save_payload` only

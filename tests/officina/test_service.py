@@ -10,6 +10,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -246,18 +247,18 @@ def test_generate_asis_then_tobe_twice(env: Env, server: FakeServer):
     assert [v.kind for v in (asis, tobe1, tobe2)] == ["asis", "tobe", "tobe"]
     assert asis.path.read_bytes() == PDF and asis.doc_type == "pdf"
     assert [v.number for v in case.tobe_versions()] == [1, 2]
-    # what went out: automatic headers, and the upload link removed (policy "remove")
+    # what went out: automatic headers, and the payload exactly as saved
     headers, body = server.requests[0]
     low = {k.lower(): v for k, v in headers.items()}
     assert low["template_key"] == KEY
     assert low["postman-token"] == "qtRequestory"
     assert low["correlation_id"] == "00000000-0000-4000-8000-000000000001"
     assert low["current_timestamp"] == str(int(NOW.timestamp() * 1000))
-    sent = json.loads(body)
-    assert "attachmentUrl" not in json.dumps(sent) and "attachmentId" not in json.dumps(sent)
+    assert json.loads(body) == payload()
     # the version's meta: no payload, masked headers, the env
     meta = tobe2.meta
-    assert meta["env"] == "svil" and meta["status"] == 200 and meta["links_removed"] == 1
+    assert meta["env"] == "svil" and meta["status"] == 200
+    assert "link_policy" not in meta and "links_removed" not in meta
     assert meta["headers_sent"]["template_key"] == KEY
     assert SECRET_MARKER not in json.dumps(meta)
     assert SIG not in json.dumps(meta)
@@ -309,13 +310,32 @@ def test_a_prod_generator_is_refused_even_if_the_config_slipped_through(tmp_path
     assert server.requests == []
 
 
-def test_a_still_valid_link_is_refused_with_keep_if_expired(env: Env, server: FakeServer):
-    ini, case = env.case()
-    case.link_policy = "keep_if_expired"
+def test_the_payload_is_sent_as_it_is_with_valid_signed_links(env: Env, server: FakeServer,
+                                                              caplog: pytest.LogCaptureFixture):
+    # svil/coll hold only test data (U1): a still-valid SAS link, in the
+    # attributes AND in customData, goes out untouched — like Postman
+    caplog.set_level(logging.DEBUG)
+    body = payload()
+    body["documents"].append({
+        "template": {"templateKey": "MOD_TEST_B"},
+        "attributes": [{"key": "attachmentUrl", "value": sas(VALID, name="MOD_TEST_B.pdf")}],
+        "customData": {"url-be": sas(VALID, name="MOD_TEST_B-be.pdf"),
+                       "nota": f"vedi {sas(None, name='senza-scadenza.pdf')}"},
+    })
+    ini, case = env.case(body=body)
+
     version, result = env.svc.generate(ini, case, "tobe")
-    assert version is None and "ancora valido" in result.reason
-    assert "sig=***" in result.reason and SIG not in result.reason
-    assert server.requests == []
+
+    assert version is not None and result.ok, result.reason
+    assert len(server.requests) == 1
+    _headers, sent = server.requests[0]
+    assert sent == json.dumps(body, ensure_ascii=False).encode("utf-8")
+    assert json.loads(sent) == body and SIG in sent.decode("utf-8")
+    # the signature never reaches the log, the result or the version's meta
+    assert caplog.records
+    assert SIG not in caplog.text and not re.search(r"sig=(?!\*\*\*)", caplog.text)
+    assert SIG not in result.reason and SIG not in json.dumps(result.headers_sent)
+    assert SIG not in json.dumps(version.meta)
 
 
 def test_a_header_problem_is_refused(env: Env, server: FakeServer):
@@ -419,10 +439,7 @@ def test_nothing_from_the_payload_or_the_document_is_logged(env: Env, server: Fa
                                                            caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.DEBUG)
     ini, case = env.case()
-    case.link_policy = "keep_if_expired"
-    env.svc.generate(ini, case, "tobe")          # refused: valid link
-    case.link_policy = "remove"
-    env.svc.generate(ini, case, "tobe")          # ok
+    env.svc.generate(ini, case, "tobe")          # ok, a valid signed link in the payload
     server.canned.status = 500
     server.canned.body = SECRET_MARKER.encode()
     env.svc.generate(ini, case, "tobe")          # failed, the body echoes the marker

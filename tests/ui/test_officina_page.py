@@ -574,6 +574,22 @@ def test_the_editor_saves_headers_and_payload(qtbot, page, fake_core, tmp_path):
     assert fake_core.officina.payload(saved) == {"documents": [], "extra": "MOD_TEST"}
 
 
+def test_the_editor_has_no_link_policy(qtbot, fake_core, page, tmp_path):
+    """1.3.1: the payload is sent as it is, so there is nothing to choose."""
+    from PySide6.QtWidgets import QComboBox, QLabel
+
+    from qtrequestory.ui.pages.officina_editor import PayloadHeaderDialog
+
+    case = open_case(page, fake_core, tmp_path)
+    dialog = PayloadHeaderDialog(fake_core, page._case(case.id))
+    qtbot.addWidget(dialog)
+    assert not hasattr(dialog, "links")
+    assert len(dialog.findChildren(QComboBox)) == 2  # environment and correlation only
+    texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+    assert "Link di upload" not in texts and "scadut" not in texts
+    assert dialog.save() == ""
+
+
 # ------------------------------------------------------- the shell and Ricerca ---
 
 @pytest.fixture

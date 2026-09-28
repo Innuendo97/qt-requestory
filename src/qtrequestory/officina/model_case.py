@@ -37,6 +37,10 @@ from qtrequestory.officina.model_versions import (
 __all__ = ["Case"]
 
 REOPENED_KEY = "reopened_after_acceptance"
+#: Keys an older ``caso.json`` may carry that mean nothing any more: ignored
+#: on load, dropped when the case is saved (``link_policy``: until 1.3.0 the
+#: upload links were removed or refused; since 1.3.1 the payload is sent as it is).
+OBSOLETE_KEYS = ("link_policy",)
 
 
 @dataclass
@@ -49,7 +53,6 @@ class Case:
     drop_postman_token: bool
     correlation: Literal["new", "source", "fixed"]
     correlation_value: str
-    link_policy: Literal["remove", "keep_if_expired"]
     status: Literal["open", "accepted"]
     notes: str
     folder: Path
@@ -116,12 +119,20 @@ def case_raw(case: Case) -> dict:
         "headers": dict(case.headers),
         "drop_postman_token": case.drop_postman_token,
         "correlation": case.correlation, "correlation_value": case.correlation_value,
-        "link_policy": case.link_policy,
         "status": case.status, "notes": case.notes,
         "source_fdi": case.source_fdi,
         "accepted_version": case.accepted_version,
         REOPENED_KEY: case.reopened,
     }
+
+
+def merge_case_raw(raw: dict, case: Case) -> None:
+    """Merge ``case`` into the ``caso.json`` read from disk (``Workspace.save_case``):
+    the case's keys win, :data:`OBSOLETE_KEYS` go, history and every other key stay."""
+    raw.update(case_raw(case))
+    for key in OBSOLETE_KEYS:
+        raw.pop(key, None)
+    raw.setdefault("history", [])
 
 
 def headers_from(raw: object, where: str) -> tuple[dict[str, str], list[str]]:
@@ -156,7 +167,6 @@ def load_case(case_dir: Path) -> Case:
             drop_postman_token=raw.get("drop_postman_token") is True,
             correlation=raw.get("correlation", "new"),
             correlation_value=str(raw.get("correlation_value", "")),
-            link_policy=raw.get("link_policy", "remove"),
             status=raw.get("status", "open"),
             notes=str(raw.get("notes", "")),
             folder=case_dir,
@@ -172,7 +182,7 @@ def load_case(case_dir: Path) -> Case:
             id=case_id, key=case_id, variant="", env="",
             headers={}, drop_postman_token=False,
             correlation="new", correlation_value="",
-            link_policy="remove", status="open", notes="",
+            status="open", notes="",
             folder=case_dir, load_error=str(e),
         )
 

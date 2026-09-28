@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 from qtrequestory.officina.model import Workspace
-from qtrequestory.officina.service import CompareError
+from qtrequestory.officina.service import CompareError, OfficinaService
 
-from .test_links import sas
+from .test_links import SIG, sas
 from .test_service import PDF, Env, FakeServer, env, server  # noqa: F401 - fixtures
 
 VALID = "2026-12-31T23%3A59%3A59Z"
@@ -127,16 +127,15 @@ def test_render_path_and_compare_refuse_a_broken_target(env: Env, tmp_path: Path
 
 # ------------------------------------------------------------------ logs ---
 
-def test_a_refused_link_is_logged_with_its_host_only(env: Env, server: FakeServer,
-                                                     caplog: pytest.LogCaptureFixture):
+def test_a_refusal_naming_a_link_is_logged_with_its_host_only(env: Env, server: FakeServer,
+                                                             caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.DEBUG)
-    body = {"documents": [{"template": {"templateKey": "MOD_TEST_A"}, "attributes": [
-        {"key": "attachmentUrl", "value": sas(VALID, name="cartella-cliente/PRATICA-0042.pdf")}]}]}
-    ini, case = env.case(body=body)
-    case.link_policy = "keep_if_expired"
+    ini, case = env.case()
+    link = sas(VALID, name="cartella-cliente/PRATICA-0042.pdf")
 
-    version, result = env.svc.generate(ini, case, "tobe")
+    version, result = OfficinaService._refused(case, "tobe", f"problema con {link}")
 
     assert version is None and "PRATICA-0042" in result.reason, "the user still sees which link"
-    assert "example.invalid" in caplog.text
+    assert "sig=***" in result.reason and SIG not in result.reason
+    assert "example.invalid" in caplog.text and SIG not in caplog.text
     assert "PRATICA-0042" not in caplog.text and "cartella-cliente" not in caplog.text

@@ -1,4 +1,4 @@
-"""qtrequestory.officina.generator: headers, upload-link policy, HTTP client.
+"""qtrequestory.officina.generator: headers and HTTP client.
 
 Every HTTP call goes to a local ``http.server`` in a thread — never to a real
 endpoint. Synthetic data only (public repository).
@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -21,19 +20,14 @@ from qtrequestory.officina import generator
 from qtrequestory.officina.generator import (
     HeaderError,
     SendResult,
-    prepare_payload,
     resolve_headers,
     send,
     sniff,
 )
-from qtrequestory.officina.links import find_links
 from qtrequestory.officina.model import Case, Initiative
 
-from .test_links import SIG, nested_payload, sas
+from .test_links import SIG, sas
 
-NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
-EXPIRED = "2026-09-20T10%3A00%3A00Z"
-VALID = "2026-12-31T23%3A59%3A59Z"
 PDF = b"%PDF-1.7\n" + b"0" * 2000 + b"\n%%EOF\n"
 HTML = b"<!DOCTYPE html>\n<html><body>" + b"<p>MOD_TEST corpo email</p>" * 40 + b"</body></html>"
 
@@ -44,7 +38,7 @@ def make_case(tmp_path: Path, **kw) -> Case:
     values = dict(
         id="MOD_TEST_A", key="MOD_TEST_A", variant="", env="svil", headers={},
         drop_postman_token=False, correlation="new", correlation_value="",
-        link_policy="remove", status="open", notes="", folder=tmp_path / "caso",
+        status="open", notes="", folder=tmp_path / "caso",
         source_fdi=None,
     )
     values.update(kw)
@@ -213,62 +207,16 @@ def test_correlation_modes(tmp_path: Path):
     assert resolve(explicit, ini)["correlation_id"] == "CASE-CORR"
 
 
-# ------------------------------------------------------------ payload policy ---
-
-def test_remove_policy_strips_nested_links():
-    payload = nested_payload(sas(se=EXPIRED), sas(se=EXPIRED))
-
-    sent, reason = prepare_payload(payload, "remove", now=NOW)
-
-    assert reason == ""
-    assert sent is not None
-    assert find_links(sent) == []
-    assert "attachmentId" not in json.dumps(sent)
-    assert find_links(payload)  # the original is untouched
-
-
-def test_keep_if_expired_sends_expired_links_unchanged():
-    payload = nested_payload(sas(se=EXPIRED), sas(se=EXPIRED))
-    sent, reason = prepare_payload(payload, "keep_if_expired", now=NOW)
-    assert (sent, reason) == (payload, "")
-    assert sent is not payload
-
-
-@pytest.mark.parametrize("se", [VALID, None, "garbage"])
-def test_keep_if_expired_refuses_a_link_that_is_not_provably_expired(se):
-    payload = nested_payload(sas(se=EXPIRED), sas(se=se))
-    sent, reason = prepare_payload(payload, "keep_if_expired", now=NOW)
-    assert sent is None
-    assert "dossier.dossierItems[0]" in reason
-    assert SIG not in reason and "sig=***" in reason
-
-
-@pytest.mark.parametrize("policy", ["remove", "keep_if_expired", "replace", ""])
-def test_valid_link_is_never_sent_whatever_the_policy(policy):
-    # a valid SAS link hidden OUTSIDE the attachmentUrl attributes: remove can't
-    # strip it, keep_if_expired can't keep it, an unknown policy refuses anyway
-    payload = nested_payload(sas(se=VALID), sas(se=VALID))
-    payload["customData"] = {"note": f"vedi {sas(se=VALID, name='other.pdf')}"}
-
-    sent, reason = prepare_payload(payload, policy, now=NOW)
-
-    assert sent is None
-    assert reason
-    assert SIG not in reason
-
-
-def test_remove_policy_with_valid_attachment_links_only_is_safe():
-    # remove really drops them, so nothing valid is sent: this is allowed
-    sent, reason = prepare_payload(nested_payload(sas(se=VALID), sas(se=VALID)), "remove", now=NOW)
-    assert reason == ""
-    assert sent is not None and SIG not in json.dumps(sent)
+def test_there_is_no_payload_policy_any_more():
+    # 1.3.1 (U1): the payload is sent as it is — no link removal, no refusal
+    from qtrequestory.officina import links
+    assert not hasattr(generator, "prepare_payload")
+    for dead in ("find_links", "remove_links", "signed_links", "parse_link", "UploadLink"):
+        assert not hasattr(links, dead), dead
 
 
 def test_mask_hides_signature(server: FakeServer):
-    # in the refusal reason ...
-    _, reason = prepare_payload(nested_payload(sas(se=VALID), sas(se=VALID)), "keep_if_expired", now=NOW)
-    assert SIG not in reason and "sig=***" in reason
-    # ... in the headers echoed back ...
+    # in the headers echoed back ...
     server.canned = Canned(status=200, body=PDF)
     res = post(server, headers={"template_key": "MOD_TEST_A", "X-Link": sas(), "Authorization": "Bearer abc"})
     assert res.ok
@@ -384,54 +332,6 @@ def test_module_has_no_real_hostnames():
 
 
 # ------------------------------------------------------------ fix round 1 ---
-
-VALID_Q = f"sv=2022-11-02&se={VALID}&sr=b&sp=cw&sig={SIG}"
-PCT_Q = VALID_Q.replace("&", "%26").replace("=", "%3D")
-JSON_Q = VALID_Q.replace("&", "\\u0026").replace("=", "\\u003d")
-HTML_Q = VALID_Q.replace("&", "&amp;")
-
-
-@pytest.mark.parametrize("policy", ["remove", "keep_if_expired"])
-@pytest.mark.parametrize("url", [
-    f"https://example.invalid:abc/b?{VALID_Q}",
-    f"https://[example.invalid/b?{VALID_Q}",
-])
-def test_a_malformed_signed_url_is_refused_not_raised(policy, url):
-    payload = {"documents": [{"attributes": [{"key": "attachmentUrl", "value": url}]}],
-               "customData": {"u": url}}
-    sent, reason = prepare_payload(payload, policy, now=NOW)
-    assert sent is None and reason and SIG not in reason
-
-
-@pytest.mark.parametrize("value", [
-    f"https%3A%2F%2Fexample.invalid%2Fc%2Fb.pdf%3F{PCT_Q}",
-    f"https:\\/\\/example.invalid\\/c?{JSON_Q}",
-    f"&lt;a href=&quot;https://example.invalid/c?{HTML_Q}&quot;&gt;",
-    f"//example.invalid/c/b.pdf?{VALID_Q}",
-    f"example.invalid/c/b.pdf?sig={SIG}",  # signed, no expiry at all
-])
-@pytest.mark.parametrize("policy", ["remove", "keep_if_expired"])
-def test_signed_strings_in_any_encoding_are_refused(policy, value):
-    payload = {"documents": [], "customData": {"blob": value}}
-    sent, reason = prepare_payload(payload, policy, now=NOW)
-    assert sent is None
-    assert "customData.blob" in reason and SIG not in reason
-
-
-def test_expired_links_in_other_encodings_pass():
-    exp_q = f"sv=1&se={EXPIRED}&sr=b&sp=cw&sig={SIG}"
-    payload = {"customData": {"a": f"//example.invalid/c?{exp_q}",
-                              "b": exp_q.replace("&", "%26").replace("=", "%3D")}}
-    sent, reason = prepare_payload(payload, "remove", now=NOW)
-    assert (sent, reason) == (payload, "")
-
-
-def test_a_link_expiring_within_the_clock_skew_is_still_refused():
-    just = "2026-09-25T11%3A58%3A00Z"  # 2 minutes before NOW
-    payload = nested_payload(sas(se=just), sas(se=EXPIRED))
-    sent, _ = prepare_payload(payload, "keep_if_expired", now=NOW)
-    assert sent is None
-
 
 @pytest.mark.parametrize("url", [
     "https://generator-ｐｒｏｄ.example.invalid/x",   # fullwidth "prod"
