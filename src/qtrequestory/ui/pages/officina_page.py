@@ -1,7 +1,10 @@
-"""The Officina tab: folder chooser → initiatives → board → case workbench.
+"""The Officina tab: setup → initiatives → board → case workbench.
 
-One ``QStackedWidget`` with four screens (see ``officina_list``,
-``officina_board``, ``officina_case``); this module is the controller: it
+One ``QStackedWidget`` with four screens (see ``officina_setup``,
+``officina_list``, ``officina_board``, ``officina_case``). While no folder is
+chosen the first screen is the "Configura l'Officina" card (folder and
+generator, release 1.3.2); while the folder is there but no generator is
+active, the same card sits over the initiatives. This module is the controller: it
 reads the Officina through ``services.officina``, runs every generation
 through one :class:`~qtrequestory.ui.pages.officina_jobs.GenerationQueue`
 (at most three cases at once, a failed case never stops the others) and every
@@ -17,7 +20,7 @@ from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Case, CoreServices, Initiative
@@ -29,15 +32,19 @@ from qtrequestory.ui.pages.officina_case import CaseView
 from qtrequestory.ui.pages.officina_docside import case_versions, version_key
 from qtrequestory.ui.pages.officina_generation import GenerationMixin
 from qtrequestory.ui.pages.officina_jobs import GenerationQueue
-from qtrequestory.ui.pages.officina_list import InitiativeList, RootChooser
+from qtrequestory.ui.pages.mirror_banner import open_settings_section
+from qtrequestory.ui.pages.officina_list import InitiativeList
 from qtrequestory.ui.pages.officina_noise_page import NoiseRulesMixin
 from qtrequestory.ui.pages.officina_review import ReviewActionsMixin
+from qtrequestory.ui.pages.officina_setup import SetupCard
 from qtrequestory.ui.pages.officina_undo import UndoStack
-from qtrequestory.ui.workers import OFFICINA_DELIVERY_JOB, JobRunner
+from qtrequestory.ui.workers import OFFICINA_ADD_JOB, OFFICINA_DELIVERY_JOB, JobRunner
 
 __all__ = ["OfficinaPage"]
 
-VIEWS = ("chooser", "list", "board", "case")
+VIEWS = ("setup", "list", "board", "case")
+#: The setup card standing in for the initiatives: wide enough for the URL.
+SETUP_WIDTH = 760
 
 
 class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, CompareJobsMixin, GenerationMixin,
@@ -67,10 +74,20 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self._loaded = False
         #: The folder the screens on show were read from (see on_config_changed).
         self._root: Path | None = None
+        #: The setup card was filled since it came on screen (see _show_setup).
+        self._setup_loaded = False
+        #: The card over the list must be refilled when next synced.
+        self._list_setup_stale = False
 
         self.queue = GenerationQueue(services, runner, parent=self)
-        self.chooser = RootChooser()
+        #: "Configura l'Officina": instead of the initiatives (no folder) …
+        self.setup_card = SetupCard(services, require_generator=False, writing=self.is_writing)
+        self.setup = _centered(self.setup_card, SETUP_WIDTH)
+        #: … and over them (a folder, but no active generator).
+        self.list_setup = SetupCard(services, require_generator=True, writing=self.is_writing)
+        self.list_setup.hide()
         self.list = InitiativeList()
+        self.list.set_setup_card(self.list_setup)
         self.board = Board()
         self.case_view = CaseView()
         self.board.run_state = self._run_state
@@ -78,7 +95,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self.board.note = self._note
         self.case_view.run_state = self._run_state
         self.stack = QStackedWidget()
-        for widget in (self.chooser, self.list, self.board, self.case_view):
+        for widget in (self.setup, self.list, self.board, self.case_view):
             self.stack.addWidget(widget)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.SPACE[3], theme.SPACE[2], theme.SPACE[3], theme.SPACE[2])
@@ -86,7 +103,10 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self._connect()
 
     def _connect(self) -> None:
-        self.chooser.choose_requested.connect(self.choose_root)
+        for card in (self.setup_card, self.list_setup):
+            card.saved.connect(self._on_setup_saved)
+            card.settings_requested.connect(
+                lambda: open_settings_section(self._window, "officina"))
         self.list.change_root_requested.connect(self.choose_root)
         self.list.new_requested.connect(self.new_initiative)
         self.list.open_requested.connect(self.open_initiative)
@@ -124,7 +144,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self._root = self.api.workspace_root()
         if self._root is None:
             self.ini, self.case_id = None, None
-            self.stack.setCurrentWidget(self.chooser)
+            self._show_setup()
             return
         if self.ini is not None and self._reload_initiative():
             if self.case_id is not None and self._case(self.case_id) is not None:
@@ -137,8 +157,9 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
     def show_list(self) -> None:
         root = self.api.workspace_root()
         if root is None:
-            self.stack.setCurrentWidget(self.chooser)
+            self._show_setup()
             return
+        self._sync_list_setup()
         self.list.root_label.setText(strings.OFFICINA_ROOT_LABEL.format(path=root))
         self.list.onedrive.set_text(strings.OFFICINA_ROOT_ONEDRIVE.format(path=root)
                                     if ask.in_onedrive(root) else "")
@@ -208,12 +229,15 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
             return
         if self.api.workspace_root() != self._root:
             self.ini, self.case_id = None, None
+        self._reload_setup_cards()
         self.refresh()
 
     def is_writing(self) -> bool:
-        """True while cases wait or run, or a delivery copies files: the
+        """True while cases wait or run, a delivery copies files or calls
+        become cases ("Aggiungi chiamata…"): the
         folder must not change under them (Impostazioni asks)."""
-        return self.queue.is_busy() or self.runner.is_running(OFFICINA_DELIVERY_JOB)
+        return self.queue.is_busy() or any(self.runner.is_running(name)
+                                           for name in (OFFICINA_DELIVERY_JOB, OFFICINA_ADD_JOB))
 
     def on_quit(self) -> None:
         """The window is closing (the user already agreed): nothing more is
@@ -226,6 +250,44 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         shown, so only a tab already on screen needs telling."""
         if self._loaded and self.isVisible():
             self.refresh()
+
+    # -- setup (release 1.3.2) -------------------------------------------------
+
+    def _show_setup(self) -> None:
+        """The card instead of the initiatives; filled from the configuration
+        when it comes on screen (never over what the user is typing)."""
+        if self.stack.currentWidget() is not self.setup or not self._setup_loaded:
+            self.setup_card.load()
+            self._setup_loaded = True
+        self.stack.setCurrentWidget(self.setup)
+
+    def _sync_list_setup(self) -> None:
+        """The card over the initiatives, while no generator is active."""
+        needed = not self.services.config.load().officina.enabled_generators()
+        if needed and (self.list_setup.isHidden() or self._list_setup_stale):
+            self.list_setup.load()
+            self._list_setup_stale = False
+        self.list_setup.setVisible(needed)
+
+    def _reload_setup_cards(self) -> None:
+        """The configuration was saved elsewhere (Impostazioni, the other
+        card): a card must show it, or its [Salva] would write back the old
+        folder and generators over that save. What was saved wins over a
+        half-typed card."""
+        self._setup_loaded = False
+        self._list_setup_stale = True
+
+    def _on_setup_saved(self, cfg) -> None:
+        """A card saved: tell the other pages, and go on without a restart."""
+        self.config_changed.emit(cfg)
+        if self.api.workspace_root() != self._root:
+            self.ini, self.case_id = None, None
+        self.refresh()
+        root = cfg.officina.root
+        if root is not None and ask.in_onedrive(root):
+            self._toast(strings.OFFICINA_ROOT_ONEDRIVE.format(path=root), "warn")
+        else:
+            self._toast(strings.OFFICINA_SETUP_SAVED, "ok")
 
     # -- helpers -----------------------------------------------------------
 
@@ -282,3 +344,20 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
             toast(text, tone)
         else:
             self._notify(text)
+
+
+def _centered(widget: QWidget, width: int) -> QWidget:
+    """``widget`` at a fixed width, centred, a little above the middle."""
+    widget.setFixedWidth(width)  # a fixed width lets the wrapped text claim its height
+    screen = QWidget()
+    # Stretches rather than an alignment flag: an aligned item loses
+    # height-for-width, and the wrapped sentences would be clipped.
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(widget)
+    row.addStretch(1)
+    outer = QVBoxLayout(screen)
+    outer.addStretch(1)
+    outer.addLayout(row)
+    outer.addStretch(2)
+    return screen

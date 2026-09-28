@@ -1105,16 +1105,58 @@ def main(argv: list[str] | None = None) -> int:
         officina_send_slowly(state["case"])
         pump(400)
 
-    def officina_chooser() -> None:
-        cfg = services.config.config
-        saved = cfg.officina
-        services.config.config = dataclasses.replace(
-            cfg, officina=dataclasses.replace(saved, root=None))
-        page = window.page("officina")
-        window.show_page("officina")
-        page.refresh()
+    #: A synthetic generator the sidecar "carries" in the 1.3.2 setup scenes.
+    from qtrequestory.ui.contracts import GeneratorEndpoint as _Gen
+    sidecar_gen = _Gen("svil", "https://example.invalid/svil/rest/api/submit-job/documentGenerator")
+
+    def officina_setup_card(*, keep_root: bool, sidecar: bool = True):
+        """1.3.2: "Configura l'Officina" — instead of the initiatives (no
+        folder) or over them (a folder, no generator), prefilled from the
+        sidecar's generators; ``sidecar=False``: the normal case since U4, an
+        empty row whose URL cell shows the shape of an address."""
+        def prepare() -> None:
+            cfg = services.config.config
+            saved = cfg.officina
+            officina = (dataclasses.replace(saved, generators=[]) if keep_root
+                        else dataclasses.replace(saved, root=None, generators=[]))
+            services.config.config = dataclasses.replace(cfg, officina=officina)
+            services.config.sidecar_gens = [sidecar_gen] if sidecar else []
+            page = window.page("officina")
+            window.show_page("officina")
+            page.ini, page.case_id = None, None
+            page.refresh()
+            pump(300)
+            services.config.config = dataclasses.replace(services.config.config, officina=saved)
+            services.config.sidecar_gens = []
+        return prepare
+
+    def wizard_officina(sidecar: bool = True):
+        """1.3.2: the wizard's fourth step, prefilled from the sidecar (or, the
+        normal case since U4, without one: an empty row), grabbed on its own."""
+        from PySide6.QtWidgets import QWizard
+
+        from qtrequestory.ui.wizard import FirstRunWizard
+
+        from qtrequestory.ui.contracts import OfficinaSettings
+
+        saved = services.config.config
+        services.config.config = dataclasses.replace(saved, officina=OfficinaSettings())
+        services.config.sidecar_gens = [sidecar_gen] if sidecar else []
+        wizard = FirstRunWizard(services, runner, window)
+        wizard.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        wizard.resize(760, 600)
+        wizard.show()
+        wizard.folder_page.set_path(services.config.config.mirror_root)
+        for _ in range(3):
+            wizard.next()
+            pump(200)
+        if sidecar:
+            wizard.officina_page.form.folder_edit.setText(str(tmp / "Officina"))
+        services.config.config = saved
+        services.config.sidecar_gens = []
+        assert wizard.button(QWizard.WizardButton.CustomButton1).isVisible()
         pump(300)
-        services.config.config = dataclasses.replace(services.config.config, officina=saved)
+        return wizard
 
     def officina_editor():
         """"Payload e header…" of the case, on its second tab, grabbed on its own."""
@@ -1145,6 +1187,78 @@ def main(argv: list[str] | None = None) -> int:
         dialog.show()
         pump(300)
         return dialog
+
+    def officina_editor_payload():
+        """A1: "Payload e header…" on its payload tab: the "Cambia chiamata…" link."""
+        dialog = officina_editor()
+        dialog.tabs.setCurrentIndex(0)
+        pump(300)
+        return dialog
+
+    def officina_pick_dialog():
+        """A1: "Aggiungi chiamata…" with the calls of one FDI, two chosen."""
+        from qtrequestory.ui.pages.officina_pick_call import PickCallDialog
+
+        state = officina_setup()
+        dialog = PickCallDialog(services, runner, services.officina.initiatives(), current=state["ini"],
+                                parent=window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.query.setText(services.index.hits[0].fdi[:8])
+        dialog.variant.setText("abilitato")
+        dialog.show()
+        dialog.search_now()
+        pump(900)
+        dialog.table.selectRow(0)
+        dialog.table.selectionModel().select(
+            dialog.table.model().index(2, 0),
+            dialog.table.selectionModel().SelectionFlag.Select | dialog.table.selectionModel().SelectionFlag.Rows)
+        pump(300)
+        return dialog
+
+    def officina_pick_question():
+        """A1: the replace-or-new question, opened from the case (replace is the default)."""
+        from qtrequestory.ui.pages.officina_pick_question import ReplaceOrNewDialog
+
+        state = officina_setup()
+        ini = services.officina.load(state["ini"])
+        case = next(c for c in ini.cases if c.id == state["case"])
+        hit = dataclasses.replace(services.index.hits[0], template_key=case.key)
+        dialog = ReplaceOrNewDialog(hit, [case], initiative=ini.name, default_replace=case.id,
+                                    parent=window)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        dialog.show()
+        pump(300)
+        return dialog
+
+    def officina_call_strip():
+        """A1: case C after "Cambia chiamata…": its AS-IS predates the call (the
+        strip); caso.json and the payload are put back once grabbed."""
+        from datetime import datetime
+
+        from qtrequestory.officina.model_call import replace_payload
+
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        case = next(c for c in page.ini.cases if c.key == "MOD_TEST_CARTA_C")
+        kept = {name: (case.folder / name).read_bytes() for name in ("caso.json", "payload.json")}
+        before = set(case.folder.iterdir())
+        replace_payload(case, {"documents": [{"template": {"templateKey": case.key}}]},
+                        services.index.hits[0].fdi, datetime.now())
+        page.refresh()
+        page.open_case(case.id)
+        pump(2500)
+
+        def undo() -> None:
+            for path in set(case.folder.iterdir()) - before:
+                if path.is_file() and path.name.startswith("payload."):  # the backups it made
+                    path.unlink()
+            for name, data in kept.items():
+                (case.folder / name).write_bytes(data)
+            case.source_fdi = None
+
+        return _Restoring(window, undo)
 
     delivery_dest = tmp / "OneDrive - Esempio" / "Consegne tester"
 
@@ -1535,7 +1649,11 @@ def main(argv: list[str] | None = None) -> int:
     scenes += [
         ("officina-consegna", officina_delivery_dialog),
         ("officina-consegna-riepilogo", officina_delivery_summary),
-        ("officina-cartella", officina_chooser),
+        ("officina-configura", officina_setup_card(keep_root=False)),
+        ("officina-configura-generatore", officina_setup_card(keep_root=True)),
+        ("wizard-officina", wizard_officina),
+        ("officina-configura-vuota", officina_setup_card(keep_root=False, sidecar=False)),
+        ("wizard-officina-vuota", lambda: wizard_officina(sidecar=False)),
         ("officina-iniziative", officina_list),
         ("officina-bacheca", officina_board),
         ("officina-bacheca-pillole", officina_board_pills),
@@ -1559,6 +1677,10 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-caso-invio", officina_case_sending),
         ("officina-payload-header", officina_editor),
         ("officina-aggiungi", officina_add_dialog),
+        ("officina-aggiungi-chiamata", officina_pick_dialog),
+        ("officina-payload-cambia-chiamata", officina_editor_payload),
+        ("officina-aggiungi-chiamata-domanda", officina_pick_question),
+        ("officina-caso-chiamata-cambiata", officina_call_strip),
         ("officina-rumore", officina_noise_dialog),
         ("officina-caso-dom", officina_case_dom),
         # I1: the real engine's comparisons behind the case view

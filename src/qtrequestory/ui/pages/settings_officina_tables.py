@@ -19,11 +19,15 @@ from collections.abc import Iterable, Sequence
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHeaderView,
+    QLineEdit,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
 )
@@ -59,8 +63,51 @@ def shown_url(url: str) -> str:
 
 
 class _MaskedUrlDelegate(QStyledItemDelegate):
+    """Draws the URL masked; an empty cell shows the shape of an address
+    (``placeholder``) in the placeholder colour, and so does its editor."""
+
+    def __init__(self, placeholder: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.placeholder = placeholder
+
     def displayText(self, value, locale) -> str:  # noqa: N802 - Qt naming
         return shown_url(str(value))
+
+    def initStyleOption(self, option, index) -> None:  # noqa: N802 - Qt naming
+        super().initStyleOption(option, index)
+        if self.placeholder and not option.text:
+            option.text = self.placeholder
+
+    def paint(self, painter, option, index) -> None:
+        """An empty cell: the cell as usual, then the example in the theme's
+        muted colour, italic — also on a selected row, whose text colour the
+        stylesheet forces, so an example never reads as data."""
+        if not self.placeholder or str(index.data() or ""):
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        font = QFont(opt.font)
+        font.setItalic(True)
+        painter.save()
+        painter.setFont(font)
+        painter.setPen(QColor(theme.tokens().muted))
+        text = QFontMetrics(font).elidedText(self.placeholder, Qt.TextElideMode.ElideRight,
+                                             max(rect.width() - 12, 0))
+        painter.drawText(rect.adjusted(6, 0, -6, 0),
+                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), text)
+        painter.restore()
+
+    def createEditor(self, parent, option, index):  # noqa: N802 - Qt naming
+        editor = super().createEditor(parent, option, index)
+        if self.placeholder and isinstance(editor, QLineEdit):
+            editor.setPlaceholderText(self.placeholder)
+        return editor
 
 
 class _ProblemTable(QTableWidget):
@@ -162,7 +209,7 @@ class GeneratorTable(_ProblemTable):
         header.setSectionResizeMode(self.COL_URL, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_PROBLEM, QHeaderView.ResizeMode.Stretch)
         self.setColumnWidth(self.COL_NAME, 140)
-        self._url_delegate = _MaskedUrlDelegate(self)
+        self._url_delegate = _MaskedUrlDelegate(strings.OFFICINA_SETUP_URL_PLACEHOLDER, self)
         self.setItemDelegateForColumn(self.COL_URL, self._url_delegate)
 
     def set_generators(self, generators: Sequence[GeneratorEndpoint], default: str) -> None:

@@ -35,7 +35,7 @@ compresso proprio per ridurre questi falsi positivi.
 
 ### Primo avvio
 
-Parte una configurazione iniziale in tre passi:
+Parte una configurazione iniziale in quattro passi:
 
 1. **Archivio e strumenti** — dove tenere l'archivio locale dei log e dove si
    trova Notepad++ (se non c'è, i file si aprono con l'applicazione predefinita).
@@ -53,6 +53,12 @@ Parte una configurazione iniziale in tre passi:
    **La prima sincronizzazione scarica tutto lo storico ancora presente sul
    server**, fino all'ultima pulizia: possono essere diversi GB e richiedere
    parecchio tempo.
+4. **Officina** (facoltativo) — la cartella dell'Officina e il document
+   generator a cui inviare i payload (vedi [Officina](#officina)). Il
+   generatore lo scrivi a mano: un nome (es. `svil`) e l'indirizzo, nella forma
+   `https://<host>/rest/api/submit-job/documentGenerator` (la cella vuota
+   mostra questo esempio). Se ora non hai l'indirizzo, premi **Più tardi**:
+   potrai configurarla dalla scheda Officina.
 
 Se chiudi la configurazione iniziale con Annulla non viene salvato nulla: al
 prossimo avvio ripartirà da capo.
@@ -66,21 +72,32 @@ Gli indirizzi degli ambienti non sono dentro il programma. Puoi darglieli così:
 
 1. **Dalla procedura iniziale** (o da Impostazioni): li scrivi a mano, uno per
    ambiente.
-2. **Con un file `environments.json` accanto all'eseguibile**: se lo trovi già
-   pronto da un collega, mettilo nella stessa cartella di `qtRequestory.exe` e
-   al primo avvio il programma lo propone. È il modo comodo per distribuire la
-   stessa configurazione a tutti. Il formato è quello di
+2. **Con un file `environments.json`** (facoltativo): se ne hai uno, puoi
+   importarlo con *Importa da file…*, oppure metterlo nella stessa cartella di
+   `qtRequestory.exe`: al primo avvio il programma lo propone da solo. Se non
+   c'è, nessun problema: si scrive tutto a mano. Il formato è quello di
    `environments.example.json`:
 
    ```json
-   [
-     { "name": "svil", "url": "https://<indirizzo-sviluppo>/AutoDeploy/Input/", "enabled": true },
-     { "name": "coll", "url": "https://<indirizzo-collaudo>/AutoDeploy/Input/", "enabled": true }
-   ]
+   {
+     "environments": [
+       { "name": "svil", "url": "https://<indirizzo-sviluppo>/AutoDeploy/Input/", "enabled": true },
+       { "name": "coll", "url": "https://<indirizzo-collaudo>/AutoDeploy/Input/", "enabled": true }
+     ],
+     "generators": [
+       { "name": "svil", "url": "https://<indirizzo-generatore>/rest/api/submit-job/documentGenerator", "enabled": true }
+     ]
+   }
    ```
 
-   Chiedi gli indirizzi veri a chi ti ha passato il programma: non stanno qui e
-   non stanno nel repository.
+   `generators` è facoltativo: sono i document generator dell'Officina, che la
+   configurazione iniziale e la scheda Officina propongono già compilati. Valgono
+   le stesse regole di Impostazioni (solo `https`, mai `prod`): un generatore che
+   non le rispetta viene ignorato e annotato nel log. Va bene anche il formato
+   precedente, un semplice elenco di ambienti (`[ {...}, {...} ]`).
+
+   Gli indirizzi veri non stanno qui e non stanno nel repository: sono quelli
+   che usi già (per esempio nelle collection Postman del team).
 
 > Gli ambienti sono raggiungibili **solo da rete aziendale o con la VPN attiva**
 > (e senza altre VPN accese).
@@ -293,16 +310,24 @@ Le parole che usa:
 
 ### Prima configurazione
 
-1. **Impostazioni › Officina › Cartella dell'Officina**: scegli una cartella
+Cartella e generatore si scelgono al primo avvio (passo **Officina** della
+configurazione iniziale). Se li hai rimandati, la scheda Officina mostra il
+riquadro **Configura l'Officina** con gli stessi due campi e **Salva**: dopo il
+salvataggio la scheda è subito pronta, senza riavviare. Se c'è la cartella ma
+manca il generatore, lo stesso riquadro compare sopra l'elenco delle
+iniziative. Il resto (Postman-Token, profilo intestazioni, timeout) è in
+**Impostazioni › Officina** («Altre impostazioni…» nel riquadro):
+
+1. **Cartella dell'Officina**: scegli una cartella
    **locale**, sul tuo PC (es. `C:\Users\<tuo utente>\Officina`). Ci finiscono
    payload e documenti con **dati reali dei clienti**: non una cartella dentro
    un repository e, se puoi, non OneDrive né un disco di rete (sono ammessi, ma
    il programma lo segnala). Non può coincidere con la cartella dei log o con
-   quella dei file estratti, né stare dentro di esse o contenerle. La stessa scelta si fa
-   anche dalla scheda Officina la prima volta che la apri.
+   quella dei file estratti, né stare dentro di esse o contenerle.
 2. **Generatori**: aggiungi una riga per ogni document generator da chiamare
-   (nome, URL, attivo), per esempio `svil`. Gli indirizzi veri chiedili a chi ti
-   ha passato il programma: non stanno qui. Solo `https`; un nome o un URL che
+   (nome, URL, attivo), per esempio `svil`, con l'indirizzo nella forma
+   `https://<host>/rest/api/submit-job/documentGenerator` (lo stesso delle
+   collection Postman del team; non sta qui). Solo `https`; un nome o un URL che
    contiene `prod`, o `prd` come parola a sé (es. `svil-prd`), viene rifiutato
    (vedi [Sicurezza](#sicurezza)).
    **Generatore predefinito**: quello usato dai casi nuovi (di solito `svil`).
@@ -315,9 +340,14 @@ Le parole che usa:
 ### Il ciclo di lavoro
 
 1. **Crea un'iniziativa** (*Nuova iniziativa*) e aggiungi i casi:
-   - da **Ricerca**: cerca la chiamata, tasto destro sulla riga ›
-     **Aggiungi all'Officina…**, scegli l'iniziativa (o creane una) e, se serve,
-     la variante. Payload, template key e FDI vengono dalla chiamata;
+   - dai **log** (*Aggiungi chiamata…* sulla bacheca): scegli l'ambiente, scrivi
+     una template key o un FDI, seleziona una o più chiamate e aggiungile.
+     Payload, template key e FDI vengono dalla chiamata. Se la key ha già un
+     caso, puoi **sostituirne la chiamata** (target e versioni restano, il
+     payload di prima resta nella cartella del caso) o creare un nuovo caso.
+     Dentro un caso, *⋯ › Cambia chiamata…* (o il link in *Payload e header…*)
+     fa lo stesso sul caso aperto;
+   - da **Ricerca**: tasto destro sulla riga › **Aggiungi all'Officina…**;
    - da un **file JSON** (*+ Caso da file…*): la key viene proposta dal payload.
 2. **Target…**: scegli il file del cliente (PDF o HTML).
 3. **Genera AS-IS** da svil, con il template com'è oggi. Sulla bacheca

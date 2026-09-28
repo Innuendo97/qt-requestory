@@ -1,4 +1,7 @@
-"""The first-run wizard: three pages, one saved configuration.
+"""The first-run wizard: four pages, one saved configuration.
+
+The fourth, the Officina (release 1.3.2), has its own tests in
+``test_officina_setup.py``.
 
 The wizard is the only place that writes a configuration before one exists, so
 what is tested here is mostly *what reaches the core*: the folder the user
@@ -864,12 +867,13 @@ def test_run_first_run_wizard_returns_the_result_when_accepted(
     assert fake_core.config.saved[-1] is result.config
 
 
-def test_the_wizard_has_exactly_the_three_pages_of_the_design(wizard):
+def test_the_wizard_has_exactly_the_four_pages_of_the_design(wizard):
     titles = [wizard.page(pid).step_title() for pid in wizard.pageIds()]
     assert titles == [
         strings.WIZARD_P1_TITLE,
         strings.WIZARD_P2_TITLE,
         strings.WIZARD_P3_TITLE,
+        strings.WIZARD_P4_TITLE,
     ]
 
 
@@ -969,7 +973,7 @@ def test_every_page_has_the_header_with_icon_title_and_step(wizard):
     for number, page in enumerate(pages, 1):
         header = page.header
         assert header.title_label.text() == page.step_title()
-        assert header.step_label.text() == f"Passo {number} di 3"
+        assert header.step_label.text() == f"Passo {number} di 4"
         assert header.step_label.property("role") == "muted"
         pixmap = header.icon_label.pixmap()
         assert not pixmap.isNull()

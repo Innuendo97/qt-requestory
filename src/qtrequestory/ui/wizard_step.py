@@ -3,7 +3,7 @@
 ``QWizard`` would draw a title banner of its own from ``QWizardPage.title()``,
 in a look the theme does not control. The pages therefore leave ``title()``
 empty and draw :class:`StepHeader` instead — the app icon, the page title and a
-muted "Passo i di 3" — so the wizard looks like the rest of the application and
+muted "Passo i di 4" — so the wizard looks like the rest of the application and
 always says how far the user is.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def error_line() -> QLabel:
 
 
 class StepHeader(QWidget):
-    """[icon]  Title / Passo i di 3 / subtitle."""
+    """[icon]  Title / Passo i di 4 / subtitle."""
 
     def __init__(self, step: int, title: str, subtitle: str, parent=None) -> None:
         super().__init__(parent)

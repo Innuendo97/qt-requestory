@@ -15,7 +15,7 @@ from qtrequestory.ui import strings
 
 PAGE_MODULES = ("common", "search", "sync", "settings", "wizard", "about", "imports", "officina",
                 "officina_verdetto", "officina_avanzamento", "officina_elenco", "officina_azioni",
-                "officina_rumore")
+                "officina_rumore", "officina_chiamata", "officina_configura")
 
 
 @pytest.mark.parametrize("name", PAGE_MODULES)
@@ -76,6 +76,7 @@ def test_no_english_words_in_user_facing_strings():
     offenders = {}
     for name, value in _user_strings().items():
         visible = re.sub(r"\{[^}]*\}", "", value)  # placeholders are not shown as such
+        visible = re.sub(r"https?://\S+", "", visible)  # an example address is not wording
         if pattern.search(visible):
             offenders[name] = value
     assert not offenders

@@ -95,6 +95,8 @@ class CaseView(DomViewMixin, CaseExtrasMixin, ReviewInputMixin, CaseDocsMixin, Q
     undo_requested = Signal()              # Ctrl+Z
     noise_rules_requested = Signal()       # "Regole di rumore…"
     reset_tolerances_requested = Signal()  # "⋯" → "Azzera tolleranze…" (R45)
+    change_call_requested = Signal()       # "⋯" → "Cambia chiamata…" (A1)
+    asis_after_call_requested = Signal()   # the call strip's "Rigenera AS-IS" (A1)
     dom_requested = Signal(object, object, object)  # (key, Case, Version): the DOM tab's sources
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -186,6 +188,7 @@ class CaseView(DomViewMixin, CaseExtrasMixin, ReviewInputMixin, CaseDocsMixin, Q
         layout.addLayout(actions)
         layout.addWidget(self.progress)
         layout.addWidget(self.banners)
+        layout.addWidget(self.call_strip)
         layout.addWidget(self.notice)
         layout.addWidget(self.banner)
         layout.addWidget(self.splitter, 1)
@@ -246,6 +249,7 @@ class CaseView(DomViewMixin, CaseExtrasMixin, ReviewInputMixin, CaseDocsMixin, Q
         self.asis_button.setText(strings.OFFICINA_REGENERATE_ASIS if case.asis() is not None
                                  else strings.OFFICINA_GENERATE_ASIS)
         self.notice.set_text(case_notice(case))
+        self.show_call_strip(case)
         self.switch.set_versions(self.versions(), current)
         self.profile_button.set_profile(case.review.profile, initiative_profile)
         target = case.target()
@@ -301,6 +305,7 @@ class CaseView(DomViewMixin, CaseExtrasMixin, ReviewInputMixin, CaseDocsMixin, Q
                                 enabled=reviewable)
         for button in (self.regenerate_button, self.asis_button):
             button.setEnabled(readable and not self.blocked)
+        self._sync_extras(readable, readable and not self.blocked)
 
     def resizeEvent(self, event) -> None:  # noqa: D102, N802 - Qt naming
         super().resizeEvent(event)

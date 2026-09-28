@@ -1,4 +1,9 @@
-[
-  { "name": "svil", "url": "https://<host-sviluppo>/AutoDeploy/Input/", "enabled": true },
-  { "name": "coll", "url": "https://<host-collaudo>/AutoDeploy/Input/", "enabled": true }
-]
+{
+  "environments": [
+    { "name": "svil", "url": "https://<host-sviluppo>/AutoDeploy/Input/", "enabled": true },
+    { "name": "coll", "url": "https://<host-collaudo>/AutoDeploy/Input/", "enabled": true }
+  ],
+  "generators": [
+    { "name": "svil", "url": "https://<host-generatore>/rest/api/submit-job/documentGenerator", "enabled": true }
+  ]
+}

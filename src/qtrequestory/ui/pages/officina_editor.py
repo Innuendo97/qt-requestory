@@ -12,7 +12,10 @@ Two tabs:
   Impostazioni profile or the initiative is said in one line under the table.
 
 Nothing is sent from here: the dialog only writes the case (``save_case``) and
-its payload (``save_payload``) through ``OfficinaApi``.
+its payload (``save_payload``) through ``OfficinaApi``. The payload tab's
+"Cambia chiamata…" link closes the dialog (after asking, when something was
+edited) with :attr:`PayloadHeaderDialog.wants_change_call` set: the page then
+opens "Aggiungi chiamata…" on the case.
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +45,7 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Case, CoreServices, header_problems
 from qtrequestory.ui.json_highlighter import JsonHighlighter
+from qtrequestory.ui.pages import officina_dialogs as ask
 
 __all__ = ["PayloadHeaderDialog", "parse_payload"]
 
@@ -78,6 +83,13 @@ class PayloadHeaderDialog(QDialog):
         self.json_state = QLabel()
         self.json_state.setWordWrap(True)
         self.format_button = QPushButton(strings.OFFICINA_EDITOR_FORMAT)
+        self.change_call_button = QToolButton()
+        self.change_call_button.setText(strings.CHIAMATA_CHANGE)
+        self.change_call_button.setToolTip(strings.CHIAMATA_CHANGE_TIP)
+        self.change_call_button.setAutoRaise(True)
+        theme.set_role(self.change_call_button, "stripButton")
+        #: The link was used: the page opens "Aggiungi chiamata…" on the case.
+        self.wants_change_call = False
 
         self.env = QComboBox()
         self.correlation = QComboBox()
@@ -102,6 +114,7 @@ class PayloadHeaderDialog(QDialog):
         self._build()
         self.editor.textChanged.connect(self._validate_json)
         self.format_button.clicked.connect(self._format)
+        self.change_call_button.clicked.connect(self._change_call)
         self.correlation.currentIndexChanged.connect(self._sync_correlation)
         self.add_header.clicked.connect(lambda: self._add_row("", ""))
         self.remove_header.clicked.connect(self._remove_rows)
@@ -134,6 +147,7 @@ class PayloadHeaderDialog(QDialog):
         column.addWidget(self.editor, 1)
         row = QHBoxLayout()
         row.addWidget(self.json_state, 1)
+        row.addWidget(self.change_call_button)
         row.addWidget(self.format_button)
         column.addLayout(row)
 
@@ -232,6 +246,19 @@ class PayloadHeaderDialog(QDialog):
         self.json_state.setProperty("dot", "bad" if error else "ok")
         theme.repolish(self.json_state)
         self.format_button.setEnabled(not error)
+
+    def edited(self) -> bool:
+        """True when the payload or the headers differ from what was saved."""
+        payload, _error = parse_payload(self.editor.toPlainText())
+        headers = {name: value for name, value in self.header_rows() if name}
+        return payload != self._original or headers != self._case.headers
+
+    def _change_call(self) -> None:
+        if self.edited() and not ask.confirm(self, strings.CHIAMATA_CHANGE_DISCARD_TITLE,
+                                             strings.CHIAMATA_CHANGE_DISCARD):
+            return
+        self.wants_change_call = True
+        self.reject()
 
     def _format(self) -> None:
         payload, error = parse_payload(self.editor.toPlainText())

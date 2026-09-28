@@ -1,10 +1,11 @@
-"""The Officina's first two screens: the folder chooser and the initiatives.
+"""The Officina's list of initiatives (and the one-line warn banner).
 
-:class:`RootChooser` is the empty state while ``officina.root`` is not set:
-one sentence on why the folder matters and [Scegli cartella…].
 :class:`InitiativeList` is the table of initiatives (name, cases, accepted of
-total, last activity) with "Nuova iniziativa", "Apri" and "Apri cartella".
-Both only display and emit; ``OfficinaPage`` does the work.
+total, last activity) with "Nuova iniziativa", "Apri" and "Apri cartella";
+it only displays and emits, ``OfficinaPage`` does the work. While no folder
+is chosen the page shows its setup card instead (``officina_setup``, release
+1.3.2); while no generator is active, the same card sits over the table
+(:meth:`InitiativeList.set_setup_card`).
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ from qtrequestory.ui.pages.officina_format import (
     when,
 )
 
-__all__ = ["InitiativeList", "RootChooser", "WarnBanner"]
+__all__ = ["InitiativeList", "WarnBanner"]
 
 COLUMNS = (strings.OFFICINA_COL_INITIATIVE, strings.OFFICINA_COL_CASES,
            strings.OFFICINA_COL_ACCEPTED, strings.OFFICINA_COL_ACTIVITY)
@@ -61,43 +62,6 @@ class WarnBanner(QFrame):
 
     def text(self) -> str:
         return self.label.text() if self.isVisible() else ""
-
-
-class RootChooser(QWidget):
-    """The empty state: no Officina folder yet."""
-
-    choose_requested = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        title = QLabel(strings.OFFICINA_ROOT_TITLE)
-        theme.set_role(title, "pageTitle")
-        text = QLabel(strings.OFFICINA_ROOT_TEXT)
-        text.setWordWrap(True)
-        theme.set_role(text, "muted")
-        self.button = QPushButton(strings.OFFICINA_ROOT_BUTTON)
-        theme.set_role(self.button, "primary")
-        self.button.clicked.connect(self.choose_requested)
-        self.error = WarnBanner("bad")
-        column = QVBoxLayout()
-        column.setSpacing(theme.SPACE[2])
-        column.addWidget(title)
-        column.addWidget(text)
-        column.addWidget(self.error)
-        column.addWidget(self.button, 0, Qt.AlignmentFlag.AlignLeft)
-        box = QWidget()
-        box.setLayout(column)
-        box.setFixedWidth(560)  # a fixed width lets the wrapped text claim its height
-        # Stretches rather than an alignment flag: an aligned item loses
-        # height-for-width, and the wrapped sentence would be clipped.
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(box)
-        row.addStretch(1)
-        outer = QVBoxLayout(self)
-        outer.addStretch(1)
-        outer.addLayout(row)
-        outer.addStretch(2)
 
 
 class InitiativeList(QWidget):
@@ -152,6 +116,7 @@ class InitiativeList(QWidget):
         layout.addLayout(bar)
         layout.addWidget(self.onedrive)
         layout.addLayout(self.body, 1)
+        self._layout = layout
 
         self.new_button.clicked.connect(self.new_requested)
         self.folder_button.clicked.connect(self.folder_requested)
@@ -160,6 +125,11 @@ class InitiativeList(QWidget):
         self.table.doubleClicked.connect(lambda _index: self._open_selected())
         self.table.itemSelectionChanged.connect(self._sync_buttons)
         self._sync_buttons()
+
+    def set_setup_card(self, card: QWidget) -> None:
+        """Put the page's setup card between the banner and the table (the
+        page shows it while no generator is active)."""
+        self._layout.insertWidget(self._layout.indexOf(self.onedrive) + 1, card)
 
     def show_initiatives(self, initiatives: list[Initiative], select: str | None = None) -> None:
         """Fill the table (newest activity first); keep or set the selection

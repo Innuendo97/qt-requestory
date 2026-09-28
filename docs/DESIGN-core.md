@@ -224,15 +224,19 @@ IGNORE_FOLDER = "__ignora__"              # folder_envs value: "do not import th
 def mirror_root_errors(cfg) -> list[str]  # only the mirror_root part of validate (the CLI gate)
 class UnknownEnvironment(ValueError)      # "ambiente sconosciuto: 'x' (configurati: coll, svil)"
 Config.require_env(name) -> Environment   # env(name), but UnknownEnvironment instead of KeyError
-def import_environments_file(path) -> list[Environment]   # JSON list [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
+def read_sidecar_json(path) -> dict      # environments.json: a JSON list of environments, or {"environments"?: [...], "generators"?: [...]}
+def import_environments_file(path) -> list[Environment]   # its environments [{"name","url","enabled"?}] — used by wizard / auto-import of environments.json next to the exe
 def find_sidecar_environments(exe_dir) -> Path | None     # environments.json next to the exe
+# core/sidecar.py (1.3.2): the Officina generators the sidecar may carry
+def import_generators_file(path) -> list[GeneratorEndpoint]  # only those passing generator_problems; a bad one is logged (never its URL) and skipped
+def sidecar_generators(exe_dir) -> list[GeneratorEndpoint]   # never raises; ConfigApi.sidecar_generators()
 def detect_editor() -> Path | None   # Notepad++ in ProgramFiles / ProgramFiles(x86) / PATH
 CONFIG_VERSION = 1; MIGRATIONS: dict[int, Callable[[dict], dict]] = {}
 
 # the Officina block (generators are NOT the log environments: those are only read)
 @dataclass class GeneratorEndpoint: name: str; url: str; enabled: bool = True
 @dataclass class OfficinaSettings:
-    root: Path | None = None                 # None = not chosen yet (the tab shows its chooser)
+    root: Path | None = None                 # None = not chosen yet (the tab shows its setup card)
     generators: list[GeneratorEndpoint] = [] # ships empty: no hostname in the repo
     default_generator: str = "svil"
     postman_token: str = "qtRequestory"      # non-empty: keeps test calls out of the nginx logs
@@ -1048,6 +1052,12 @@ relative; then `initiatives()` is empty and writes raise `ValueError`.
   object), key and `source_fdi` from the hit, env = the default generator; a call no longer
   in the local log is `ValueError("…ripetere la ricerca")`. `case_from_file(ini, path, key,
   variant)`: a JSON object file (BOM allowed), non-blank key, no source FDI.
+- `replace_call(case, hit)` ("Cambia chiamata", 1.3.2): a call of the SAME key becomes the
+  case's payload (`officina.model_call`): the previous `payload.json` is kept as
+  `payload.<YYYYMMDD-HHMMSS>.json` (`payload.original.json` stays the very first, written now if
+  no edit ever did), `source_fdi` becomes the hit's FDI, `caso.json` gets a history entry with
+  `kind: "chiamata_sostituita"`. Target, AS-IS, TO-BE and the review keys are untouched. Another
+  key, a non-JSON body, an unreadable `caso.json` or a vanished call: `ValueError`, nothing written.
 - `generate(ini, case, kind, *, replace_asis_note=None, cancel=None) -> (Version | None,
   SendResult)` refuses as early as possible, in this order, so nothing leaves the machine
   when it should not: no root → the case env must be a configured, **enabled**, not

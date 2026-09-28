@@ -52,6 +52,7 @@ from qtrequestory.core.fsutil import is_within
 from qtrequestory.core.config import (
     Config,
     Environment,
+    GeneratorEndpoint,
     UnknownEnvironment,
     default_config,
     mirror_root_errors as core_mirror_root_errors,
@@ -199,6 +200,9 @@ class FakeConfigApi:
         self.sidecar_environments: list[Environment] = [
             Environment(name, f"https://example.invalid/{name}/") for name in ENVS
         ]
+        #: What ``sidecar_generators`` answers (the real one reads the
+        #: sidecar's object form; empty: no sidecar, or one without generators).
+        self.sidecar_gens: list[GeneratorEndpoint] = []
         self.saved: list[Config] = []
         self.import_error: str | None = None
 
@@ -240,6 +244,9 @@ class FakeConfigApi:
 
     def find_sidecar_environments(self) -> Path | None:
         return self.sidecar
+
+    def sidecar_generators(self) -> list[GeneratorEndpoint]:
+        return list(self.sidecar_gens)
 
     def config_path(self) -> Path:
         return self._root / "config.json"

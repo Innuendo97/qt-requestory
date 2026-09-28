@@ -106,6 +106,7 @@ class Board(QWidget):
         theme.set_role(self.title, "pageTitle")
         self.accepted = pill("")
         self.add_search_button = QPushButton(strings.OFFICINA_ADD_FROM_SEARCH)
+        self.add_search_button.setToolTip(strings.OFFICINA_ADD_FROM_SEARCH_TIP)
         self.add_file_button = QPushButton(strings.OFFICINA_ADD_FROM_FILE)
         self.missing_button = QPushButton(strings.OFFICINA_GENERATE_MISSING_ASIS)
         self.regenerate_button = QPushButton(strings.OFFICINA_REGENERATE_SELECTED)

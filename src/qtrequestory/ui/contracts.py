@@ -127,6 +127,7 @@ from qtrequestory.officina.delivery import (
 )
 from qtrequestory.officina.generator import SendResult
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version
+from qtrequestory.officina.model_call import HISTORY_KIND as CALL_REPLACED_KIND
 from qtrequestory.officina.model_review import Mark, NoiseRule, Review, Tolerance
 from qtrequestory.officina.links import mask_text
 from qtrequestory.officina.service import CompareError
@@ -139,6 +140,7 @@ __all__ = [
     "Initiative", "Case", "Version", "SendResult", "Word", "DocText",
     "CompareError", "AsisAlreadyExistsError", "OfficinaSettings", "GeneratorEndpoint",
     "mask_text", "DeliveryItem", "DeliveryPlan", "DeliveryReport", "MissingSlot",
+    "CALL_REPLACED_KIND",
     # Officina phase 2: the comparison contract (officina.compare.model) and review state (model_review)
     "Anchor", "Block", "CaseComparison", "CaseSummary", "Comparison", "Diff", "Judged", "Verification",
     "Op", "Klass", "Verdict", "Profile", "COUNTING", "Mark", "NoiseRule", "Review", "Tolerance",
@@ -217,6 +219,13 @@ class ConfigApi(Protocol):
 
     def find_sidecar_environments(self) -> Path | None:
         """``environments.json`` next to the executable, if present."""
+        ...
+
+    def sidecar_generators(self) -> list[GeneratorEndpoint]:
+        """The Officina generators the ``environments.json`` next to the
+        executable carries (its object form), already held to the rules of
+        Impostazioni; ``[]`` when there is none. Never raises: a bad file or
+        generator is logged and skipped."""
         ...
 
     def config_path(self) -> Path:
@@ -510,6 +519,17 @@ class OfficinaApi(Protocol):
     def case_from_file(self, ini: Initiative, path: Path, key: str, variant: str = "") -> Case:
         """A new case from a JSON file (UTF-8, BOM allowed), without a source
         FDI. ``ValueError`` for a blank key or a file that is not a JSON object."""
+        ...
+
+    def replace_call(self, case: Case, hit: SearchHit) -> Case:
+        """"Cambia chiamata": the case's payload becomes the body of ``hit``
+        (a call of the SAME template key), the previous payload is kept as
+        ``payload.<YYYYMMDD-HHMMSS>.json`` (``payload.original.json`` stays the
+        very first), ``source_fdi`` becomes the hit's FDI and ``caso.json``
+        gets a history line (``kind`` "chiamata_sostituita"). Target, AS-IS,
+        TO-BE versions and review state are untouched. ``ValueError`` (nothing
+        written) for another key, a non-JSON body, an unreadable ``caso.json``
+        or a call no longer in the local log. Runs in a worker."""
         ...
 
     def save_case(self, case: Case) -> None:

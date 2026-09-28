@@ -302,6 +302,9 @@ class FakeOfficinaApi:
     def case_from_file(self, ini: Initiative, path: Path, key: str, variant: str = "") -> Case:
         return self._service.case_from_file(ini, path, key, variant)
 
+    def replace_call(self, case: Case, hit: SearchHit) -> Case:
+        return self._service.replace_call(case, hit)
+
     def save_case(self, case: Case) -> None:
         self._service.save_case(case)
 
@@ -379,7 +382,7 @@ class FakeOfficinaApi:
 
         root = self._service.workspace_root()
         if root is None:
-            raise ValueError("cartella dell'Officina non impostata: sceglierla in Impostazioni")
+            raise ValueError("cartella dell'Officina non impostata: sceglila nella scheda Officina")
         return Workspace(root)
 
     def _commit_review(self, action: str | None, case: Case, review: Review) -> None:

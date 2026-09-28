@@ -134,10 +134,10 @@ def test_a_generation_finishing_in_the_copy_does_not_touch_the_original(qtbot, p
     assert len(fake_core.officina.load("Banco - Copia").cases[0].tobe_versions()) == 1
 
 
-# ------------------------------------------------------- the folder chooser ---
+# ---------------------------------------------------------- the folder choice ---
 
-def test_the_folder_chooser_refuses_a_folder_inside_the_log_mirror(qtbot, fake_core, runner,
-                                                                  shell, monkeypatch):
+def test_the_setup_card_refuses_a_folder_inside_the_log_mirror(qtbot, fake_core, runner,
+                                                               shell, monkeypatch):
     cfg = fake_core.config.config
     fake_core.config.config = dataclasses.replace(
         cfg, officina=dataclasses.replace(cfg.officina, root=None))
@@ -147,12 +147,30 @@ def test_the_folder_chooser_refuses_a_folder_inside_the_log_mirror(qtbot, fake_c
     inside = cfg.mirror_root / "officina"
     monkeypatch.setattr(officina_dialogs, "ask_folder", lambda *_a, **_k: inside)
 
-    page.choose_root()
+    page.setup_card.form.browse_button.click()
+    page.setup_card.save_button.click()
 
     assert fake_core.config.config.officina.root is None
     assert not fake_core.config.saved
-    assert "log" in page.chooser.error.text()
-    assert page.view() == "chooser"
+    assert "log" in page.setup_card.form.folder_problem.text()
+    assert page.view() == "setup"
+    assert not inside.exists(), "nothing is created before the folder is accepted"
+
+
+def test_cambia_cartella_refuses_a_folder_inside_the_log_mirror(qtbot, fake_core, runner,
+                                                               shell, monkeypatch):
+    cfg = fake_core.config.config
+    page = OfficinaPage(fake_core, runner, shell)
+    qtbot.addWidget(page)
+    page.show()
+    inside = cfg.mirror_root / "officina"
+    monkeypatch.setattr(officina_dialogs, "ask_folder", lambda *_a, **_k: inside)
+
+    page.choose_root()
+
+    assert fake_core.config.config.officina.root == cfg.officina.root
+    assert not fake_core.config.saved
+    assert "log" in shell.statuses[-1]
     assert not inside.exists(), "nothing is created before the folder is accepted"
 
 

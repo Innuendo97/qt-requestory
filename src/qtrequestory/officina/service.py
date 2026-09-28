@@ -59,6 +59,7 @@ from qtrequestory.officina.generator import (
 )
 from qtrequestory.officina.links import mask, mask_bytes, mask_text, mask_text_for_log
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version, Workspace
+from qtrequestory.officina.model_call import replace_payload
 from qtrequestory.officina.service_compare import EDGE_TIMEOUT_S, CompareError, CompareMixin, HtmlToPdf
 from qtrequestory.officina.service_review import ReviewMixin
 
@@ -113,7 +114,7 @@ class OfficinaService(CompareMixin, ReviewMixin):
     def _workspace(self) -> Workspace:
         root = self.workspace_root()
         if root is None:
-            raise ValueError("cartella dell'Officina non impostata: sceglierla in Impostazioni")
+            raise ValueError(NO_FOLDER)
         return Workspace(root)
 
     def initiatives(self) -> list[Initiative]:
@@ -147,6 +148,24 @@ class OfficinaService(CompareMixin, ReviewMixin):
         """A case whose payload is the JSON file at ``path`` (UTF-8, BOM allowed)."""
         payload = _json_object(Path(path).read_bytes(), what=f"il file {Path(path).name}")
         return self._add_case(ini, key, variant, payload, source_fdi=None)
+
+    def replace_call(self, case: Case, hit: SearchHit) -> Case:
+        """The case's call becomes ``hit``: its body is the new payload (the
+        old one kept, ``model_call``), its FDI the source FDI, one history
+        line; target, AS-IS, TO-BE and review untouched. ``ValueError`` for a
+        call of another template key, a body that is not a JSON object, an
+        unreadable ``caso.json`` or a call gone from the local log."""
+        if self._index is None:
+            raise ValueError("ricerca non disponibile: impossibile leggere la chiamata")
+        if (hit.template_key or "").strip() != case.key.strip():
+            raise ValueError(f"la chiamata è della template key {hit.template_key}, "
+                             f"il caso di {case.key}")
+        try:
+            body = self._index.read_body(hit)
+        except (IndexStale, OSError):
+            raise ValueError(REASON_VANISHED_CALL) from None
+        payload = _json_object(body, what="il corpo della chiamata")
+        return replace_payload(case, payload, hit.fdi or None, self._clock().astimezone())
 
     def _add_case(self, ini: Initiative, key: str, variant: str, payload: dict, *,
                   source_fdi: str | None) -> Case:
@@ -300,16 +319,25 @@ class OfficinaService(CompareMixin, ReviewMixin):
 
 # ------------------------------------------------------------------ helpers ---
 
+#: Where no folder or no generator is set, the Officina tab shows its setup
+#: card (release 1.3.2): the refusals send the user there, not to Impostazioni.
+NO_FOLDER = "cartella dell'Officina non impostata: sceglila nella scheda Officina"
+NO_GENERATOR = ("nessun generatore configurato: impostalo nella scheda Officina, "
+                "nel riquadro «Configura l'Officina»")
+
 def _enabled_generator(settings: OfficinaSettings, name: str) -> tuple[Any, str]:
     """``(endpoint, "")`` or ``(None, reason)``: ``name`` must be an enabled,
     non-PROD generator with a usable URL."""
     name = (name or "").strip()
+    if not settings.enabled_generators():
+        # Release 1.3.2: the Officina tab shows its setup card in this state.
+        return None, NO_GENERATOR
     if not name:
         return None, "nessun generatore scelto per il caso"
     matches = [g for g in settings.generators if g.name == name] or \
               [g for g in settings.generators if g.name.casefold() == name.casefold()]
     if not matches:
-        return None, f"il generatore '{name}' non è configurato in Impostazioni"
+        return None, f"il generatore '{name}' non è configurato: scegline un altro per il caso"
     endpoint = matches[0]
     if not endpoint.enabled:
         return None, f"il generatore '{endpoint.name}' non è attivo"

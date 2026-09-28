@@ -10,11 +10,13 @@ from PySide6.QtWidgets import QMessageBox, QPushButton, QWidget
 
 from qtrequestory.ui import strings
 from qtrequestory.ui.workers import (
+    OFFICINA_ADD_JOB,
     OFFICINA_COMPARE_JOB,
     OFFICINA_DELIVERY_JOB,
     OFFICINA_DOM_JOB,
     OFFICINA_GENERATE_JOBS,
     OFFICINA_NOISE_JOB,
+    OFFICINA_PICK_JOB,
     OFFICINA_REVIEW_JOB,
 )
 
@@ -58,6 +60,8 @@ JOB_LABELS = {
     OFFICINA_REVIEW_JOB: strings.AZIONI_JOB_REVIEW,
     OFFICINA_NOISE_JOB: strings.RUMORE_JOB_COUNT,
     OFFICINA_DOM_JOB: strings.DOM_JOB,
+    OFFICINA_PICK_JOB: strings.CHIAMATA_JOB_PICK,
+    OFFICINA_ADD_JOB: strings.CHIAMATA_JOB,
 }
 
 

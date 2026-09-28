@@ -5,8 +5,9 @@ Only ``UPPER_CASE`` string constants; the package re-exports every public
 name defined here, so keep names unique across the strings package (prefix them
 with the page, e.g. ``SEARCH_``, ``SYNC_``).
 
-The three pages are numbered as in DESIGN-ui §"First-run wizard": ``P1`` the log
-folder and the editor, ``P2`` the environments, ``P3`` the automation.
+The four pages are numbered as in DESIGN-ui §"First-run wizard": ``P1`` the log
+folder and the editor, ``P2`` the environments, ``P3`` the automation, ``P4``
+the Officina (release 1.3.2; its form's strings are in ``officina_configura``).
 """
 
 # -- the wizard itself -------------------------------------------------------
@@ -17,8 +18,10 @@ WIZARD_TITLE = "Configurazione iniziale"
 WIZARD_BTN_NEXT = "Avanti"
 WIZARD_BTN_BACK = "Indietro"
 WIZARD_BTN_FINISH = "Fine"
-#: The muted stepper line in each page header; {i} = 1, 2 or 3.
-WIZARD_STEP = "Passo {i} di 3"
+#: The muted stepper line in each page header; {i} = 1 … 4.
+WIZARD_STEP = "Passo {i} di 4"
+#: The extra button of the last step: finish without configuring the Officina.
+WIZARD_BTN_LATER = "Più tardi"
 #: ``main_window.job_label`` of the page-1 file count.
 JOB_WIZARD_COUNT_FILES = "Conteggio dei file di log"
 
@@ -60,7 +63,7 @@ WIZARD_P1_EDITOR_NOT_FOUND = (
 WIZARD_P2_TITLE = "Ambienti"
 WIZARD_P2_SUBTITLE = "Da quali ambienti scaricare i log."
 WIZARD_P2_HINT = (
-    "Chiedi al collega il file environments.json oppure inserisci nome e URL."
+    "Inserisci nome e URL di ogni ambiente (oppure importali da un file environments.json)."
 )
 #: {path} = the environments.json found next to the executable.
 WIZARD_P2_SIDECAR_LOADED = "Ambienti caricati da {path}."
@@ -113,6 +116,17 @@ WIZARD_P3_START_SYNC = "Avvia la prima sincronizzazione al termine"
 WIZARD_P3_FIRST_SYNC_NOTE = (
     "La prima sincronizzazione scarica tutto lo storico ancora presente sul server, "
     "fino all'ultima pulizia: possono essere diversi GB e richiedere parecchio tempo."
+)
+
+# -- 4. officina -------------------------------------------------------------
+
+WIZARD_P4_TITLE = "Officina"
+WIZARD_P4_SUBTITLE = (
+    "Dove tenere il lavoro dell'Officina e a quale generatore di documenti inviare i payload."
+)
+WIZARD_P4_INTRO = (
+    "Serve solo per generare i documenti e confrontarli con il target. Se ora non hai "
+    "l'indirizzo del generatore, scegli «Più tardi»: potrai configurarla dalla scheda Officina."
 )
 
 # -- fine --------------------------------------------------------------------

@@ -942,12 +942,36 @@ def _clamp(value: int, low: int, high: int) -> int:
 # ------------------------------------------------- environments sidecar ---
 
 
-def import_environments_file(path: Path) -> list[Environment]:
-    """Parse ``[{"name","url","enabled"?}, ...]``; ValueError on anything malformed."""
+def read_sidecar_json(path: Path) -> dict[str, Any]:
+    """An ``environments.json`` as ``{"environments"?: [...], "generators"?: ...}``.
+
+    Two shapes are accepted: the original JSON list of environments, and an
+    object carrying ``environments`` and/or ``generators`` (the Officina's
+    document generators, see ``core.sidecar``). ValueError on anything else.
+    """
     try:
         raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError(f"{path.name}: JSON non valido ({exc})") from exc
+    if isinstance(raw, list):
+        return {"environments": raw}
+    if isinstance(raw, dict) and ("environments" in raw or "generators" in raw):
+        return dict(raw)
+    raise ValueError(f"{path.name}: atteso un elenco JSON di ambienti "
+                     "oppure un oggetto con 'environments' e/o 'generators'")
+
+
+def import_environments_file(path: Path) -> list[Environment]:
+    """Parse ``[{"name","url","enabled"?}, ...]`` (or the object form of
+    :func:`read_sidecar_json`); ValueError on anything malformed.
+
+    An object without ``environments`` (only ``generators``) is refused too:
+    importing it would silently empty the environments table."""
+    sidecar = read_sidecar_json(path)
+    if "environments" not in sidecar:
+        raise ValueError(f"{path.name}: il file non contiene ambienti "
+                         "(manca l'elenco 'environments')")
+    raw = sidecar["environments"]
     if not isinstance(raw, list):
         raise ValueError(f"{path.name}: atteso un elenco JSON di ambienti")
     return [_environment_from_item(item, i) for i, item in enumerate(raw)]

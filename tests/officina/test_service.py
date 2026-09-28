@@ -287,6 +287,30 @@ def test_a_timeout_writes_no_file(tmp_path: Path, server: FakeServer):
     assert case.asis() is None and not (case.folder / "asis").exists()
 
 
+@pytest.mark.parametrize("env_name", ["svil", ""])
+def test_without_any_generator_the_refusal_points_to_the_setup_card(tmp_path: Path, env_name: str):
+    """Release 1.3.2: the Officina tab shows a setup card where a generator is
+    missing; the refusal sends the user there, not to Impostazioni."""
+    e = Env(tmp_path, None)
+    ini, case = e.case()
+    e.config = dataclasses.replace(
+        e.config, officina=dataclasses.replace(e.config.officina, generators=[]))
+    case.env = env_name
+
+    version, result = e.svc.generate(ini, case, "asis")
+
+    assert version is None and not result.ok
+    assert "nessun generatore configurato" in result.reason
+    assert "scheda Officina" in result.reason and "Impostazioni" not in result.reason
+
+
+def test_without_a_folder_the_refusal_points_to_the_officina_tab(tmp_path: Path):
+    e = Env(tmp_path, None, root=None)
+    with pytest.raises(ValueError) as caught:
+        e.svc.create_initiative("Iniziativa di prova")
+    assert "scheda Officina" in str(caught.value) and "Impostazioni" not in str(caught.value)
+
+
 @pytest.mark.parametrize("env_name, why", [("coll", "non è attivo"), ("ignoto", "non è configurato"),
                                            ("", "nessun generatore")])
 def test_an_env_that_is_not_an_enabled_generator_is_refused(env: Env, server: FakeServer, env_name: str, why: str):

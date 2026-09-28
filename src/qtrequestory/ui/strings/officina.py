@@ -23,13 +23,9 @@ OFFICINA_DELIVERY_QUIT_INFO = ("La consegna si ferma: i file già copiati restan
 OFFICINA_QUIT_INFO = ("I casi non ancora inviati vengono annullati; un documento già in arrivo "
                       "potrebbe non essere salvato.")
 
-# -- folder chooser (the empty state) -------------------------------------------
+# -- the Officina folder (its dialog, its warnings) --------------------------------
 
 OFFICINA_ROOT_TITLE = "Scegli la cartella dell'Officina"
-OFFICINA_ROOT_TEXT = ("Iniziative, casi, payload e documenti generati stanno in una cartella "
-                      "locale scelta da te. I payload contengono dati reali dei clienti: "
-                      "scegli una cartella sul tuo PC, fuori da ogni repository.")
-OFFICINA_ROOT_BUTTON = "Scegli cartella…"
 #: {path} = the chosen folder.
 OFFICINA_ROOT_ONEDRIVE = ("La cartella dell'Officina è in OneDrive ({path}): payload e documenti "
                           "con dati reali vengono copiati nel cloud. È ammesso, ma una cartella "
@@ -82,7 +78,8 @@ OFFICINA_NONE = "—"
 # -- initiative board -----------------------------------------------------------------
 
 OFFICINA_BACK_TO_LIST = "‹ Iniziative"
-OFFICINA_ADD_FROM_SEARCH = "+ Caso da ricerca"
+OFFICINA_ADD_FROM_SEARCH = "Aggiungi chiamata…"
+OFFICINA_ADD_FROM_SEARCH_TIP = "Cerca nei log una chiamata per template key o FDI e aggiungila come caso."
 OFFICINA_ADD_FROM_FILE = "+ Caso da file…"
 OFFICINA_GENERATE_MISSING_ASIS = "Genera AS-IS mancanti"
 OFFICINA_REGENERATE_SELECTED = "Rigenera TO-BE selezionati"
@@ -93,10 +90,8 @@ OFFICINA_COL_DOCUMENTS = "Documenti"
 OFFICINA_COL_TOBE_VS_TARGET = "TO-BE contro target"
 OFFICINA_COL_LAST_RUN = "Ultima generazione"
 OFFICINA_COL_STATUS = "Stato"
-OFFICINA_BOARD_EMPTY = ("Nessun caso. Aggiungine uno da Ricerca (tasto destro su una chiamata › "
-                        "«Aggiungi all'Officina…») oppure da un file JSON.")
-OFFICINA_SEARCH_HINT = ("Cerca la chiamata, poi tasto destro sulla riga › «Aggiungi "
-                        "all'Officina…».")
+OFFICINA_BOARD_EMPTY = ("Nessun caso. Aggiungine uno con «Aggiungi chiamata…» (una chiamata dei log) "
+                        "oppure da un file JSON.")
 OFFICINA_THUMB_TARGET = "T"
 OFFICINA_THUMB_ASIS = "A"
 #: {n} = TO-BE version number.

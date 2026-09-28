@@ -10,13 +10,13 @@ scheduled task.
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QGridLayout, QLabel, QLineEdit, QPushButton
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import CoreServices
+from qtrequestory.ui.folder_check import is_writable
 from qtrequestory.ui.wizard_import import ImportOffer
 from qtrequestory.ui.wizard_step import WizardStepPage, error_line, muted
 from qtrequestory.ui.workers import Job, JobRunner
@@ -106,7 +106,7 @@ class LogFolderPage(WizardStepPage):
         if folder is None:
             self._set_error(strings.WIZARD_P1_ERROR_EMPTY)
             return False
-        if not _is_writable(folder):
+        if not is_writable(folder):
             self._set_error(strings.WIZARD_P1_ERROR_NOT_WRITABLE.format(path=folder))
             return False
         self._set_error("")
@@ -212,20 +212,3 @@ class LogFolderPage(WizardStepPage):
         self._counting = False
         if self.info_label.text() == strings.WIZARD_P1_COUNTING:  # cancelled
             self.info_label.setText("")
-
-
-def _is_writable(folder: Path) -> bool:
-    """Create the folder and a throwaway file in it.
-
-    Only a real write tells the truth on Windows: a path can be listable and
-    still refuse new files (a read-only share, a redirected Documents folder),
-    and ``os.access`` does not know that.
-    """
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=folder, prefix=".qtrequestory-", suffix=".tmp"):
-            pass
-    except OSError as exc:
-        log.info("cartella dei log non utilizzabile (%s): %s", folder, exc)
-        return False
-    return True

@@ -89,22 +89,23 @@ def wait_idle(qtbot, page: OfficinaPage) -> None:
 
 # ------------------------------------------------------------- the folder ---
 
-def test_an_empty_root_shows_the_folder_chooser(qtbot, fake_core, runner, shell, tmp_path,
-                                                monkeypatch):
+def test_an_empty_root_shows_the_setup_card(qtbot, fake_core, runner, shell, tmp_path,
+                                            monkeypatch):
     cfg = fake_core.config.config
     fake_core.config.config = dataclasses.replace(
         cfg, officina=dataclasses.replace(cfg.officina, root=None))
     page = OfficinaPage(fake_core, runner, shell)
     qtbot.addWidget(page)
     page.show()
-    assert page.view() == "chooser"
-    assert page.chooser.button.text() == strings.OFFICINA_ROOT_BUTTON
+    assert page.view() == "setup"
+    assert page.setup_card.title.text() == strings.OFFICINA_SETUP_TITLE
 
     chosen = tmp_path / "officina-scelta"
     monkeypatch.setattr(officina_dialogs, "ask_folder", lambda *_a, **_k: chosen)
     seen = []
     page.config_changed.connect(seen.append)
-    QTest.mouseClick(page.chooser.button, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(page.setup_card.form.browse_button, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(page.setup_card.save_button, Qt.MouseButton.LeftButton)
 
     assert fake_core.config.config.officina.root == chosen
     assert fake_core.config.saved and seen, "saved through services.config and announced"
@@ -121,8 +122,9 @@ def test_a_root_inside_onedrive_is_accepted_with_a_warning(qtbot, fake_core, run
     qtbot.addWidget(page)
     page.show()
     chosen = tmp_path / "OneDrive - Esempio" / "Officina"
-    monkeypatch.setattr(officina_dialogs, "ask_folder", lambda *_a, **_k: chosen)
-    page.choose_root()
+    page.setup_card.form.folder_edit.setText(str(chosen))
+    assert "OneDrive" in page.setup_card.form.folder_warning.text()
+    page.setup_card.save_button.click()
     assert fake_core.config.config.officina.root == chosen
     assert page.view() == "list"
     assert "OneDrive" in page.list.onedrive.text()
@@ -137,16 +139,16 @@ def test_a_folder_the_configuration_cannot_save_is_a_sentence(qtbot, fake_core, 
     page = OfficinaPage(fake_core, runner, shell)
     qtbot.addWidget(page)
     page.show()
-    monkeypatch.setattr(officina_dialogs, "ask_folder", lambda *_a, **_k: tmp_path / "scelta")
+    page.setup_card.form.folder_edit.setText(str(tmp_path / "scelta"))
 
     def refuse(_cfg):
         raise OSError("disco pieno")
 
     monkeypatch.setattr(fake_core.config, "save", refuse)
-    page.choose_root()
+    page.setup_card.save_button.click()
     expected = strings.OFFICINA_ROOT_SAVE_FAILED.format(reason="disco pieno")
-    assert page.chooser.error.text() == expected and shell.statuses[-1] == expected
-    assert page.view() == "chooser"
+    assert page.setup_card.form.problem.text() == expected
+    assert page.view() == "setup"
 
 
 def test_in_onedrive_uses_the_environment_and_the_folder_names(monkeypatch, tmp_path):
@@ -674,6 +676,11 @@ def test_the_ricerca_menu_refuses_a_vanished_call_and_a_duplicate(qtbot, window,
 
     monkeypatch.setattr(officina_add, "ask_add_case",
                         lambda *_a, **_k: AddChoice("Rifiuti", False, ""))
+    # the key has a case now: the question comes first; "Crea un nuovo caso" without a
+    # new variant is the duplicate the service refuses
+    from qtrequestory.ui.pages import officina_pick_question
+    from qtrequestory.ui.pages.officina_pick_question import Resolution
+    monkeypatch.setattr(officina_pick_question, "ask_resolution", lambda *_a, **_k: Resolution(None, ""))
     window.statusBar().clearMessage()
     assert add(hits[1]) == ""  # added: a toast, no status message
     assert add(hits[1]) == strings.OFFICINA_ADD_FAILED.format(
@@ -692,13 +699,19 @@ def test_the_ricerca_menu_says_when_the_officina_has_no_folder(qtbot, window, fa
     assert window.statusBar().currentMessage() == strings.OFFICINA_ADD_NO_ROOT
 
 
-def test_add_from_search_goes_to_ricerca_with_a_hint(page, fake_core, tmp_path, shell):
+def test_aggiungi_chiamata_opens_the_window_on_the_open_initiative(page, fake_core, tmp_path, shell,
+                                                                   monkeypatch):
+    from qtrequestory.ui.pages.officina_pick_call import PickCallDialog
+
     make_initiative(fake_core, "Suggerimento", (), tmp_path)
     page.refresh()
     page.open_initiative("Suggerimento")
+    seen = []
+    monkeypatch.setattr(PickCallDialog, "exec",
+                        lambda dialog: seen.append(dialog.initiative.currentData()) or 0)
     page.board.add_search_button.click()
-    assert shell.shown == ["search"]
-    assert shell.toasts[-1][0] == strings.OFFICINA_SEARCH_HINT
+    assert seen == ["Suggerimento"] and shell.shown == []
+    assert page.runner.job("officina-add") is None, "cancelled: nothing runs"
 
 
 # ---------------------------------------------------------------- strings ---

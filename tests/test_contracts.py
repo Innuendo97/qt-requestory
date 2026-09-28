@@ -279,6 +279,18 @@ class TestConfigService:
         svc = facade.ConfigService(paths, exe_dir=tmp_path)
         assert svc.find_sidecar_environments() == sidecar
 
+    def test_sidecar_generators_come_from_the_file_next_to_the_exe(self, tmp_path: Path):
+        paths = AppPaths(tmp_path / "apphome").ensure()
+        exe_dir = tmp_path / "exe"
+        exe_dir.mkdir()
+        svc = facade.ConfigService(paths, exe_dir=exe_dir)
+        assert svc.sidecar_generators() == []
+        (exe_dir / "environments.json").write_text(
+            '{"environments": [], "generators": ['
+            '{"name": "svil", "url": "https://example.invalid/gen"},'
+            '{"name": "prod", "url": "https://example.invalid/gen2"}]}', encoding="utf-8")
+        assert svc.sidecar_generators() == [contracts.GeneratorEndpoint("svil", "https://example.invalid/gen")]
+
     def test_detect_editor_is_injectable(self, tmp_path: Path):
         editor = tmp_path / "notepad++.exe"
         editor.write_bytes(b"MZ")
@@ -997,6 +1009,16 @@ class TestFakeCore:
             cfgsvc.import_environments_file(tmp_path / "environments.json")
         cfgsvc.set_import_error(None)
         assert cfgsvc.import_environments_file(tmp_path / "environments.json")
+
+    def test_fake_sidecar_generators_are_settable(self, fake_services: CoreServices):
+        cfgsvc = fake_services.config
+        assert cfgsvc.sidecar_generators() == []
+        gen = contracts.GeneratorEndpoint("svil", "https://example.invalid/gen")
+        cfgsvc.sidecar_gens = [gen]
+        got = cfgsvc.sidecar_generators()
+        assert got == [gen]
+        got.clear()  # a copy: the caller cannot change the fake's list
+        assert cfgsvc.sidecar_generators() == [gen]
 
     def test_fake_config_round_trip(self, fake_services: CoreServices):
         cfgsvc = fake_services.config

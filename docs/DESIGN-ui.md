@@ -118,7 +118,7 @@ The Officina's F5 is a `WidgetWithChildrenShortcut` on the case workbench (so it
 on the board or on Ricerca's own F5), and opening a case puts the focus inside it so F5 works
 at once. The board's Enter is a `WidgetShortcut` on its table.
 
-## First-run wizard (`QWizard`, 3 pages)
+## First-run wizard (`QWizard`, 4 pages)
 
 Shown when `config.is_first_run()`; also from Impostazioni → Avanzate → "Riesegui
 configurazione iniziale" (`MainWindow.rerun_wizard`, which then broadcasts the new
@@ -127,7 +127,7 @@ nothing: `load_config` never creates `config.json`, so the next launch is still 
 (regression test with the real `ConfigService`).
 
 Every page draws its own header (`ui/wizard_step.py`): the app icon at 48 px, the page
-title, and a muted "Passo i di 3" (the pages leave `QWizardPage.title()` empty, so Qt draws
+title, and a muted "Passo i di 4" (the pages leave `QWizardPage.title()` empty, so Qt draws
 no banner of its own). Buttons read Indietro / Avanti / Fine / Annulla; [Avanti]/[Fine]
 use the primary role. Closing the wizard in any way (`done`) cancels the jobs its pages
 started (file count, reachability, task status).
@@ -150,8 +150,9 @@ started (file count, reachability, task status).
 2. **Ambienti** — table [Attivo | Nome | URL] with [Aggiungi] [Rimuovi] [Importa da file…].
    Pre-filled with what is already configured (rerun); else from
    `find_sidecar_environments(exe_dir)` (an `environments.json` next to the exe); else
-   empty with the hint "Chiedi al collega il file environments.json oppure inserisci nome
-   e URL". Empty cells show a grey placeholder ("nome" / "https://…", painted only, never
+   empty with the hint "Inserisci nome e URL di ogni ambiente (oppure importali da un file
+   environments.json)" — since 1.3.2 no environments.json is handed out: typing by hand is
+   the normal case, the sidecar an optional, silent prefill. Empty cells show a grey placeholder ("nome" / "https://…", painted only, never
    data); a new row is highlighted with the theme's selection colour. [Verifica
    raggiungibilità] is optional, never blocking: "Gli ambienti sono raggiungibili solo da
    rete aziendale o VPN Cisco: se ora non lo sono, va bene lo stesso." The check passes
@@ -171,6 +172,23 @@ started (file count, reachability, task status).
    muted note "La prima sincronizzazione scarica tutto lo storico ancora presente sul
    server, fino all'ultima pulizia: possono essere diversi GB e richiedere parecchio
    tempo." (F9).
+4. **Officina** (release 1.3.2, `ui/wizard_officina_page.py`) — optional. The form of the
+   Officina tab's setup card (`pages/officina_setup.SetupForm`): Cartella dell'Officina
+   (typed or [Sfoglia…]; `officina_root_errors` against pages 1–3's answers, OneDrive /
+   network allowed with a warning, must be writable) and the generators table + default
+   combo, prefilled with what is configured (rerun), else `config.sidecar_generators()`
+   (the `generators` of environments.json), else one empty row — the normal case: the
+   hint and the empty URL cell's placeholder show the shape
+   `https://<host>/rest/api/submit-job/documentGenerator` (the placeholder is painted by the
+   URL delegate of `GeneratorTable`, so Impostazioni shows it too). The folder is checked
+   writable without being kept (`ui/folder_check.is_writable(keep=False)`: Annulla leaves
+   nothing); [Fine] creates it. The table is as tall as its rows (1–4, then it scrolls).
+   Same rules as Impostazioni
+   (`generator_problems`, `default_generator_problem`), shown inline. **[Più tardi]**
+   (`CustomButton1`, in the button layout on this page only) finishes the wizard without the
+   step: the Officina is left exactly as it was (QWizard.done() validates the page again,
+   so a skipped page validates as True). A [Fine] that never reached the page, or an empty
+   page on a first run, changes nothing either.
 
 On [Fine] (`FirstRunWizard.accept`): save the config (a failure keeps the wizard open and
 says why); register the task if ticked (failure → non-blocking info); on a rerun that found
@@ -417,17 +435,27 @@ each ≲ 400 lines.
 `officina_actions.CaseActionsMixin`) is a `QStackedWidget` with four screens:
 
 ```
-chooser ──► list ──► board ──► case
+setup ──► list ──► board ──► case
 (no folder)  Iniziative  ‹ Iniziative   ‹ <Iniziativa>
 ```
 
-- **Chooser** (`officina_list.RootChooser`) while `workspace_root()` is None: why the folder
-  matters (real customer data, local, outside any repository) + [Scegli cartella…]. The
-  folder is checked with `officina_root_errors` first (inside or around the log mirror or
-  the output folder → refused, the reason in the chooser's banner, nothing created or
-  saved), then created and saved as `officina.root` through `services.config.save`; the page
-  emits `config_changed`. A OneDrive path is accepted with a warn toast and a persistent warn
-  banner on the list; a save error stays on the chooser as a sentence.
+- **Setup** (release 1.3.2, `officina_setup.SetupCard`, "Configura l'Officina") while
+  `workspace_root()` is None, centred at 760 px: the folder and the generator (the wizard's
+  step 4 form, prefilled from the configuration, else `config.sidecar_generators()`, else
+  one empty row), [Salva] and a link "Altre impostazioni…" (Impostazioni › Officina). The
+  folder is required and checked with `officina_root_errors` first (inside or around the
+  log mirror or the output folder → refused under the field, nothing created or saved),
+  then created; the configuration is saved through `services.config.save`; the page emits
+  `config_changed` and refreshes (no restart). A OneDrive path is accepted with a warn
+  toast and a persistent warn banner on the list; a save error stays on the card as a
+  sentence. The **same card sits over the list** while the folder is set but no generator
+  is active (there [Salva] needs one); it hides once one is saved, here or in Impostazioni.
+  A card on screen when the configuration is saved elsewhere (`on_config_changed`) is
+  reloaded: what was saved wins over a half-typed card, so [Salva] never writes old values
+  back over it.
+  The generation refusal for that state (`officina.service.NO_GENERATOR`) names the card,
+  not Impostazioni. [Cambia cartella…] on the list keeps the folder dialog, refusals in
+  the status bar.
 - **List** (`InitiativeList`): Iniziativa · Casi · Accettati ("n su m") · Ultima attività
   ("oggi 10:42"); [Nuova iniziativa] [Apri] [Apri cartella] [Cambia cartella…]; the folder
   path above. Enter or double-click opens. Each row carries `Initiative.id` (the folder),
@@ -469,7 +497,12 @@ chooser ──► list ──► board ──► case
   mancanti] and [Rigenera TO-BE selezionati] are disabled: the header defaults are unknown)
   or what loading left out (a null header default). [Rigenera TO-BE selezionati] is also
   disabled while the selection holds a case with an unreadable `caso.json`.
-  Toolbar: [+ Caso da ricerca] (switches to Ricerca with a hint toast), [+ Caso da file…],
+  Toolbar: [Aggiungi chiamata…] (1.3.2, `officina_pick_call`: environment, one field for a
+  template key or an FDI searched as you type — 300 ms debounce, `officina-pick` job, most
+  recent first, 200 rows at most — multi-select, initiative and variant; a key that already has
+  a case asks "Sostituisci la chiamata di <caso>" / "Crea un nuovo caso" per call,
+  `officina_pick_question`; the plan runs in the exclusive `officina-add` job,
+  `officina_add_plan.run_plan`, one status line, one board refresh), [+ Caso da file…],
   [Genera AS-IS mancanti], [Rigenera TO-BE selezionati], [Consegna…], [Regole di rumore…]
   (the initiative's rules and presets, counts on the selected case), [Apri cartella]; a
   "Generazione: n di m" line with [Annulla generazioni] shown only on the board of an
@@ -492,7 +525,14 @@ chooser ──► list ──► board ──► case
   the **profile menu** (`officina_banners.ProfileButton`: Tollerante / Stretto / Solo testo
   / "Come l'iniziativa (…)"; "Profilo: X (iniziativa) ▾" when inherited; it waits while the
   case is being compared, then `set_profile` on the UI thread and a new comparison), then
-  a **"⋯" menu** (`officina_case_extras`, R45) with *Azzera tolleranze…*: after a question
+  a **"⋯" menu** (`officina_case_extras`, R45) with *Cambia chiamata…* (1.3.2: "Aggiungi
+  chiamata…" on the case's key, replacing this case by default; also a link in *Payload e
+  header…*; afterwards a warn strip "La chiamata è cambiata: l'AS-IS è stato generato con
+  quella precedente" with [Rigenera AS-IS], shown while the latest `chiamata_sostituita` history
+  entry is newer than the AS-IS; the case's current call is marked "(attuale)" and choosing
+  it changes nothing; a case queued or generating keeps its call, on every path; replacing
+  the call of an ACCEPTED case keeps it "accettato" on purpose — the review is untouched,
+  and the next TO-BE reopens it as *da ricontrollare*) and *Azzera tolleranze…*: after a question
   ("… non si può annullare"; no undo entry) `reset_tolerances` clears the case's manual
   tolerances and «non è una variabile», and the same version is judged again; it waits
   ("Attendi la fine del confronto…") while the case is being compared or has queued

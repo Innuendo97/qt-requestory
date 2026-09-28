@@ -1,10 +1,10 @@
-"""The first-run wizard: three questions, one configuration, one result.
+"""The first-run wizard: four questions, one configuration, one result.
 
 ``run_gui`` shows this before the main window when ``config.is_first_run()``,
 and Impostazioni re-runs it on demand — so it both *creates* a configuration
 and *edits* an existing one, which is why every page prefills from what is
 already there. The whole finish step lives in :meth:`FirstRunWizard.accept`,
-which reads exactly the three pages of ``wizard_pages`` and does exactly what
+which reads exactly the four pages of ``wizard_pages`` and does exactly what
 DESIGN-ui §"First-run wizard" lists, in that order:
 
 1. build the ``Config`` from the pages and ``config.save`` it — first, so a
@@ -16,6 +16,10 @@ DESIGN-ui §"First-run wizard" lists, in that order:
    never when ours was asked for but could not be registered;
 4. hand the caller a :class:`WizardResult` saying what to do next — including
    the folders to import (page 1's "li importerò alla fine").
+
+The fourth page, the Officina (release 1.3.2), is optional: its "Più tardi"
+button — shown on that page only — finishes the wizard leaving the Officina
+exactly as it was, and so does a [Fine] that never reached it.
 
 Only step 1 can stop the wizard from closing, and then it says why: a scheduler
 call that fails is reported and forgotten (the Sincronizzazione page can retry
@@ -35,7 +39,12 @@ from PySide6.QtWidgets import QDialog, QMessageBox, QWidget, QWizard
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Config, CoreServices
-from qtrequestory.ui.wizard_pages import AutomationPage, EnvironmentsPage, LogFolderPage
+from qtrequestory.ui.wizard_pages import (
+    AutomationPage,
+    EnvironmentsPage,
+    LogFolderPage,
+    OfficinaSetupPage,
+)
 from qtrequestory.ui.workers import JobRunner
 
 __all__ = ["FirstRunWizard", "WizardResult", "run_first_run_wizard"]
@@ -62,7 +71,7 @@ class WizardResult:
 
 
 class FirstRunWizard(QWizard):
-    """The three pages, the Italian buttons, and what [Fine] does."""
+    """The four pages, the Italian buttons, and what [Fine] does."""
 
     def __init__(self, services: CoreServices, runner: JobRunner,
                  parent: QWidget | None = None) -> None:
@@ -79,7 +88,8 @@ class FirstRunWizard(QWizard):
         self.folder_page = LogFolderPage(services, runner)
         self.environments_page = EnvironmentsPage(services, runner)
         self.automation_page = AutomationPage(services, runner)
-        for page in (self.folder_page, self.environments_page, self.automation_page):
+        self.officina_page = OfficinaSetupPage(services, self._pages_config)
+        for page in self._pages():
             self.addPage(page)
 
         # Qt's own button texts follow the Qt translation, which a portable
@@ -89,8 +99,13 @@ class FirstRunWizard(QWizard):
             (QWizard.WizardButton.BackButton, strings.WIZARD_BTN_BACK),
             (QWizard.WizardButton.FinishButton, strings.WIZARD_BTN_FINISH),
             (QWizard.WizardButton.CancelButton, strings.BTN_CANCEL),
+            (QWizard.WizardButton.CustomButton1, strings.WIZARD_BTN_LATER),
         ):
             self.setButtonText(role, text)
+        self.setOption(QWizard.WizardOption.HaveCustomButton1, True)
+        self.customButtonClicked.connect(self._on_custom_button)
+        self.currentIdChanged.connect(self._on_page_changed)
+        self._on_page_changed()
         # The forward buttons are the page's main action, as elsewhere in the app.
         for role in (QWizard.WizardButton.NextButton, QWizard.WizardButton.FinishButton):
             theme.set_role(self.button(role), "primary")
@@ -112,6 +127,11 @@ class FirstRunWizard(QWizard):
         user just entered, and there is nothing for the caller to return.
         """
         cfg = self.build_config()
+        problem = self.officina_page.create_folder()
+        if problem:
+            QMessageBox.critical(self, strings.WIZARD_SAVE_FAILED_TITLE,
+                                 strings.WIZARD_SAVE_FAILED.format(error=problem))
+            return
         try:
             self._services.config.save(cfg)
         except Exception as exc:  # noqa: BLE001 - shown to the user, not swallowed
@@ -134,12 +154,26 @@ class FirstRunWizard(QWizard):
     def done(self, result: int) -> None:
         """Every way out ([Fine], [Annulla], Esc, the close button) stops the
         background work the pages started: nobody is left to read it."""
-        for page in (self.folder_page, self.environments_page, self.automation_page):
+        for page in self._pages():
             page.cancel_jobs()
         super().done(result)
 
     def build_config(self) -> Config:
-        """The three pages' answers on top of the current configuration."""
+        """The four pages' answers on top of the current configuration."""
+        base = self._pages_config()
+        return dataclasses.replace(base, officina=self.officina_page.officina(base.officina))
+
+    def skip_officina(self) -> None:
+        """"Più tardi": finish now, without the Officina step's answers. A save
+        that fails keeps the wizard open, and the step counts again."""
+        self.officina_page.skip()
+        self.accept()
+        if self._result is None:
+            self.officina_page.skip(False)
+
+    def _pages_config(self) -> Config:
+        """The first three pages' answers on top of the current configuration
+        (what the Officina step's folder is checked against)."""
         base = self._services.config.load()
         folder = self.folder_page.folder()
         return dataclasses.replace(
@@ -152,6 +186,22 @@ class FirstRunWizard(QWizard):
         )
 
     # -- internals ----------------------------------------------------------
+
+    def _pages(self) -> tuple:
+        return (self.folder_page, self.environments_page, self.automation_page,
+                self.officina_page)
+
+    def _on_page_changed(self, _page_id: int = -1) -> None:
+        """"Più tardi" sits before [Fine], on the Officina page only: with a
+        custom button layout, a button is shown exactly when it is listed."""
+        buttons = QWizard.WizardButton
+        later = [buttons.CustomButton1] if self.currentPage() is self.officina_page else []
+        self.setButtonLayout([buttons.Stretch, buttons.BackButton, buttons.NextButton, *later,
+                              buttons.FinishButton, buttons.CancelButton])
+
+    def _on_custom_button(self, which: int) -> None:
+        if which == int(QWizard.WizardButton.CustomButton1.value):
+            self.skip_officina()
 
     def _apply_automation(self) -> bool:
         """Steps 2 and 3 of [Fine]; returns whether our task is now active."""

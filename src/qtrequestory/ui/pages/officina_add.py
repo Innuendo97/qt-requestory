@@ -5,7 +5,10 @@ file…" share one dialog (:class:`AddCaseDialog`): which initiative (or a new
 one), the variant, and — for a file — the file and its template key, which is
 prefilled from the payload's first document when it has one. The case itself
 is made by ``OfficinaApi.case_from_hit`` / ``case_from_file``; every refusal
-they raise becomes a sentence in the status bar, never a traceback.
+they raise becomes a sentence in the status bar, never a traceback. A hit
+whose key already has a case in the chosen initiative is asked about first,
+as in "Aggiungi chiamata…" (``officina_pick_question``): replace that case's
+call, or a new case.
 """
 from __future__ import annotations
 
@@ -32,7 +35,9 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Case, CoreServices, Initiative, SearchHit
 from qtrequestory.ui.pages import officina_dialogs as ask
-from qtrequestory.ui.pages.officina_format import initiative_labels
+from qtrequestory.ui.pages import officina_pick_question as question
+from qtrequestory.ui.pages.officina_add_plan import AddTarget, PlanItem, cases_of_key, run_plan
+from qtrequestory.ui.pages.officina_format import case_title, initiative_labels
 
 __all__ = ["AddCaseDialog", "AddChoice", "add_hit_to_officina", "ask_add_case", "create_case",
            "initiative_choices", "key_from_payload"]
@@ -227,16 +232,36 @@ def add_hit_to_officina(parent: QWidget, services: CoreServices, hit: SearchHit)
                           key=hit.template_key)
     if choice is None:
         return None
+    item = PlanItem(hit, None, choice.variant)
+    if not choice.create:
+        ini = next((i for i in api.initiatives() if i.id == choice.initiative), None)
+        cases = cases_of_key(ini, hit.template_key)
+        if cases:
+            answer = question.ask_resolution(parent, hit, cases, initiative=ini.name,
+                                             variant=choice.variant)
+            if answer is None:
+                return None
+            item = PlanItem(hit, answer.replace, answer.variant)
+    busy = getattr(officina, "case_busy", None)
+    if item.replace is not None and callable(busy) and busy(choice.initiative, item.replace):
+        notify(strings.CHIAMATA_CASE_BUSY.format(case=item.replace))  # its call must not change under the queue
+        return None
     QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
     try:
-        ini, case = create_case(services, choice, hit)
-    except ValueError as exc:
-        notify(strings.OFFICINA_ADD_FAILED.format(reason=exc))
-        return None
+        out = run_plan(api, AddTarget(choice.initiative, choice.create), [item])
     finally:
         QApplication.restoreOverrideCursor()
+    if out.error or out.failed:
+        notify(strings.OFFICINA_ADD_FAILED.format(reason=out.error or out.failed[0][1]))
+        return None
+    ini = out.initiative
+    if out.replaced:
+        case = out.replaced[0]
+        message = strings.CHIAMATA_REPLACED_TOAST.format(case=case_title(case), initiative=ini.name)
+    else:
+        case = out.added[0]
+        message = strings.OFFICINA_ADDED.format(key=case.key, initiative=ini.name)
     toast = getattr(window, "show_toast", None)
-    message = strings.OFFICINA_ADDED.format(key=case.key, initiative=ini.name)
     if callable(toast):
         toast(message, "ok")
     else:

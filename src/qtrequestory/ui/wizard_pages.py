@@ -1,4 +1,4 @@
-"""The three pages of the first-run wizard, one module each.
+"""The four pages of the first-run wizard, one module each.
 
 They live apart from :mod:`qtrequestory.ui.wizard` for the usual reason a form
 splits from its dialog: the wizard owns the *flow* (order, buttons, what Fine
@@ -13,10 +13,11 @@ services are queried when the page is *shown*, so a test (and the [Indietro]
 button) can change the answer and see the page follow.
 
 ======================================  =========================================
-``wizard_step``                         header (icon, title, "Passo i di 3")
+``wizard_step``                         header (icon, title, "Passo i di 4")
 ``wizard_folder_page.LogFolderPage``    1. log folder + Notepad++
 ``wizard_env_page.EnvironmentsPage``    2. environments table
 ``wizard_automation_page.AutomationPage``  3. scheduled task, old task
+``wizard_officina_page.OfficinaSetupPage``  4. Officina folder + generator (optional)
 ======================================  =========================================
 """
 from __future__ import annotations
@@ -24,8 +25,9 @@ from __future__ import annotations
 from qtrequestory.ui.wizard_automation_page import TASK_STATUS_JOB, AutomationPage
 from qtrequestory.ui.wizard_env_page import REACHABILITY_JOB, EnvironmentsPage, _probe_reachability
 from qtrequestory.ui.wizard_folder_page import COUNT_JOB, LogFolderPage
+from qtrequestory.ui.wizard_officina_page import OfficinaSetupPage
 
 __all__ = [
     "COUNT_JOB", "REACHABILITY_JOB", "TASK_STATUS_JOB", "AutomationPage", "EnvironmentsPage",
-    "LogFolderPage", "_probe_reachability",
+    "LogFolderPage", "OfficinaSetupPage", "_probe_reachability",
 ]

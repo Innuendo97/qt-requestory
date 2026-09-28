@@ -1,7 +1,10 @@
 """The user actions of the Officina tab (a mixin of ``OfficinaPage``).
 
-Choosing the Officina folder, creating an initiative, adding a case from a
-file, the AS-IS (a replacement needs a note: spec §14 "a baseline can only be
+Changing the Officina folder (the first choice is the setup card's), creating an
+initiative, adding a case from a file or from the logged calls ("Aggiungi chiamata…",
+also "Cambia chiamata…" of a case: ``officina_pick_call``, carried out in the
+``officina-add`` job),
+the AS-IS (a replacement needs a note: spec §14 "a baseline can only be
 changed with a note"), the TARGET, the payload and header editor,
 accepting / reopening a case, and (phase 2) the case's profile — each saves
 ``caso.json`` and compares the same version again. The review actions
@@ -18,14 +21,16 @@ from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import officina_root_errors
 from qtrequestory.ui.pages import officina_dialogs as ask
 from qtrequestory.ui.pages.officina_add import ask_add_case, create_case, initiative_choices
+from qtrequestory.ui.pages.officina_add_plan import PlanOutcome, outcome_text, run_plan
 from qtrequestory.ui.pages.officina_banners import profile_name
+from qtrequestory.ui.workers import OFFICINA_ADD_JOB
 
 __all__ = ["CaseActionsMixin"]
 
 
 class CaseActionsMixin:
-    """What the folder chooser, the list's buttons, the board's "+ Caso…"
-    buttons and the workbench's toolbar do."""
+    """What the list's buttons, the board's "+ Caso…" buttons and the
+    workbench's toolbar do."""
 
     def _connect_case_view(self) -> None:
         case = self.case_view
@@ -38,11 +43,15 @@ class CaseActionsMixin:
         case.version_chosen.connect(self._load_docs)
         case.profile_chosen.connect(self.set_case_profile)
         case.reset_tolerances_requested.connect(self.reset_case_tolerances)
+        case.change_call_requested.connect(self.change_call)
+        case.asis_after_call_requested.connect(self.regenerate_asis_after_call)
         self._connect_review()  # officina_review: F / T / V, the mini-bar, the menu, undo
 
     def choose_root(self) -> None:
-        """The folder is checked like Impostazioni checks it (never inside the
-        log mirror or the output folder) BEFORE anything is created or saved."""
+        """The list's "Cambia cartella…" (the first choice is the setup
+        card's). The folder is checked like Impostazioni checks it (never
+        inside the log mirror or the output folder) BEFORE anything is
+        created or saved; a refusal is said in the status bar."""
         current = self.api.workspace_root()
         folder = ask.ask_folder(self, strings.OFFICINA_ROOT_TITLE, current)
         if folder is None:
@@ -51,22 +60,17 @@ class CaseActionsMixin:
         cfg = dataclasses.replace(cfg, officina=dataclasses.replace(cfg.officina, root=folder))
         problems = officina_root_errors(cfg)
         if problems:
-            self.chooser.error.set_text(problems[0])
             self._notify(problems[0])
             return
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self.chooser.error.set_text(
-                strings.OFFICINA_ROOT_FAILED.format(path=folder, reason=exc))
+            self._notify(strings.OFFICINA_ROOT_FAILED.format(path=folder, reason=exc))
             return
-        self.chooser.error.set_text("")
         try:
             self.services.config.save(cfg)
         except (OSError, ValueError) as exc:
-            message = strings.OFFICINA_ROOT_SAVE_FAILED.format(reason=exc)
-            self.chooser.error.set_text(message)
-            self._notify(message)
+            self._notify(strings.OFFICINA_ROOT_SAVE_FAILED.format(reason=exc))
             return
         self.config_changed.emit(cfg)
         self.ini, self.case_id = None, None
@@ -91,11 +95,80 @@ class CaseActionsMixin:
         self.list.show_initiatives(self.api.initiatives(), select=ini.id)
 
     def add_from_search(self) -> None:
-        """Ricerca, with a hint: the context menu there adds the case here."""
-        shower = getattr(self._window, "show_page", None)
-        if callable(shower):
-            shower("search")
-        self._toast(strings.OFFICINA_SEARCH_HINT)
+        """The board's "Aggiungi chiamata…"."""
+        self.pick_calls()
+
+    def change_call(self) -> None:
+        """"Cambia chiamata…" of the case on screen (its "⋯" menu, the editor's link)."""
+        case = self._case(self.case_id)
+        if case is None or case.load_error or self._run_state(case.id) is not None:
+            return  # disabled meanwhile: a broken caso.json, a case on its way
+        self.pick_calls(case)
+
+    def pick_calls(self, case=None) -> None:
+        """"Aggiungi chiamata…" (on ``case``: its call replaced by default)."""
+        if self.ini is None:
+            return
+        if self.runner.is_running(OFFICINA_ADD_JOB):
+            self._notify(strings.CHIAMATA_BUSY)
+            return
+        from qtrequestory.ui.pages.officina_pick_call import PickCallDialog
+
+        dialog = PickCallDialog(self.services, self.runner, self.api.initiatives(), current=self.ini.id,
+                                case=case, busy=self.case_busy, parent=self)
+        try:
+            plan = dialog.plan() if dialog.exec() else None
+        finally:
+            dialog.deleteLater()
+        if plan is not None:
+            self.run_add_plan(*plan)
+
+    def case_busy(self, initiative_id: str, case_id: str) -> bool:
+        """True while case ``case_id`` of ``initiative_id`` waits or is sent:
+        its call must not change under the queue (also asked by Ricerca)."""
+        return self.queue.state(initiative_id, case_id) is not None
+
+    def run_add_plan(self, target, items) -> None:
+        """Every chosen call in ONE worker job, then one status line and one refresh.
+        A case waiting for or being sent keeps its call (its payload must not
+        change under the queue)."""
+        if not target.create:
+            busy = [i for i in items if i.replace is not None and self.case_busy(target.initiative, i.replace)]
+            if busy:
+                self._notify(strings.CHIAMATA_CASE_BUSY.format(case=busy[0].replace))
+                return
+        job = self.runner.submit(OFFICINA_ADD_JOB, run_plan, self.api, target, list(items))
+        if job is None:
+            self._notify(strings.CHIAMATA_BUSY)
+            return
+        self._notify(strings.CHIAMATA_ADDING)
+        job.signals.result.connect(self._on_plan_done)
+        job.signals.error.connect(
+            lambda _kind, message: self._notify(strings.CHIAMATA_FAILED_ALL.format(reason=message)))
+
+    def _on_plan_done(self, out: PlanOutcome) -> None:
+        text = outcome_text(out)
+        self._notify(text)
+        self._toast(text, "warn" if out.error or out.failed else "ok")
+        if out.initiative is None:
+            return
+        view = self.view()
+        if view == "case" and self.ini is not None and self.ini.id == out.initiative.id:
+            if self._reload_initiative() and self._case(self.case_id) is not None:
+                self.open_case(self.case_id)  # the call strip says the AS-IS is older
+        elif view == "board":
+            self.ini = out.initiative  # the initiative chosen in the window
+            if self._reload_initiative():
+                self.show_board()
+        elif view == "list":
+            self.show_list()
+
+    def regenerate_asis_after_call(self) -> None:
+        """The call strip's "Rigenera AS-IS": the replacement's note is said for the user."""
+        case = self._case(self.case_id)
+        if case is None:
+            return
+        self._generate([case], "asis", strings.CHIAMATA_ASIS_NOTE if case.asis() is not None else None)
 
     def add_from_file(self) -> None:
         if self.ini is None:
@@ -161,10 +234,13 @@ class CaseActionsMixin:
         try:
             if dialog.exec():
                 self._toast(strings.OFFICINA_EDITOR_SAVED, "ok")
+            change = dialog.wants_change_call
         finally:
             dialog.deleteLater()
         self._reload_initiative()
         self.open_case(case.id)
+        if change:
+            self.change_call()
 
     def toggle_status(self) -> None:
         case = self._case(self.case_id)

@@ -48,10 +48,11 @@ from pathlib import Path
 from typing import Iterator
 
 from qtrequestory.core import config as config_mod
+from qtrequestory.core import sidecar as sidecar_mod
 from qtrequestory.core import archive, daily, extract, opener, scheduler
 from qtrequestory.core.archive import ArchiveReport
 from qtrequestory.core.autoindex import parse_autoindex
-from qtrequestory.core.config import Config, Environment
+from qtrequestory.core.config import Config, Environment, GeneratorEndpoint
 from qtrequestory.core.events import CancelToken, EventSink
 from qtrequestory.core.http import HttpClient, HttpUnreachable, UrllibHttpClient
 from qtrequestory.core.index.builder import IndexBuilder, IndexPlan
@@ -170,6 +171,9 @@ class ConfigService:
 
     def find_sidecar_environments(self) -> Path | None:
         return config_mod.find_sidecar_environments(self._exe_dir)
+
+    def sidecar_generators(self) -> list[GeneratorEndpoint]:
+        return sidecar_mod.sidecar_generators(self._exe_dir)
 
     def config_path(self) -> Path:
         return self._paths.config_file
