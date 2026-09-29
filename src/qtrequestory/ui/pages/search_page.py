@@ -110,12 +110,12 @@ class SearchPage(QWidget):
         self.stale_banner.setWordWrap(True)
         theme.set_role(self.stale_banner, "muted")
 
-        self.results_stack = QStackedLayout()
+        # Parented before filled: addWidget shows page 1, an orphan = a window (D7)
+        results = QWidget()
+        self.results_stack = QStackedLayout(results)
         self.results_stack.addWidget(self.view)
         for name in STATES[1:]:
             self.results_stack.addWidget(self.states.widgets()[name])
-        results = QWidget()
-        results.setLayout(self.results_stack)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)

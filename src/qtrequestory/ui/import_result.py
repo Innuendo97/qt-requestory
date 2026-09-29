@@ -58,6 +58,7 @@ class ResultView(QWidget):
         theme.set_role(self.question_label, "section")
         self.question_detail = QLabel()
         self.delete_button = QPushButton(strings.IMPORT_BTN_DELETE)
+        theme.set_role(self.delete_button, "danger")
         self.keep_button = QPushButton(strings.IMPORT_BTN_KEEP)
         self.delete_button.clicked.connect(self.delete_requested)
         self.keep_button.clicked.connect(self.keep_requested)

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel
 
 from qtrequestory.ui.app_bar import AppBar, StatusChip
 
@@ -64,14 +63,14 @@ def test_the_brand_names_the_application(bar):
 
 # ------------------------------------------------------------------ chip ---
 
-def test_the_chip_renders_one_dot_and_text_per_env(qtbot):
+def test_the_chip_renders_the_text_of_every_env(qtbot):
     chip = StatusChip()
     qtbot.addWidget(chip)
     chip.set_envs([("coll", "ok", "oggi 11:24"), ("svil", "warn", "ieri 18:40")])
 
     assert chip.summary() == "coll oggi 11:24 · svil ieri 18:40"
-    assert [d.property("dot") for d in chip.dots()] == ["ok", "warn"]
-    assert chip.accessibleName() == chip.summary()
+    assert chip.text_label.text() == chip.summary()
+    assert chip.accessibleName().endswith(chip.summary())
     assert not chip.isHidden()
 
 
@@ -82,23 +81,11 @@ def test_a_note_on_an_env_goes_into_the_chip_tooltip(qtbot):
     qtbot.addWidget(chip)
     chip.set_envs([("coll", "ok", "oggi 11:24"), ("svil", "ok", "oggi 22:33", "nessuna chiamata")])
     assert chip.summary() == "coll oggi 11:24 · svil oggi 22:33"
-    assert [d.property("dot") for d in chip.dots()] == ["ok", "ok"]
-    assert chip.toolTip().startswith(strings.STATUS_SYNC_SUMMARY_TOOLTIP)
+    head = strings.SYNC_CHIP_TOOLTIP.format(shortcut="Ctrl+2")
+    assert chip.toolTip().startswith(head)
     assert "svil: nessuna chiamata" in chip.toolTip()
     chip.set_envs([("coll", "ok", "oggi 11:24")])
-    assert chip.toolTip() == strings.STATUS_SYNC_SUMMARY_TOOLTIP
-
-
-def test_replaced_chip_labels_disappear_at_once(qtbot):
-    """deleteLater runs on the next event loop turn: until then the old labels
-    must not be painted over the new ones."""
-    chip = StatusChip()
-    qtbot.addWidget(chip)
-    chip.show()
-    chip.set_envs([("coll", "ok", "oggi 11:24")])
-    old = chip.findChildren(QLabel)
-    chip.set_envs([("svil", "warn", "ieri 18:40")])
-    assert all(label.isHidden() for label in old)
+    assert chip.toolTip() == head
 
 
 def test_an_empty_chip_hides_itself(qtbot):
@@ -110,13 +97,6 @@ def test_an_empty_chip_hides_itself(qtbot):
     assert chip.summary() == ""
 
 
-def test_an_unknown_tone_falls_back_to_neutral(qtbot):
-    chip = StatusChip()
-    qtbot.addWidget(chip)
-    chip.set_envs([("coll", "purple", "mai")])
-    assert [d.property("dot") for d in chip.dots()] == ["neutral"]
-
-
 def test_the_chip_is_sized_for_its_content(qtbot):
     chip = StatusChip()
     qtbot.addWidget(chip)
@@ -126,19 +106,35 @@ def test_the_chip_is_sized_for_its_content(qtbot):
     assert chip.sizeHint().width() > short
 
 
-def test_clicking_the_chip_asks_for_the_sync_page(qtbot, bar):
+def test_clicking_the_chip_asks_for_the_sync_panel(qtbot, bar):
     bar.status_chip.set_envs([("coll", "ok", "oggi 11:24")])
     asked: list[str] = []
     bar.page_requested.connect(asked.append)
-    qtbot.mouseClick(bar.status_chip, Qt.MouseButton.LeftButton)
-    assert asked == ["sync"]
+    with qtbot.waitSignal(bar.sync_requested, timeout=1000):
+        qtbot.mouseClick(bar.status_chip, Qt.MouseButton.LeftButton)
+    assert asked == [], "the chip opens a panel, not a page"
 
 
-def test_a_theme_switch_re_tints_the_tab_icons(bar, themed):
+def test_the_chip_reads_as_current_on_the_sync_page(bar):
+    bar.set_current("sync")
+    assert bar.status_chip.property("current") is True
+    bar.set_current("search")
+    assert bar.status_chip.property("current") is False
+
+
+def ink(icon) -> str:
+    """The colour of the most opaque pixel of ``icon`` (the tint it was given)."""
+    image = icon.pixmap(20, 20).toImage()
+    pixels = [image.pixelColor(x, y) for x in range(20) for y in range(20)]
+    return max(pixels, key=lambda c: c.alpha()).name().upper()
+
+
+def test_a_theme_switch_re_tints_the_tab_icons_with_the_header_ink(bar, themed):
+    """Palette B: the glyphs sit on the blue header, so they take ``on_header``
+    (white in both modes) — and are re-tinted on every switch."""
     from qtrequestory.ui import theme
 
-    theme.apply(themed, theme.Mode.LIGHT)
-    before = bar.tabs["search"].icon().pixmap(20, 20).toImage()
-    theme.apply(themed, theme.Mode.DARK)
-    after = bar.tabs["search"].icon().pixmap(20, 20).toImage()
-    assert before != after
+    for mode, tokens in ((theme.Mode.LIGHT, theme.LIGHT), (theme.Mode.DARK, theme.DARK)):
+        theme.apply(themed, mode)
+        for button in (*bar.tabs.values(), *bar.icon_buttons.values()):
+            assert ink(button.icon()) == tokens.on_header

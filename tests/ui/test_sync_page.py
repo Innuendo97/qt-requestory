@@ -634,9 +634,9 @@ def test_a_quiet_today_is_up_to_date_in_the_app_bar_chip(qtbot, page, fake_core)
     chip = StatusChip()
     qtbot.addWidget(chip)
     chip.set_envs(page.presenter.state())
-    tones = dict(zip((item[0] for item in page.presenter.state()),
-                     (dot.property("dot") for dot in chip.dots())))
+    tones = {item[0]: item[1] for item in page.presenter.state()}
     assert tones["coll"] == "ok"
+    assert all(line.split(":")[0] != "coll" for line in page.presenter.attention().lines)
     assert "coll: " + strings.SYNC_BADGE_EMPTY_TODAY_TOOLTIP in chip.toolTip()
 
 

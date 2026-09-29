@@ -17,8 +17,11 @@ and the generated one are merged — the text around the change once, the
 target's changed characters struck (``bad`` on ``bad_bg``), the generated
 ones **bold**, and, when only PART of the text changed, on the ``mark_yellow``
 of the page marks with the paper ink (dark in both modes: the yellow is bright
-in both). So "abilitata" → "abilitato" reads ``abilitat~~a~~**o**``. The
-characters come from ``Diff.left_spans`` / ``right_spans``; when the two sides'
+in both). So "indirizo" → "indirizzo" reads ``indiri**z**zo``. The
+characters come from ``Diff.left_spans`` / ``right_spans``; a token whose
+change replaces characters, holds several runs or is a number, a date or a
+code is shown whole, «old → new» (``officina_snippet_tokens``: never
+«128,540» for 12,50 → 18,40); when the two sides'
 unchanged parts do not line up, the two texts are shown one after the other
 ("target → generated"), each with its own changed characters marked; when
 the two texts are equal (a link, an attribute) the text is shown plain and the
@@ -34,9 +37,10 @@ from PySide6.QtCore import Qt
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Anchor, Diff, Judged
+from qtrequestory.ui.pages.officina_snippet_tokens import aligned_pieces, token_spans
 from qtrequestory.ui.pages.officina_verdict_style import flagged, state_of
 
-__all__ = ["CONTEXT_WORDS", "OPEN_STATES", "REVIEW_KEYS", "TABS", "actions_for", "class_glyph",
+__all__ = ["CONTEXT_WORDS", "OPEN_STATES", "REVIEW_KEYS", "TABS", "actions_for", "class_glyph", "elide_pieces",
            "fit_context", "in_document_order", "notes_for", "row_plain", "snippet_html",
            "snippet_plain", "snippet_text", "snippet_width", "tab_counts", "tab_of", "tab_rows",
            "where_text"]
@@ -168,26 +172,12 @@ def _pieces(diff: Diff) -> tuple[list[tuple[str, str]], bool]:
         return ([(kind, text)] if text else []), False
     partial = bool("".join(rp[0::2]).strip())
     if len(lp) == len(rp) and lp[0::2] == rp[0::2]:
-        out: list[tuple[str, str]] = []
-        for k in range(0, len(lp) - 1, 2):
-            gone, made, after = lp[k + 1], rp[k + 1], lp[k + 2]
-            out.append(("same", lp[k]))
-            out.append(("del", gone))
-            if gone and made and _word_edge(lp[k], True) and _word_edge(after, False):
-                out.append(("same", " "))  # two whole words: "Acme-Servizi Acme"
-            out.append(("ins", made))
-        out.append(("same", lp[-1]))
-        return [p for p in out if p[1]], partial
+        return aligned_pieces(lp, rp), partial  # a replaced or coded token whole: «old → new»
+    lp, rp = _split(left, token_spans(left, diff.left_spans)), _split(right, token_spans(right, diff.right_spans))
     out = [("del" if k % 2 else "same", t) for k, t in enumerate(lp)]
     out.append(("to", " → "))
     out += [("ins" if k % 2 else "same", t) for k, t in enumerate(rp)]
     return [p for p in out if p[1]], partial
-
-
-def _word_edge(text: str, before: bool) -> bool:
-    if not text:
-        return True
-    return (text[-1] if before else text[0]).isspace()
 
 
 def _elide_same(pieces: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -229,16 +219,41 @@ def _framed(diff: Diff, before: int, after: int) -> tuple[list[tuple[str, str]],
     return out, partial
 
 
+def elide_pieces(pieces: list[tuple[str, str]], width: float, measure: Callable[[str], float],
+                 measure_bold: Callable[[str], float]) -> list[tuple[str, str]]:
+    """``pieces`` cut from the END to fit ``width`` with a trailing "…"
+    (D5: a row never ends mid-glyph); the changed runs are measured bold."""
+    def w(kind: str, text: str) -> float:
+        return (measure_bold if kind in ("del", "ins") else measure)(text)
+    if sum(w(k, x) for k, x in pieces) <= width:
+        return pieces
+    room, out = width - measure("…"), []
+    for kind, text in pieces:
+        if w(kind, text) <= room:
+            out.append((kind, text))
+            room -= w(kind, text)
+            continue
+        while text and w(kind, text) > room:
+            text = text[:-1]
+        if text:
+            out.append((kind, text))
+        break
+    return [*out, ("gap", "…")]
+
+
 def snippet_html(diff: Diff, t: theme.Tokens, *, before: int = CONTEXT_WORDS,
-                 after: int = CONTEXT_WORDS) -> str:
+                 after: int = CONTEXT_WORDS, fit: tuple | None = None) -> str:
     """Rich text of ``diff``'s snippet in the colours of ``t``: the context
     words in the normal ink, the struck target run in PAPER colours in both
     themes (R34: a lone struck letter must read on dark chrome too) right
     against the inserted run — no gap: a hair space rendered as wide as a
     space and "senpelmo a" read as two words (U4); the pink and the yellow
     tell the letters apart — bold (on yellow when partial); a link's own
-    text is underlined, so it stands apart from the context around it."""
+    text is underlined, so it stands apart from the context around it.
+    ``fit`` = (width, measure, measure_bold): elided with "…" to that width."""
     pieces, partial = _framed(diff, before, after)
+    if fit is not None:
+        pieces = elide_pieces(pieces, *fit)
     paper = theme.LIGHT  # the struck run and the yellow carry paper colours in both modes
     link = diff.klass == "link"  # the link's own text underlined, the context not (U4)
     out = []
@@ -311,9 +326,9 @@ def snippet_plain(diff: Diff, *, before: int = CONTEXT_WORDS, after: int = CONTE
             gone.append(text)
         elif kind == "ins":
             made.append(text)
-        elif (text == " " and gone and not made and i + 1 < len(pieces)
+        elif (kind == "to" and gone and not made and i + 1 < len(pieces)
               and pieces[i + 1][0] == "ins"):
-            continue  # the space between two whole words belongs to the change
+            continue  # the arrow of a token shown whole belongs to the change
         else:
             flush()
             out.append(text)

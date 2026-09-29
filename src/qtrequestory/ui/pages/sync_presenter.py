@@ -39,6 +39,8 @@ class SyncPresenter(QObject):
     summary_changed = Signal(str)
     #: ``[(env, tone, text), ...]`` for the app-bar chip; see :meth:`state`.
     state_changed = Signal(list)
+    #: :class:`~.sync_badge.Attention` for the header chip, with every state.
+    attention_changed = Signal(object)
 
     def __init__(self, services: CoreServices, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -182,8 +184,13 @@ class SyncPresenter(QObject):
                          else (name, badge.tone, text))
         return items
 
+    def attention(self) -> sb.Attention:
+        """What the header chip asks of the user, from the same badges."""
+        return sb.attention_for({name: self.badge(name) for name in self.environments()})
+
     def emit_state(self) -> None:
         self.state_changed.emit(self.state())
+        self.attention_changed.emit(self.attention())
 
     def emit_summary(self) -> str:
         """Emit both the plain summary and the per-environment state."""

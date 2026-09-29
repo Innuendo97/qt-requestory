@@ -86,13 +86,14 @@ class CaseActionsMixin:
         try:
             ini = self.api.create_initiative(name)
         except FileExistsError:
-            self._notify(strings.OFFICINA_NEW_INITIATIVE_FAILED.format(
-                reason=strings.OFFICINA_INITIATIVE_EXISTS.format(name=name)))
+            reason = (strings.ELIMINA_NAME_PENDING if self.pending_named(name)
+                      else strings.OFFICINA_INITIATIVE_EXISTS).format(name=name)
+            self._notify(strings.OFFICINA_NEW_INITIATIVE_FAILED.format(reason=reason))
             return
         except (OSError, ValueError) as exc:
             self._notify(strings.OFFICINA_NEW_INITIATIVE_FAILED.format(reason=exc))
             return
-        self.list.show_initiatives(self.api.initiatives(), select=ini.id)
+        self.list.show_initiatives(self.listed_initiatives(), select=ini.id)
 
     def add_from_search(self) -> None:
         """The board's "Aggiungi chiamata…"."""
@@ -114,7 +115,7 @@ class CaseActionsMixin:
             return
         from qtrequestory.ui.pages.officina_pick_call import PickCallDialog
 
-        dialog = PickCallDialog(self.services, self.runner, self.api.initiatives(), current=self.ini.id,
+        dialog = PickCallDialog(self.services, self.runner, self.listed_initiatives(), current=self.ini.id,
                                 case=case, busy=self.case_busy, parent=self)
         try:
             plan = dialog.plan() if dialog.exec() else None
@@ -173,9 +174,13 @@ class CaseActionsMixin:
     def add_from_file(self) -> None:
         if self.ini is None:
             return
-        choice = ask_add_case(self, initiative_choices(self.api.initiatives()),
+        choice = ask_add_case(self, initiative_choices(self.listed_initiatives()),
                               current=self.ini.id, from_file=True)
         if choice is None:
+            return
+        if choice.create and self.pending_named(choice.initiative):  # its folder is still there (D6)
+            self._notify(strings.OFFICINA_ADD_FAILED.format(
+                reason=strings.ELIMINA_NAME_PENDING.format(name=choice.initiative)))
             return
         try:
             ini, case = create_case(self.services, choice)
@@ -275,13 +280,13 @@ class CaseActionsMixin:
             return
         if self.case_view.judging or self.case_view.acting:  # the menu is disabled meanwhile
             self._notify(strings.REVISIONE_WAIT_COMPARE)
-            self.case_view.profile_button.set_profile(case.review.profile, self.ini.profile)
+            self.case_view.profile_menu.set_profile(case.review.profile, self.ini.profile)
             return
         try:
             self.api.set_profile(self.ini, case, profile)
         except (OSError, ValueError) as exc:
             self._notify(strings.PROFILO_FAILED.format(reason=exc))
-            self.case_view.profile_button.set_profile(case.review.profile, self.ini.profile)
+            self.case_view.profile_menu.set_profile(case.review.profile, self.ini.profile)
             return
         self._toast(strings.PROFILO_SET.format(profile=profile_name(profile or self.ini.profile)))
         self._reload_initiative()

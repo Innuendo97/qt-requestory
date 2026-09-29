@@ -73,8 +73,8 @@ def test_a_case_with_an_unreadable_caso_json_cannot_be_edited_accepted_or_genera
 
     view = page.case_view
     assert view.case.load_error
-    for button in (view.editor_button, view.accept_button, view.regenerate_button,
-                   view.asis_button):
+    for button in (view.editor_action, view.accept_action, view.regenerate_button,
+                   view.asis_action):
         assert not button.isEnabled(), button.text()
     page.show_board()
     page.board.select_cases([case.id])
@@ -192,7 +192,7 @@ def test_a_new_version_after_acceptance_reopens_and_is_not_preselected(qtbot, pa
     wait_idle(qtbot, page)
 
     assert page.case_view.case.status == "open"
-    assert page.case_view.notice.text() == strings.OFFICINA_CASE_REOPENED
+    assert page.case_view.notice.message() == strings.OFFICINA_CASE_REOPENED
     page.show_board()
     assert strings.OFFICINA_STATUS_REOPENED in page.board.row_texts(case.id)[4]
     dialog = DeliveryDialog(fake_core, runner, page.ini)
@@ -223,16 +223,16 @@ def test_accept_is_disabled_while_the_case_runs(qtbot, page, fake_core, tmp_path
     case = open_case(page, fake_core, tmp_path)
     fake_core.officina.delay_s = 0.3
     page.regenerate_tobe([case.id])
-    assert not page.case_view.accept_button.isEnabled()
+    assert not page.case_view.accept_action.isEnabled()
     wait_idle(qtbot, page)
-    assert page.case_view.accept_button.isEnabled()
+    assert page.case_view.accept_action.isEnabled()
 
 
 # ------------------------------------------------ the generator on every send ---
 
 def test_the_busy_labels_name_the_generator(qtbot, page, fake_core, tmp_path):
     case = open_case(page, fake_core, tmp_path)
-    assert "svil" in page.case_view.env_label.text()
+    assert "svil" in page.case_view.title.toolTip()  # U2: the generator is in the title's tooltip
     fake_core.officina.delay_s = 0.3
     page.regenerate_tobe([case.id])
     running = strings.OFFICINA_GENERATING_ON.format(env="svil")

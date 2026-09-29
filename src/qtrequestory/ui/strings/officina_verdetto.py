@@ -4,7 +4,7 @@ Owned by the verdict styling (``ui/pages/officina_verdict_style.py``); the
 progress bar, the list and the board read the same constants, so a verdict
 is called the same everywhere. Verdict words are fixed by the spec: fatta,
 da fare, in corso, regressione, tollerata; the state "da verificare" and the
-flag "non risolta"; the classes variabile and rumore have no verdict.
+flag "non risolta"; the classes variabile, rumore and arredo have no verdict.
 """
 
 VERDETTO_REGRESSIONE = "regressione"
@@ -18,6 +18,8 @@ VERDETTO_FATTA = "fatta"
 VERDETTO_TOLLERATA = "tollerata"
 VERDETTO_RUMORE = "rumore"
 VERDETTO_VARIABILE = "variabile"
+#: Page furniture (page number, watermark): no verdict, ignored by default (ruling F3).
+VERDETTO_ARREDO = "arredo"
 #: A difference without a verdict (the AS-IS view: no three-way comparison).
 VERDETTO_NESSUNO = "differenza"
 
@@ -31,4 +33,5 @@ VERDETTO_ICON_FATTA = "✓"
 VERDETTO_ICON_TOLLERATA = "⊘"
 VERDETTO_ICON_RUMORE = "~"
 VERDETTO_ICON_VARIABILE = "{x}"
+VERDETTO_ICON_ARREDO = "◌"
 VERDETTO_ICON_NESSUNO = "·"

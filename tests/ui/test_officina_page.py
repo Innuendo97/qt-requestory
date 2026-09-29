@@ -254,7 +254,7 @@ def test_a_failed_generation_shows_the_reason_in_a_banner(qtbot, page, fake_core
     fake_core.officina.set_response(b"<html>errore del gateway</html>", status=502)
     page.case_view.regenerate_button.click()
     wait_idle(qtbot, page)
-    banner = page.case_view.banner.text()
+    banner = page.case_view.banner.message()
     assert "502" in banner and banner.startswith("Generazione non riuscita")
     assert fake_core.officina.load("Banco").cases[0].tobe_versions() == []
 
@@ -409,9 +409,9 @@ def test_payload_and_target_are_locked_while_the_case_is_queued(qtbot, page, fak
     fake_core.officina.delay_s = 0.3
     page.case_view.regenerate_button.click()
     view = page.case_view
-    assert not view.editor_button.isEnabled() and not view.target_button.isEnabled()
+    assert not view.editor_action.isEnabled() and not view.target_action.isEnabled()
     wait_idle(qtbot, page)
-    assert view.editor_button.isEnabled() and view.target_button.isEnabled()
+    assert view.editor_action.isEnabled() and view.target_action.isEnabled()
 
 
 def test_an_unexpected_generation_error_reads_in_italian_and_masked(qtbot, page, fake_core,
@@ -423,7 +423,7 @@ def test_an_unexpected_generation_error_reads_in_italian_and_masked(qtbot, page,
     monkeypatch.setattr(fake_core.officina, "generate", boom)
     page.case_view.regenerate_button.click()
     wait_idle(qtbot, page)
-    banner = page.case_view.banner.text()
+    banner = page.case_view.banner.message()
     assert banner.startswith("Generazione non riuscita: "
                              + strings.OFFICINA_GENERATION_INTERRUPTED)
     assert "SEGRETO" not in banner and "sig=***" in banner
@@ -463,22 +463,22 @@ def test_generate_missing_asis_only_touches_cases_without_one(qtbot, page, fake_
 def test_regenerating_the_asis_without_a_note_is_refused(qtbot, page, fake_core, tmp_path,
                                                          monkeypatch, shell):
     open_case(page, fake_core, tmp_path)
-    page.case_view.asis_button.click()  # the first AS-IS needs no note
+    page.case_view.asis_action.trigger()  # the first AS-IS needs no note
     wait_idle(qtbot, page)
-    assert page.case_view.asis_button.text() == strings.OFFICINA_REGENERATE_ASIS
+    assert page.case_view.asis_action.text() == strings.OFFICINA_REGENERATE_ASIS
     first = fake_core.officina.load("Banco").cases[0].asis()
     sent = len(fake_core.officina.requests)
 
     asked = []
     monkeypatch.setattr(officina_dialogs, "ask_note", lambda *a, **_k: asked.append(a) or None)
-    page.case_view.asis_button.click()
+    page.case_view.asis_action.trigger()
     assert asked, "a note is asked for"
     assert shell.statuses[-1] == strings.OFFICINA_ASIS_NOTE_REQUIRED
     assert len(fake_core.officina.requests) == sent, "nothing was sent"
     assert fake_core.officina.load("Banco").cases[0].asis() == first
 
     monkeypatch.setattr(officina_dialogs, "ask_note", lambda *_a, **_k: "nuovo master")
-    page.case_view.asis_button.click()
+    page.case_view.asis_action.trigger()
     wait_idle(qtbot, page)
     case = fake_core.officina.load("Banco").cases[0]
     assert case.history[-1]["note"] == "nuovo master"
@@ -539,7 +539,7 @@ def test_the_target_is_chosen_from_a_file(qtbot, page, fake_core, tmp_path, monk
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(canned_pdf("testo del cliente"))
     monkeypatch.setattr(officina_dialogs, "ask_open_file", lambda *_a, **_k: source)
-    page.case_view.target_button.click()
+    page.case_view.target_action.trigger()
     assert page.case_view.left.name.text() == "Target cliente.pdf"
     qtbot.waitUntil(lambda: page.case_view.left.showing_document(), timeout=10000)
 
@@ -547,10 +547,10 @@ def test_the_target_is_chosen_from_a_file(qtbot, page, fake_core, tmp_path, monk
 def test_mark_accepted_and_reopen(qtbot, page, fake_core, tmp_path, monkeypatch):
     open_case(page, fake_core, tmp_path)
     monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a, **_k: True)
-    page.case_view.accept_button.click()
+    page.case_view.accept_action.trigger()
     assert fake_core.officina.load("Banco").cases[0].status == "accepted"
-    assert page.case_view.accept_button.text() == strings.OFFICINA_REOPEN
-    page.case_view.accept_button.click()
+    assert page.case_view.accept_action.text() == strings.OFFICINA_REOPEN
+    page.case_view.accept_action.trigger()
     assert fake_core.officina.load("Banco").cases[0].status == "open"
 
 
@@ -605,7 +605,7 @@ def window(qtbot, fake_core, runner):
 def test_ctrl_3_opens_the_officina_tab(qtbot, window):
     assert "officina" in window.pages()
     assert isinstance(window.page("officina"), OfficinaPage)
-    assert list(window.app_bar.tabs) == ["search", "sync", "officina"]
+    assert list(window.app_bar.tabs) == ["search", "officina"]
     window.shortcuts["Ctrl+3"].activated.emit()
     assert window.current_page_key() == "officina"
     assert window.app_bar.tabs["officina"].toolTip() == "Officina (Ctrl+3)"
@@ -806,7 +806,7 @@ def test_the_case_view_draws_the_verdicts_of_compare_case(qtbot, page, fake_core
     assert [i.look.label for i in view.left.view.highlight_items(1)] == ["in corso"]
     assert view.left.view.highlight_items(2) == [], "an added text has no target words"
     assert len(view.diffs.texts()) == 2, "the list shows the same differences (same ids)"
-    view.diffs.list.setCurrentRow(1)
+    view.diffs.list.setCurrentRow(view.diffs.list_row(2))
     assert view.right.view.focused_difference() == 2
     assert (case.id, 1) in api.compare_case_calls
 

@@ -137,3 +137,54 @@ BACHECA_TIP_TWO_WAY = "⚠ a due vie: manca l'AS-IS"
 MINIMAPPA_TIP = "Una tacca per differenza, all'altezza in cui si trova: clic per andarci."
 #: On a segment. {label} = the verdict word, {page} = 1-based.
 MINIMAPPA_SEGMENT_TIP = "{label} · pag. {page}"
+
+# -- the compact case bar (phase 2.5, U2: spec §5, D15) ------------------------------
+# Owned by ``ui/pages/officina_case_bar.py``: one 36 px bar over the documents; the
+# long explanations are tooltips.
+#: The "‹" of the bar. {initiative} = the initiative's name.
+BARRA_BACK_TIP = "Torna alla bacheca di «{initiative}»"
+#: The case's name in the bar. {title} = "KEY · variante", {env} = the generator (or "nessuno").
+BARRA_TITLE_TIP = "{title}\nGeneratore: {env}"
+#: The AS-IS segment of the version switch.
+BARRA_ASIS_TIP = "Prima delle modifiche: la versione generata prima di modificare il template"
+#: The chip beside the switch when the version shown has the same text as the AS-IS.
+BARRA_SAME_AS_ASIS = "= AS-IS"
+#: Its tooltip. {version} = "v1", {env} = the case's generator.
+BARRA_SAME_AS_ASIS_TIP = ("{version} ha lo stesso testo dell'AS-IS: nessuna modifica ancora "
+                          "pubblicata su {env}")
+#: The same, for a case without a generator. {version}.
+BARRA_SAME_AS_ASIS_TIP_NO_ENV = ("{version} ha lo stesso testo dell'AS-IS: nessuna modifica ancora "
+                                 "pubblicata sul generatore")
+#: The primary button.
+BARRA_REGENERATE = "Rigenera (F5)"
+#: Its tooltip. {env} = the generator.
+BARRA_REGENERATE_TIP = "Genera un nuovo TO-BE su {env} (F5)"
+#: The filters button without a count (no comparison with filters yet).
+BARRA_FILTERS = "Filtri"
+#: With a count. {n} = the occurrences the active filters set aside.
+BARRA_FILTERS_N = "Filtri ({n})"
+BARRA_FILTERS_TIP = ("Filtri del confronto: che cosa è messo da parte (zone, variabili, rumore) "
+                     "e non conta come differenza.")
+#: The "⋯" menu: the profile submenu. {profile}.
+BARRA_PROFILE = "Profilo: {profile}"
+BARRA_PROFILE_INHERITED = "Profilo: {profile} (iniziativa)"
+#: The "⋯" menu entry that removes every "fatta" mark (enabled while there are some).
+BARRA_UNMARK_ALL = "Annulla i segni"
+#: A compact pill: {icon} = the verdict glyph, {n} = how many (the full words are its tooltip).
+BARRA_PILL = "{icon} {n}"
+#: The AS-IS view: its differences from the target are the whole work, drawn as "da fare".
+#: {n} = how many.
+BARRA_ASIS_TOTAL_TIP = ("AS-IS: {n} differenze dal target, disegnate come «da fare»: è il lavoro "
+                        "totale prima delle modifiche.")
+#: The chip of an AS-IS made with the case's previous call (click: regenerate it).
+BARRA_STALE_ASIS = "AS-IS da rigenerare"
+#: The chip of a failed generation (the reason is its tooltip).
+BARRA_FAILED = "Generazione non riuscita"
+#: The chip of the case's loading notes (the notes are its tooltip).
+BARRA_NOTICE = "Avvisi"
+#: Accessible names (fix round 1): what a screen reader says for the bare glyphs.
+#: {initiative} = the initiative's name.
+BARRA_BACK_NAME = "Torna all'iniziativa {initiative}"
+BARRA_MORE_NAME = "Altre azioni"
+#: The percentage. {pct} = 0..100, {version} = the judged TO-BE.
+BARRA_PERCENT_NAME = "Avanzamento {pct}%, v{version} contro target"

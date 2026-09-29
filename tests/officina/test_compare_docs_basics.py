@@ -145,7 +145,10 @@ def test_ten_page_documents_find_the_three_edits_deterministically(pdfs: Path):
     assert len(a.page_sizes) >= 10
     result = compare_text(a, b)
     ops = sorted(d.op for d in result.diffs if d.op != "pagine")
-    assert ops == ["cambiato", "in_piu", "sezione_assente"], _texts(result)
+    # phase 2.5: the deleted paragraph straddles a page break, and a difference
+    # never spans two places (compare.spread): one section on each page
+    assert ops == ["cambiato", "in_piu", "sezione_assente", "sezione_assente"], _texts(result)
+    assert " ".join(d.left_text for d in result.diffs if d.op == "sezione_assente") == paragraphs[30]
     assert compare_text(a, b) == compare_text(a, b), "deterministic"
 
 

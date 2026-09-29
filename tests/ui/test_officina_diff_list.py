@@ -50,9 +50,10 @@ def j(diff_id: int, verdict, y: float = 100.0, *, klass: str = "testo", op: str 
 
 
 def one_letter(diff_id: int = 1, verdict="da_fare", y: float = 100.0) -> Judged:
-    """"abilitata" → "abilitato": only the last letter changed."""
-    diff = dataclasses.replace(fake_diff("cambiato", "testo", "abilitata", "abilitato", diff_id=diff_id),
-                               left_spans=((8, 9),), right_spans=((8, 9),))
+    """"indirizo" → "indirizzo": one letter added (the one change still
+    marked letter by letter, I1b)."""
+    diff = dataclasses.replace(fake_diff("cambiato", "testo", "indirizo", "indirizzo", diff_id=diff_id),
+                               left_spans=((6, 6),), right_spans=((6, 7),))
     return Judged(placed(diff, y), verdict)
 
 
@@ -109,10 +110,10 @@ def _struck(html: str) -> str:
 
 def test_a_one_letter_diff_bolds_exactly_that_letter_on_yellow():
     html = snippet_html(one_letter().diff, theme.LIGHT)
-    assert _bold_chars(html) == "o", "only the changed character is bold"
-    assert _struck(html) == "a", "only the replaced target character is struck"
+    assert _bold_chars(html) == "z", "only the added character is bold"
+    assert _struck(html) == "", "nothing of the target was removed"
     assert theme.LIGHT.mark_yellow.lower() in html.lower()
-    assert snippet_plain(one_letter().diff) == "abilitat[a→o]"
+    assert snippet_plain(one_letter().diff) == "indiri[→z]zo"
 
 
 def test_on_dark_the_yellow_carries_dark_ink():
@@ -123,27 +124,68 @@ def test_on_dark_the_yellow_carries_dark_ink():
 
 
 def framed_one_letter() -> Diff:
-    """The draft's row: "sarà abilitat~~a~~**o** agli acquisti" (context from the fake, R33)."""
+    """A row: "sarà indiri**z**zo agli acquisti" (context from the fake, R33)."""
     return dataclasses.replace(
-        fake_diff("cambiato", "testo", "abilitata", "abilitato", before="La carta sarà",
+        fake_diff("cambiato", "testo", "indirizo", "indirizzo", before="La carta sarà",
                   after="agli acquisti online."),
-        left_spans=((8, 9),), right_spans=((8, 9),))
+        left_spans=((6, 6),), right_spans=((6, 7),))
 
 
 def test_the_snippet_shows_the_target_context_around_the_change():
     d = framed_one_letter()
-    assert snippet_plain(d) == "La carta sarà abilitat[a→o] agli acquisti online."
+    assert snippet_plain(d) == "La carta sarà indiri[→z]zo agli acquisti online."
     html = snippet_html(d, theme.LIGHT)
-    assert _bold_chars(html) == "o" and _struck(html) == "a", "the context is neither bold nor struck"
-    assert html.startswith("La carta sarà abilitat<s")
-    assert html.endswith("</b> agli acquisti online.")
+    assert _bold_chars(html) == "z" and _struck(html) == "", "the context is neither bold nor struck"
+    assert html.startswith("La carta sarà indiri<b")
+    assert html.endswith("</b>zo agli acquisti online.")
 
 
 def test_context_words_are_cut_with_an_ellipsis():
     d = framed_one_letter()
-    assert snippet_plain(d, before=1, after=2) == "… sarà abilitat[a→o] agli acquisti …"
-    assert snippet_plain(d, before=0, after=0) == "… abilitat[a→o] …"
-    assert snippet_text(d, before=1, after=0) == "… sarà abilitatao …"
+    assert snippet_plain(d, before=1, after=2) == "… sarà indiri[→z]zo agli acquisti …"
+    assert snippet_plain(d, before=0, after=0) == "… indiri[→z]zo …"
+    assert snippet_text(d, before=1, after=0) == "… sarà indirizzo …"
+
+
+def _spanned(target: str, generated: str, left_spans, right_spans) -> Diff:
+    return dataclasses.replace(fake_diff("cambiato", "testo", target, generated, before="Importo",
+                                         after="al mese."),
+                               left_spans=tuple(left_spans), right_spans=tuple(right_spans))
+
+
+@pytest.mark.parametrize(("target", "generated", "lspans", "rspans", "old", "new"), [
+    ("mensile: 12,50 euro", "mensile: 18,40 euro", [(10, 11), (12, 13)], [(10, 11), (12, 13)],
+     "12,50", "18,40"),                                                                           # number
+    ("edizione 04/2026", "edizione 05/2026", [(10, 11)], [(10, 11)], "04/2026", "05/2026"),       # date
+    ("codice CL123456", "codice CL654321", [(9, 15)], [(9, 15)], "CL123456", "CL654321"),         # code
+    ("carta abilitata", "carta abilitato", [(14, 15)], [(14, 15)], "abilitata", "abilitato"),     # replaced letter
+    ("Lorem ipsum", "LoReM ipsum", [(2, 3), (4, 5)], [(2, 3), (4, 5)], "Lorem", "LoReM"),         # two runs
+])
+def test_a_changed_number_date_code_or_multi_run_word_reads_old_then_new(target, generated, lspans, rspans,
+                                                                         old, new):
+    """I1b: «128,540» / «045/2026» / «abilitatao» never again: the token whole, «old → new»."""
+    d = _spanned(target, generated, lspans, rspans)
+    assert f"[{old}→{new}]" in snippet_plain(d)
+    html = snippet_html(d, theme.LIGHT)
+    assert _struck(html) == old and _bold_chars(html) == new
+    assert "</s><span" in html and " → </span><b" in html, "old struck, the arrow, new inserted"
+    assert f"{old} → {new}" in snippet_text(d)
+
+
+def test_the_readable_rule_holds_when_the_sides_do_not_line_up():
+    """Unaligned texts are shown one after the other: every changed token
+    is marked whole there («fi~~ss~~a» would have no counterpart to read against)."""
+    d = _spanned("rata 12,50 fissa", "canone 18,40", [(0, 4), (6, 7), (14, 16)], [(0, 6), (8, 9)])
+    html = snippet_html(d, theme.LIGHT)
+    assert _struck(html) == "rata12,50fissa" and _bold_chars(html) == "canone18,40"
+
+
+def test_a_letter_added_or_removed_inside_a_word_keeps_its_letter_marked():
+    added = _spanned("indirizo", "indirizzo", [(6, 6)], [(6, 7)])
+    removed = _spanned("indirizzo", "indirizo", [(6, 7)], [(6, 6)])
+    assert snippet_plain(added) == "Importo indiri[→z]zo al mese."
+    assert snippet_plain(removed) == "Importo indiri[z→]zo al mese."
+    assert _struck(snippet_html(removed, theme.LIGHT)) == "z"
 
 
 def test_an_insertion_sits_between_its_context_words():
@@ -154,26 +196,27 @@ def test_an_insertion_sits_between_its_context_words():
 def test_fit_context_drops_words_until_the_line_fits():
     d = framed_one_letter()
     assert fit_context(d, 10_000, len) == (CONTEXT_WORDS, CONTEXT_WORDS)
-    before, after = fit_context(d, len("… sarà abilitatao agli …"), len)
+    before, after = fit_context(d, len("… sarà indirizzo agli …"), len)
     assert (before, after) == (1, 1)
     assert fit_context(d, 3, len) == (0, 0), "the change itself always stays"
 
 
 def test_the_struck_run_uses_paper_colours_in_both_themes_right_against_the_inserted_one():
     """R34: the target's letter must read on its own, also on dark chrome."""
+    removed = _spanned("indirizzo", "indirizo", [(6, 7)], [(6, 6)])
     for tokens in (theme.LIGHT, theme.DARK):
-        html = snippet_html(one_letter().diff, tokens)
+        html = snippet_html(removed, tokens)
         style = re.search(r"<s style='([^']*)'", html).group(1).lower()
         assert theme.LIGHT.bad.lower() in style and theme.LIGHT.bad_bg.lower() in style
         assert "font-weight:700" in style
-        assert "</s><b" in html, "no gap: a hair space read as a space (U4)"
+        assert "indiri<s" in html and "</s>zo" in html, "no gap: a hair space read as a space (U4)"
 
 
-def test_a_whole_word_change_is_struck_then_bold_with_a_space():
+def test_a_whole_word_change_is_struck_then_bold_with_an_arrow():
     d = fake_diff("cambiato", "testo", "Acme-Servizi", "Acme")
     html = snippet_html(d, theme.LIGHT)
     assert _struck(html) == "Acme-Servizi" and _bold_chars(html) == "Acme"
-    assert "</s> <b" in html
+    assert "</s><span" in html and " → </span><b" in html
     assert theme.LIGHT.mark_yellow.lower() not in html.lower(), "no yellow for an entirely changed text"
 
 
@@ -337,6 +380,9 @@ def test_all_fatte_reads_all_done(qtbot):
 
 
 def test_a_theme_switch_recolours_the_snippets(qtbot, panel, monkeypatch):
+    font = panel.font()
+    font.setPointSizeF(5)  # offscreen fonts are wide: room for the whole change, as with the real one
+    panel.setFont(font)
     panel.show_judged([one_letter(1)], 3, {})
     assert theme.LIGHT.mark_yellow.lower() in panel.snippet_html(1).lower()
     monkeypatch.setattr(theme, "tokens", lambda: theme.DARK)
@@ -377,7 +423,7 @@ def test_f_in_the_list_marks_the_difference_and_the_list_moves_on(qtbot, page, f
     view, api = page.case_view, fake_core.officina
     assert view.diffs.tab_texts()[:2] == ["Da guardare 2", "Da verificare 0"]
     view.diffs.list.setFocus()
-    view.diffs.list.setCurrentRow(0)
+    view.diffs.list.setCurrentRow(view.diffs.list.selectable_rows()[0])  # row 0: the type group
     assert view.right.view.focused_difference() == view.diffs.current_id()
     calls = len(api.compare_case_calls)
     QTest.keyClick(view.diffs.list, Qt.Key.Key_F)  # saved in the review worker (U4)
@@ -427,7 +473,7 @@ def test_a_click_on_a_highlight_selects_the_row_in_its_tab(qtbot, page, fake_cor
     tolerated = next(x.diff.id for x in view.docs.judged.judged if x.verdict == "tollerata")
     view.right.view.difference_clicked.emit(tolerated)
     assert view.diffs.current_tab() == "tollerate" and view.diffs.current_id() == tolerated
-    view.progress.diff_selected.emit(1)
+    view.right.view.minimap_chosen.emit(1)  # U2: the minimap, not the bar's strip, points at it
     assert view.diffs.current_id() == 1
 
 
@@ -481,27 +527,46 @@ def test_a_narrow_row_shows_fewer_context_words(qtbot):
     panel.show()
     d = framed_one_letter()
     panel.show_judged([Judged(d, "da_fare")], 1, {})
-    panel.resize(900, 400)
-    qtbot.wait(50)
+    row = panel.list.itemWidget(panel.list.item(panel.list.selectable_rows()[0]))
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    bold = QFont(row.snippet.font())
+    bold.setBold(True)
+    normal, strong = QFontMetrics(row.snippet.font()), QFontMetrics(bold)
+    # the panel is 292 px (U3): the row is fitted by hand, beside its pill and zone · page
+    beside = row.verdict.width() + row.where.sizeHint().width() + 40
+    row.fit(beside + normal.horizontalAdvance("… La carta Acme-Servizi sarà abilitata agli acquisti online dal …")
+            + strong.horizontalAdvance("z") + 40)
     wide = panel.snippet_html(d.id)
-    panel.resize(250, 400)
-    qtbot.wait(50)
+    row.fit(beside + strong.horizontalAdvance("indirizzo") + normal.horizontalAdvance("… … ") + 10)
     narrow = panel.snippet_html(d.id)
     assert "La carta" in wide and "…" not in wide
-    assert "…" in narrow and "abilitat" in narrow
+    assert "…" in narrow and "indiri" in narrow
 
 
-def test_the_asis_view_keeps_the_plain_list_without_tabs(qtbot, page, fake_core, tmp_path):
+def test_the_asis_view_speaks_the_same_language_read_only(qtbot, page, fake_core, tmp_path):
+    """U3: the AS-IS list is no longer the phase-1 list: the same tabs and
+    type groups, its differences "da fare" (the whole work); F / T / V do nothing."""
     from tests.fakes.fake_core import canned_pdf
 
     open_case(page, fake_core, tmp_path)
     fake_core.officina.set_response(canned_pdf("MOD_TEST documento generato dal generatore vero"))
-    page.case_view.asis_button.click()
+    page.case_view.asis_action.trigger()
     wait_idle(qtbot, page)
     page.open_case(page.case_id, "asis")
-    qtbot.waitUntil(lambda: bool(page.case_view.diffs.texts()), timeout=10000)
-    assert page.case_view.diffs.texts() == ["pag. 1 · cambiato\n«finto» → «vero»"]
-    assert not page.case_view.diffs.tabs_visible()
+    diffs = page.case_view.diffs
+    qtbot.waitUntil(lambda: bool(diffs.row_ids()), timeout=10000)
+    assert diffs.tabs_visible() and diffs.tab_texts()[0] == "Da guardare 1"
+    (text,) = diffs.texts()
+    assert text.startswith(strings.VERDETTO_DA_FARE) and "[finto→vero]" in text
+    assert [g.tipo for g in diffs.groups()] == ["parola"], "grouped by type like a TO-BE (the real engine: one word)"
+    asked = []
+    diffs.action_requested.connect(lambda *a: asked.append(a))
+    diffs.action_unavailable.connect(lambda *a: asked.append(a))
+    diffs.select(diffs.row_ids()[0])
+    for key in (Qt.Key.Key_F, Qt.Key.Key_T, Qt.Key.Key_V):
+        QTest.keyClick(diffs.list, key)
+    assert asked == [], "nothing to judge in the AS-IS view"
 
 
 def test_the_tutte_tab_counts_the_inactive_entries(qtbot):
@@ -631,6 +696,7 @@ def test_the_asis_view_uses_the_cases_profile(qtbot, fake_core, runner, pdf_fold
     page.refresh()
     open_asis()
     assert view.docs.profile == "stretto"
-    rows = [view.diffs.list.item(i).text() for i in range(view.diffs.list.count())]
-    assert rows and all(strings.ELENCO_CLASS_STILE in r or strings.ELENCO_CLASS_SPAZIATURA in r for r in rows)
+    shown = {d.id: d for d in view.docs.comparison.diffs}
+    rows = [shown[i] for i in view.diffs.row_ids()]
+    assert rows and all(d.klass in ("stile", "spaziatura") for d in rows)
     assert view.acceptance_warning() == strings.OFFICINA_ACCEPT_WITH_DIFFS

@@ -1,5 +1,6 @@
-"""Officina phase 2 (U2): the progress bar, the verdict strip, the review
-banners and the profile menu of the case view (spec §5.3, §7.1).
+"""Officina phase 2 (U2): the progress, the verdict strip, the review
+messages and the profile menu of the case view (spec §5.3, §7.1); since
+phase 2.5 (U2) they live in the compact case bar (``test_officina_case_bar``).
 
 Offscreen, on the fake core: ``compare_case`` is scripted by canned diffs
 (``tests/fakes/fake_verdict``), the review state (marks, profile) is real.
@@ -17,7 +18,6 @@ from PySide6.QtTest import QTest
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import CaseSummary, Judged, Verification, Word
 from qtrequestory.ui.pages.officina_page import OfficinaPage
-from qtrequestory.ui.pages.officina_banners import STRIP_MAX_H
 from qtrequestory.ui.pages.officina_progress import (
     ProgressBar,
     VerdictStrip,
@@ -63,14 +63,14 @@ def test_the_pills_follow_the_spec_order_then_the_dimmed_ones():
     mark out of the mildest verdict, the non risolta also in its verdict."""
     assert pill_texts(SUMMARY) == [
         ("▲ 1 regressione", "bad", False),
-        ("○! 1 non risolta", "warn", False),
+        ("○! 1 non risolta", "flag", False),
         ("○ 3 da fare", "warn", False),
         ("◐ 1 in corso", "progress", False),
-        ("✓? 1 da verificare", "ok", False),
+        ("✓? 1 da verificare", "verify", False),
         ("✓ 6 fatte", "ok", False),
         ("⊘ 3 tollerate", "neutral", True),
         ("{x} 14 variabili", "variable", True),
-        ("~ 2 rumore", "neutral", True),
+        ("~ 2 rumore", "noise", True),
     ]
 
 
@@ -100,8 +100,12 @@ def test_the_bar_shows_the_percentage_the_version_and_the_pills(qtbot):
     bar.show_summary(SUMMARY, [])
     assert not bar.isHidden()
     assert bar.percent.text() == "60%"
-    assert bar.version_label.text() == "v3 contro target"
+    assert bar.percent.toolTip().startswith("v3 contro target")
     assert bar.pill_texts() == [t for t, _tone, _dim in pill_texts(SUMMARY)]
+    # U2 (phase 2.5): compact — glyph and number; the words are the tooltip
+    assert bar.pill_for("regressione").text().endswith("1")
+    assert bar.pill_for("regressione").toolTip() == "▲ 1 regressione"
+    assert bar.pill_for("non_risolta").toolTip().endswith(strings.AVANZAMENTO_NON_RISOLTA_TIP)
     main, dimmed = bar.pill_groups()
     assert len(main) == 6 and len(dimmed) == 3
     assert bar.dimmed_box.graphicsEffect() is not None, "tollerate/variabili/rumore are dimmed"
@@ -184,20 +188,15 @@ def test_the_case_view_shows_the_progress_of_the_judged_version(qtbot, page, fak
     bar = page.case_view.progress
     assert not bar.isHidden()
     assert bar.percent.text() == "33%"  # 1 fatta / (1 + 1 da fare + 1 regressione)
-    assert bar.version_label.text() == "v1 contro target"
+    assert bar.percent.toolTip().startswith("v1 contro target")
     assert bar.pill_texts() == ["▲ 1 regressione", "○ 1 da fare", "✓ 1 fatta"]
-    ids = [diff_id for diff_id, _state in bar.strip.segments()]
-    regression = next(i for i, s in bar.strip.segments() if s == "regressione")
-    bar.strip.diff_selected.emit(regression)
-    assert page.case_view.right.view.focused_difference() == regression
-    assert len(ids) == 3
 
     api.generate(page.ini, page._case(case.id), "asis")
     page._reload_initiative()
-    page.open_case(page.case_id, "asis")  # the AS-IS is not judged: no bar
+    page.open_case(page.case_id, "asis")  # the AS-IS is not judged: its total, no percentage (U2)
     qtbot.waitUntil(lambda: page.case_view.docs is not None
                     and page.case_view.docs.right.version.kind == "asis", timeout=10000)
-    assert page.case_view.progress.isHidden()
+    assert page.case_view.progress.percent.isHidden()
 
 
 def test_a_tobe_without_text_shows_its_note_not_a_verdict(qtbot, page, fake_core, tmp_path):
@@ -246,7 +245,7 @@ def test_the_marks_banner_comes_and_goes_with_the_marks(qtbot, page, fake_core, 
     assert "rigenera il TO-BE (F5)" in banners.marks_text()
 
     calls = len(api.compare_case_calls)
-    banners.unmark_button.click()  # saved in the review worker (U4), then judged again
+    page.case_view.unmark_action.trigger()  # "⋯" → "Annulla i segni": saved in the review worker
     qtbot.waitUntil(lambda: len(api.compare_case_calls) > calls and not page.case_view.acting,
                     timeout=10000)
     assert ("unmark_all", case.id) in api.review_actions
@@ -297,9 +296,6 @@ def test_a_newer_tobe_shows_the_outcome_of_the_verification(qtbot, page, fake_co
                     and page.case_view.docs.judged.version == 2, timeout=10000)
     banners = page.case_view.banners
     assert banners.outcome_text() == "v2: verificate 2 modifiche segnate — 1 risolta, 1 non risolta"
-    assert banners.outcome.property("banner") == "warn"
-    assert "<b>v2: verificate 2 modifiche segnate</b>" in banners.outcome.label.text()
-    assert banners.outcome.height() <= STRIP_MAX_H and banners.marks.maximumHeight() <= STRIP_MAX_H
     assert banners.marks_text() == "", "the verified marks are gone"
 
     _open_version(qtbot, page, "v1", len(api.compare_case_calls), api)
@@ -307,10 +303,7 @@ def test_a_newer_tobe_shows_the_outcome_of_the_verification(qtbot, page, fake_co
     _open_version(qtbot, page, "v2", len(api.compare_case_calls), api)
     assert banners.outcome_text().startswith("v2: verificate 2")
     view = page.case_view
-    assert view.progress.outcome.isHidden()
-    view.progress.strip.diff_selected.emit(view.progress.strip.segments()[0][0])  # next action
-    assert banners.outcome_text() == "", "the outcome folds into the bar"
-    assert not view.progress.outcome.isHidden()
+    assert not view.progress.outcome.isHidden(), "a chip of the bar (U2), never a strip"
     assert view.progress.outcome.text() == "v2: 1/2 risolte"
     assert view.progress.outcome.toolTip().startswith("v2: verificate 2 modifiche segnate")
     assert view.progress.outcome.property("pill") == "warn"
@@ -357,16 +350,17 @@ def test_the_review_writes_wait_for_a_running_compare(qtbot, page, fake_core, tm
     api.mark_done(page._case(case.id), page.case_view.docs.judged.judged[0], 1)
     _open_version(qtbot, page, "v1", len(api.compare_case_calls), api)
     view = page.case_view
-    assert view.profile_button.isEnabled() and view.banners.unmark_button.isEnabled()
+    assert view.profile_menu.isEnabled() and view.unmark_action.isEnabled()
     view.set_judging(True)
-    assert not view.profile_button.isEnabled() and not view.banners.unmark_button.isEnabled()
+    assert not view.profile_menu.isEnabled() and not view.unmark_action.isEnabled()
+    assert not view.profile_menu.menuAction().isEnabled(), "the submenu's entry in ⋯ too"
     page.unmark_all()
     page.set_case_profile("stretto")
     assert ("unmark_all", case.id) not in api.review_actions
     assert ("set_profile", case.id) not in api.review_actions
     assert page._window.statuses[-1] == strings.REVISIONE_WAIT_COMPARE
     view.set_judging(False)
-    assert view.profile_button.isEnabled()
+    assert view.profile_menu.isEnabled()
 
 
 def test_the_percentage_rounds_down():
@@ -393,11 +387,11 @@ def test_the_profile_menu_saves_the_profile_and_compares_again(qtbot, page, fake
     api.set_canned(case.id, 1, [placed(fake_diff("cambiato", "stile", "Titolo", "Titolo"), 100)])
     _open_version(qtbot, page, "v1", len(api.compare_case_calls), api)
     view = page.case_view
-    button = view.profile_button
-    assert [a.text() for a in button.menu().actions() if not a.isSeparator()] == [
+    button = view.profile_menu  # "⋯" → "Profilo: …" (U2)
+    assert [a.text() for a in button.actions() if not a.isSeparator()] == [
         strings.PROFILO_TOLLERANTE, strings.PROFILO_STRETTO, strings.PROFILO_SOLO_TESTO,
         strings.PROFILO_INIZIATIVA.format(profile=strings.PROFILO_TOLLERANTE)]
-    assert button.current() is None and strings.PROFILO_TOLLERANTE in button.text()
+    assert button.current() is None and strings.PROFILO_TOLLERANTE in button.title()
     assert view.docs.judged.judged[0].verdict == "tollerata"
 
     calls = len(api.compare_case_calls)
@@ -408,7 +402,7 @@ def test_the_profile_menu_saves_the_profile_and_compares_again(qtbot, page, fake
                     timeout=10000)
     assert page._case(case.id).review.profile == "stretto"
     assert view.docs.judged.judged[0].verdict == "da_fare", "stile counts when strict"
-    assert button.current() == "stretto" and strings.PROFILO_STRETTO in button.text()
+    assert button.current() == "stretto" and strings.PROFILO_STRETTO in button.title()
 
     button.action_for(None).trigger()  # "Come l'iniziativa"
     qtbot.waitUntil(lambda: view.docs is not None and view.docs.judged is not None
@@ -426,9 +420,9 @@ def test_a_refused_profile_save_is_said_and_changes_nothing(qtbot, page, fake_co
         raise ValueError("caso.json non è leggibile")
 
     monkeypatch.setattr(fake_core.officina, "set_profile", refuse)
-    page.case_view.profile_button.action_for("solo_testo").trigger()
+    page.case_view.profile_menu.action_for("solo_testo").trigger()
     assert any("caso.json non è leggibile" in s for s in page._window.statuses)
-    assert page.case_view.profile_button.current() is None
+    assert page.case_view.profile_menu.current() is None
 
 
 # ------------------------------------------------- the lock of a case (U1) ---
@@ -518,17 +512,17 @@ def test_accepting_with_open_differences_says_what_is_left(qtbot, page, fake_cor
     _open_version(qtbot, page, "v1", len(api.compare_case_calls), api)
     asked: list[str] = []
     monkeypatch.setattr(officina_dialogs, "confirm", lambda _p, _t, text: asked.append(text) or True)
-    page.case_view.accept_button.click()
+    page.case_view.accept_action.trigger()
     assert asked == [strings.OFFICINA_ACCEPT_REMAINING.format(
         parts="1 regressione, 1 da fare, 1 da verificare")]
     assert api.load(page.ini.id).cases[0].status == "accepted"
-    page.case_view.accept_button.click()  # reopen
+    page.case_view.accept_action.trigger()  # reopen
 
     api.set_canned(case.id, 1, [])
     api.unmark_all(page._case(case.id))
     _open_version(qtbot, page, "v1", len(api.compare_case_calls), api)
     asked.clear()
-    page.case_view.accept_button.click()
+    page.case_view.accept_action.trigger()
     assert asked == [], "nothing left: no question"
 
 

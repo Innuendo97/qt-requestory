@@ -37,6 +37,9 @@ from qtrequestory.ui.contracts import (
     Version,
 )
 
+from qtrequestory.officina.compare.filter_model import RENAMED_RULES, advanced_filter_id, apply_choices, prune_choices
+
+from tests.fakes.fake_filters import FakeFiltersMixin
 from tests.fakes.fake_verdict import FAKE_PRESETS, fake_comparison, fake_diff, fake_inactive, fake_judge, norm
 
 if TYPE_CHECKING:
@@ -112,7 +115,7 @@ class _CannedResponse(io.BytesIO):
         return self.status
 
 
-class FakeOfficinaApi:
+class FakeOfficinaApi(FakeFiltersMixin):
     """The REAL ``OfficinaService`` on real files under the fake's root, with
     only the two outside worlds replaced: the HTTP generator answers
     in-process (a canned PDF by default; no socket is ever opened) and
@@ -165,6 +168,16 @@ class FakeOfficinaApi:
       sources, ``("", "")`` for a PDF case). ``review_actions`` records every
       action as ``(method name, case id or None)``; ``compare_case_calls``
       records ``(case id, version number)``.
+
+    **Phase 2.5 — the Filtri panel and the control generation**
+    (``filters``/``set_filters``/``control_state``): scripted rows and
+    control state, real saved switches — see ``tests/fakes/fake_filters.py``
+    (``set_filter_groups``, ``set_control_state``, ``fake_group``,
+    ``fake_occurrence``). ``fake_diff`` takes ``zone``/``tipo``/``prova``/``nome``.
+
+    **Phase 2.5 — deleting an initiative** is the real one on the real folder;
+    ``delete_error = "..."`` makes it fail like a file in use
+    (``PermissionError``, nothing touched), ``deleted`` lists what went.
     """
 
     def __init__(self, root: Path, config_source: Callable[[], Config], index: FakeIndexApi | None = None) -> None:
@@ -192,8 +205,13 @@ class FakeOfficinaApi:
         self.dom_views: dict[str, tuple[str, str]] = {}
         self.review_actions: list[tuple[str, str | None]] = []
         self.compare_case_calls: list[tuple[str, int]] = []
+        #: ``delete_initiative`` raises ``PermissionError`` with this text (a file in use).
+        self.delete_error: str | None = None
+        #: The ids ``delete_initiative`` really deleted, in order.
+        self.deleted: list[str] = []
+        self._init_filters()
         self._service = OfficinaService(config_source, index=index, opener=self._open,
-                                        html_to_pdf=self._html_to_pdf)
+                                        html_to_pdf=self._html_to_pdf, control_runner=None)  # scripted state
 
     # -- knobs -------------------------------------------------------------
 
@@ -293,6 +311,14 @@ class FakeOfficinaApi:
     def create_initiative(self, name: str) -> Initiative:
         return self._service.create_initiative(name)
 
+    def delete_initiative(self, ini: Initiative) -> None:
+        """The real deletion (path checks and all); ``delete_error`` first,
+        as if a file inside were open (nothing is touched then)."""
+        if self.delete_error is not None:
+            raise PermissionError(13, self.delete_error, str(ini.folder))
+        self._service.delete_initiative(ini)
+        self.deleted.append(ini.id)
+
     def load(self, initiative_id: str) -> Initiative:
         return self._service.load(initiative_id)
 
@@ -358,7 +384,7 @@ class FakeOfficinaApi:
         asis = fake_comparison(canned[0]) if 0 in canned else None
         profile: Profile = case.review.profile or ini.profile or "tollerante"
         judged, summary, verification, review = fake_judge(
-            tobe, asis, case.review, profile, version.number, self._now())
+            tobe, asis, case.review, profile, version.number, self._now(), self._tolerated(ini, case))
         latest = case.latest_tobe()
         if not (tobe.left_has_text and tobe.right_has_text):
             pass  # R49: nothing judged, nothing saved
@@ -371,7 +397,7 @@ class FakeOfficinaApi:
                 review, summary=case.review.summary,
                 unresolved=[e for e in case.review.unresolved if e[0] not in again] + found))
         return CaseComparison(version.number, judged, summary, tobe, asis, verification, profile,
-                              fake_inactive(review, judged))
+                              fake_inactive(review, judged), self._comparison_filters(ini, case, judged))
 
     @staticmethod
     def _now() -> str:
@@ -449,18 +475,23 @@ class FakeOfficinaApi:
     def set_noise_rules(self, ini: Initiative, case: Case | None, rules: list[NoiseRule],
                         presets: list[str] | None = None) -> None:
         _refuse_duplicate_names(rules)
-        taken = {p.name for p in FAKE_PRESETS}
+        taken = {p.name for p in FAKE_PRESETS} | set(RENAMED_RULES)
         taken |= ({r.name for r in ini.noise_rules} if case is not None
                   else {r.name for c in ini.cases for r in c.review.noise_rules})
         for rule in rules:
             if rule.name in taken:  # across levels too, like the real service
                 raise ValueError(f"regola di rumore «{rule.name}»: nome già usato")
-        if case is not None:
-            self._update_review("set_noise_rules", case, noise_rules=list(rules))
-        elif presets is not None:
-            self._commit_initiative("set_noise_rules", ini, noise_rules=list(rules), noise_presets=list(presets))
-        else:
-            self._commit_initiative("set_noise_rules", ini, noise_rules=list(rules))
+        presets_names = [p.name for p in FAKE_PRESETS]
+        if case is not None:  # F4: stale avanzate.* keys pruned in the same save, like the service
+            names = [*presets_names, *(r.name for r in ini.noise_rules), *(r.name for r in rules)]
+            self._update_review("set_noise_rules", case, noise_rules=list(rules),
+                                filters=prune_choices(case.review.filters, names))
+            return
+        names = [*presets_names, *(r.name for r in rules), *(r.name for c in ini.cases for r in c.review.noise_rules)]
+        filters = prune_choices(ini.filters, names)
+        if presets is not None:  # legacy: the 1.3.x checkboxes become the initiative's filtri defaults
+            filters = apply_choices(filters, {advanced_filter_id(n): n in presets for n in presets_names})
+        self._commit_initiative("set_noise_rules", ini, noise_rules=list(rules), filters=filters)
 
     def noise_presets(self) -> list[NoiseRule]:
         return [dataclasses.replace(p) for p in FAKE_PRESETS]

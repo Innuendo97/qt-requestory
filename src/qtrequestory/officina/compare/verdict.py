@@ -9,15 +9,18 @@ first rule that applies:
 1. an anchor in ``review.not_variables`` turns a ``variabile`` diff into
    ``testo`` (anchor unchanged, so "variabile di nuovo" still finds it; ruling
    R36), with the character spans of its two texts;
-2. ``variabile`` / ``rumore`` → no verdict (``None``);
+2. ``variabile`` / ``rumore`` / ``arredo`` → no verdict (``None``; ruling F3);
 3. a class the profile does not count (``classify.counts``) → ``tollerata``;
+   so is a difference whose ``tipo`` is in ``tolerated_tipi`` (the "Da
+   decidere" rows switched to «Tollera tutte», ``decidere.maiuscole`` /
+   ``decidere.punteggiatura``), with the note :func:`tipo_note`;
 4. a tolerance with the same anchor AND the same normalised generated text
    (:func:`generated_text`) → ``tollerata``, with its note;
 5. two-way → ``da_fare``; else the same anchor in AS-IS↔target: same
    generated text → ``da_fare``, different → ``in_corso`` (``previous_text``
    = the AS-IS text); not in AS-IS → ``regressione``.
 
-Then every counting AS-IS difference whose anchor is absent from TO-BE is a
+Then every counting AS-IS difference (not of a tolerated ``tipo``) whose anchor is absent from TO-BE is a
 ``fatta``: the entry carries the AS-IS diff itself (its left side = the
 target words, for the target-side underline).
 
@@ -33,7 +36,11 @@ of the compared version (or a later one) is not verified: its open difference
 is ``marked=True`` and keeps its verdict. A mark whose difference does not
 count right now (``tollerata`` by profile or by hand, or no verdict) is
 DORMANT (R32): not verified, not ``marked``, not in the verification, kept in
-the review — live again when the difference counts again. A remembered "non
+the review — live again when the difference counts again. So is a mark made
+before phase 2.5 (``Mark.engine`` 1) whose anchor matches nothing: the new
+engine anchors zone text and body contexts differently, so its difference
+may still be there under another anchor — it is never counted resolved
+(final review M4); it stays inactive (:func:`inactive`). A remembered "non
 risolta" lasts while its difference is present with the same anchor and
 generated text (flagged only while it counts) and is dropped when the
 difference disappears or its generated text changes.
@@ -66,11 +73,12 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 from qtrequestory.officina.compare.anchors import disambiguate
 from qtrequestory.officina.compare.classify import counts
 from qtrequestory.officina.compare.model import (
+    NO_VERDICT,
     Anchor,
     CaseSummary,
     Comparison,
@@ -81,14 +89,19 @@ from qtrequestory.officina.compare.model import (
 )
 from qtrequestory.officina.compare.normalise import normalise_token
 from qtrequestory.officina.compare.worddiff import char_spans
-from qtrequestory.officina.model_review import Mark, Review
+from qtrequestory.officina.model_review import MARK_ENGINE, Mark, Review
 
-__all__ = ["OPEN", "generated_text", "has_text", "inactive", "judge"]
+__all__ = ["OPEN", "generated_text", "has_text", "inactive", "judge", "tipo_note"]
 
 log = logging.getLogger(__name__)
 
 #: The verdicts a difference can be "segnata fatta" from.
 OPEN: frozenset[str] = frozenset({"da_fare", "in_corso", "regressione"})
+
+
+def tipo_note(tipo: str) -> str:
+    """The note of a difference tolerated by a "Tollera tutte" switch."""
+    return f"Tollera tutte: solo {tipo}"
 
 
 def generated_text(diff: Diff) -> str:
@@ -99,7 +112,8 @@ def generated_text(diff: Diff) -> str:
 
 
 def judge(tobe: Comparison, asis: Comparison | None, review: Review, profile: Profile, version: int, *,
-          when: str = "") -> tuple[tuple[Judged, ...], CaseSummary, Verification | None, Review]:
+          when: str = "", tolerated_tipi: Collection[str] = ()
+          ) -> tuple[tuple[Judged, ...], CaseSummary, Verification | None, Review]:
     """``(judged, summary, verification, updated review)`` for TO-BE
     ``version`` (see module doc). ``verification`` is None when no mark was
     verified (none due, or all dormant). ``review`` is not modified; the returned one has the verified marks
@@ -122,9 +136,11 @@ def judge(tobe: Comparison, asis: Comparison | None, review: Review, profile: Pr
     asis_diffs = [effective(d) for d in asis.diffs] if asis is not None else []
     tobe_diffs, asis_diffs = _made_unique(tobe_diffs, "TO-BE"), _made_unique(asis_diffs, "AS-IS")
     asis_by = {d.anchor: d for d in asis_diffs}
-    judged = [_judge_one(d, asis is None, asis_by, review, profile) for d in tobe_diffs]
+    tolerated = frozenset(tolerated_tipi)
+    judged = [_judge_one(d, asis is None, asis_by, review, profile, tolerated) for d in tobe_diffs]
     at = {d.anchor: i for i, d in enumerate(tobe_diffs)}          # TO-BE entries only, never "fatta"
-    judged += [Judged(d, "fatta") for d in asis_diffs if d.anchor not in at and counts(d, profile)]
+    judged += [Judged(d, "fatta") for d in asis_diffs
+               if d.anchor not in at and counts(d, profile) and d.tipo not in tolerated]
 
     due = [m for m in review.marks if m.version < version]
     unresolved = list(review.unresolved)
@@ -200,11 +216,14 @@ def inactive(review: Review, judged: Sequence[Judged]) -> int:
             + sum(m.anchor not in marked for m in review.marks))
 
 
-def _judge_one(d: Diff, two_way: bool, asis_by: dict[Anchor, Diff], review: Review, profile: Profile) -> Judged:
-    if d.klass in ("variabile", "rumore"):
+def _judge_one(d: Diff, two_way: bool, asis_by: dict[Anchor, Diff], review: Review, profile: Profile,
+               tolerated: frozenset[str] = frozenset()) -> Judged:
+    if d.klass in NO_VERDICT:
         return Judged(d, None)
     if not counts(d, profile):
         return Judged(d, "tollerata")
+    if d.tipo in tolerated:
+        return Judged(d, "tollerata", tolerated_note=tipo_note(d.tipo))
     text = generated_text(d)
     for t in review.tolerances:
         if t.anchor == d.anchor and t.generated == text:
@@ -227,6 +246,9 @@ def _verify(judged: list[Judged], at: dict[Anchor, int], marks: list[Mark],
     dormant: list[Mark] = []
     for mark in marks:
         i = at.get(mark.anchor)
+        if i is None and mark.engine < MARK_ENGINE:
+            dormant.append(mark)           # M4: a 1.3.x anchor may just no longer match, never "risolta"
+            continue
         if i is None:
             resolved += 1
             continue
@@ -258,4 +280,5 @@ def _summary(judged: list[Judged], version: int, two_way: bool, when: str) -> Ca
         variabili=sum(j.diff.klass == "variabile" for j in judged),
         rumore=sum(j.diff.klass == "rumore" for j in judged),
         avanzamento=fatte / total if total else 1.0, two_way=two_way, when=when,
+        arredo=sum(j.diff.klass == "arredo" for j in judged),
     )

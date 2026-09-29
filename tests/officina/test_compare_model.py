@@ -84,14 +84,15 @@ def test_case_summary_from_junk_is_none(junk):
 
 
 def test_counting_matches_the_spec_table():
-    """Spec §4.2 step 10: what each profile counts; variabile and rumore never."""
+    """Spec §4.2 step 10 + phase 2.5 (§3.2, §3.5): what each profile counts;
+    ``zona`` counts in every profile (D4), variabile, rumore and arredo never."""
     assert COUNTING == {
-        "tollerante": frozenset({"testo", "composizione", "link"}),
-        "stretto": frozenset({"testo", "composizione", "link", "stile", "spaziatura"}),
-        "solo_testo": frozenset({"testo"}),
+        "tollerante": frozenset({"testo", "composizione", "link", "zona"}),
+        "stretto": frozenset({"testo", "composizione", "link", "stile", "spaziatura", "zona"}),
+        "solo_testo": frozenset({"testo", "zona"}),
     }
     for counted in COUNTING.values():
-        assert not counted & {"variabile", "rumore"}
+        assert not counted & {"variabile", "rumore", "arredo"}
 
 
 def test_word_gains_size_and_bold_and_extract_pdf_reexports_it():
@@ -120,3 +121,84 @@ def test_case_comparison_inactive_defaults_to_zero():
     cc = CaseComparison(1, (), summary, empty, None, None, "tollerante")
     assert cc.inactive == 0
     assert dataclasses.replace(cc, inactive=3).inactive == 3
+
+
+# ------------------------------------------------ phase 2.5: the T0 contract ---
+
+def test_klasses_gain_zona_and_arredo_and_keep_the_13x_ones():
+    from qtrequestory.officina.compare.model import KLASSES
+
+    assert KLASSES == ("testo", "composizione", "stile", "spaziatura", "variabile", "rumore", "link",
+                       "zona", "arredo")
+
+
+def test_zones_tipi_and_proofs_are_the_spec_words():
+    from qtrequestory.officina.compare.model import ARREDO_ZONES, PROVE, TIPI, ZONES
+
+    assert ZONES == ("header", "titolo", "footer", "spalla_sx", "spalla_dx", "numero_pagina", "filigrana",
+                     "corpo")
+    assert TIPI == ("maiuscole", "punteggiatura", "spazi", "numeri", "parola", "frase", "sezione",
+                    "spostamento", "zona", "link", "altro")
+    assert PROVE == ("segnaposto", "buco", "cella", "sezione", "esecuzione", "listino")
+    assert ARREDO_ZONES == frozenset({"numero_pagina", "filigrana"}) and ARREDO_ZONES <= set(ZONES)
+
+
+def test_word_and_diff_new_fields_default_to_the_13x_meaning():
+    """A 1.3.x call site (no zone/tipo/prova/nome) builds a body difference of type "altro"."""
+    word = Word("prezzo", 0, 1.0, 2.0, 3.0, 4.0)
+    diff = Diff(1, "cambiato", "testo", (word,), (), "prezzo", "costo", ((0, 6),), ((0, 5),), _anchor())
+
+    assert word.zone == "corpo"
+    assert (diff.zone, diff.tipo, diff.prova, diff.nome) == ("corpo", "altro", "", "")
+    zoned = dataclasses.replace(diff, klass="zona", zone="footer", tipo="parola", prova="buco", nome="cliente.nome")
+    assert (zoned.zone, zoned.tipo, zoned.prova, zoned.nome) == ("footer", "parola", "buco", "cliente.nome")
+    assert zoned.anchor == diff.anchor  # the anchor never carries zone or tipo
+
+
+def test_an_anchor_of_a_new_klass_round_trips():
+    for klass in ("zona", "arredo"):
+        anchor = Anchor("cambiato", klass, "a | b", "Edizione 09/2026")
+        assert Anchor.from_json(json.loads(json.dumps(anchor.to_json()))) == anchor
+
+
+def test_zona_counts_and_arredo_does_not():
+    from qtrequestory.officina.compare.model import Comparison
+
+    zona = Diff(1, "cambiato", "zona", (), (), "a", "b", (), (), Anchor("cambiato", "zona", "", "a"), zone="footer")
+    arredo = Diff(2, "cambiato", "arredo", (), (), "1", "2", (), (), Anchor("cambiato", "arredo", "", "1"),
+                  zone="numero_pagina")
+    comparison = Comparison((zona, arredo), True, True, 1, 1, "", 0, ())
+
+    for profile in COUNTING:
+        assert comparison.counting(profile) == (zona,)
+
+
+def test_case_comparison_filters_is_optional():
+    from qtrequestory.officina.compare.model import CaseComparison, Comparison
+    from qtrequestory.officina.compare.filter_model import ControlState, FilterPanel
+
+    empty = Comparison((), True, True, 1, 1, "", 0, ())
+    summary = CaseSummary(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0, True, "2026-09-28T10:00:00")
+    cc = CaseComparison(1, (), summary, empty, None, None, "tollerante")
+
+    assert cc.filters is None and cc.inactive == 0
+    panel = FilterPanel((), ControlState("assente"))
+    assert dataclasses.replace(cc, filters=panel).filters is panel
+
+
+def test_arredo_has_no_verdict_like_variables_and_noise():
+    """F3: arredo is never judged (never in "Tollerate") and is counted apart."""
+    from qtrequestory.officina.compare.model import NO_VERDICT
+
+    assert NO_VERDICT == frozenset({"variabile", "rumore", "arredo"})
+
+
+def test_case_summary_gains_arredo_defaulted_and_round_trips():
+    assert _summary().arredo == 0
+    summary = _summary(arredo=3)
+    raw = json.loads(json.dumps(summary.to_json()))
+    assert raw["arredo"] == 3 and CaseSummary.from_json(raw) == summary
+    raw.pop("arredo")  # a 1.3.x riepilogo
+    assert CaseSummary.from_json(raw) == _summary()
+    for junk in (-1, "3", True, None):
+        assert CaseSummary.from_json({**summary.to_json(), "arredo": junk}) is None

@@ -133,7 +133,9 @@ def _compare_case(services: CoreServices, ini: Initiative, case: Case,
 def act(services: CoreServices, ini: Initiative, case: Case, version: Version | None,
         steps: Sequence[tuple[str, tuple]]) -> CaseComparison | None:
     """The review job: each ``(OfficinaApi method, arguments after the
-    case)`` of ``steps`` in turn (``officina_undo``), then ``compare_case`` of
+    case)`` of ``steps`` in turn (``officina_undo``; ``set_filters`` gets
+    ``ini`` and the case, ``set_filters_initiative`` is ``set_filters`` of
+    the initiative, U4), then ``compare_case`` of
     ``version`` again, so the page redraws from the new verdicts without
     reloading the documents. None when ``version`` is not a TO-BE (the page
     reloads the case then) or the comparison failed. A refused save raises
@@ -141,7 +143,12 @@ def act(services: CoreServices, ini: Initiative, case: Case, version: Version | 
     with review_lock(*_key(ini, case)):
         api = services.officina
         for method, args in steps:
-            getattr(api, method)(case, *args)
+            if method == "set_filters":
+                api.set_filters(ini, case, *args)
+            elif method == "set_filters_initiative":
+                api.set_filters(ini, None, *args)
+            else:
+                getattr(api, method)(case, *args)
         if version is None or version.kind != "tobe":
             return None
         return _compare_case(services, ini, case, version)

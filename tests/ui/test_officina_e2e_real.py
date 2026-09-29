@@ -58,7 +58,7 @@ def real(tmp_path: Path, server: FakeServer):
     cfg = bundle.config.config
     bundle.config.config = dataclasses.replace(cfg, officina=dataclasses.replace(
         cfg.officina, generators=[GeneratorEndpoint("svil", server.url)], default_generator="svil"))
-    service = OfficinaService(lambda: bundle.config.config)
+    service = OfficinaService(lambda: bundle.config.config, control_runner=None)
     return dataclasses.replace(bundle, officina_factory=lambda: service)
 
 
@@ -88,7 +88,10 @@ def _page(qtbot, real, runner, ini, case) -> OfficinaPage:
 def _generate(qtbot, page: OfficinaPage, server: FakeServer, body: bytes, *, asis: bool = False,
               version: int | None = None) -> None:
     server.canned.status, server.canned.body = 200, body
-    (page.case_view.asis_button if asis else page.case_view.regenerate_button).click()
+    if asis:
+        page.case_view.asis_action.trigger()  # "⋯" → "Genera AS-IS" (U2)
+    else:
+        page.case_view.regenerate_button.click()
     wait_idle(qtbot, page)
     if version is not None:
         qtbot.waitUntil(lambda: page.case_view.docs is not None and page.case_view.docs.judged is not None
@@ -167,7 +170,8 @@ def test_an_html_case_without_edge_is_judged_through_the_dom(qtbot, tmp_path, se
     cfg = bundle.config.config
     bundle.config.config = dataclasses.replace(cfg, officina=dataclasses.replace(
         cfg.officina, generators=[GeneratorEndpoint("svil", server.url)], default_generator="svil"))
-    service = OfficinaService(lambda: bundle.config.config, html_to_pdf=lambda *a, **k: "Edge non trovato")
+    service = OfficinaService(lambda: bundle.config.config, control_runner=None,
+                              html_to_pdf=lambda *a, **k: "Edge non trovato")
     real = dataclasses.replace(bundle, officina_factory=lambda: service)
     ini, case = _case(real, tmp_path, T_HTML.encode(), "email.html")
     page = _page(qtbot, real, runner, ini, case)

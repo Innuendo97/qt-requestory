@@ -15,7 +15,8 @@ from qtrequestory.ui import strings
 
 PAGE_MODULES = ("common", "search", "sync", "settings", "wizard", "about", "imports", "officina",
                 "officina_verdetto", "officina_avanzamento", "officina_elenco", "officina_azioni",
-                "officina_rumore", "officina_chiamata", "officina_configura")
+                "officina_rumore", "officina_chiamata", "officina_configura", "eliminazioni",
+                "officina_pannello", "officina_filtri")
 
 
 @pytest.mark.parametrize("name", PAGE_MODULES)
@@ -29,7 +30,7 @@ def test_every_page_module_exists(name: str):
     [
         "APP_NAME", "ORG_NAME", "WINDOW_TITLE",
         "NAV_SEARCH", "NAV_SYNC", "NAV_SETTINGS", "NAV_ABOUT",
-        "STATUS_SYNC_SUMMARY_TOOLTIP", "NAV_TOOLTIP", "CHIP_SEPARATOR", "WINDOW_TITLE_CONTEXT",
+        "SYNC_CHIP_TOOLTIP", "NAV_TOOLTIP", "CHIP_SEPARATOR", "WINDOW_TITLE_CONTEXT",
         "QUIT_DURING_JOB_TITLE", "QUIT_DURING_JOB_TEXT", "QUIT_PROGRESS", "QUIT_STOP",
         "QUIT_CONTINUE", "QUIT_SYNC_INFO", "QUIT_INDEX_INFO",
         "BTN_CANCEL", "BTN_SAVE", "BTN_BROWSE", "BTN_OPEN", "BTN_OPEN_FOLDER",

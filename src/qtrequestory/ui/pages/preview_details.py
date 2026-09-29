@@ -12,6 +12,7 @@ searching.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -30,6 +31,38 @@ from qtrequestory.ui.pages.search_icons import ThemedIcons
 from qtrequestory.ui.results_model import format_day, format_time
 
 __all__ = ["PreviewDetails"]
+
+
+class _ValueLabel(QLabel):
+    """A value elided in the middle when it does not fit, never clipped raw.
+
+    A path or an entry name has no space to wrap at; before this the label
+    just clipped whatever overflowed with no "…", silently hiding how much
+    was cut off. The tooltip and :meth:`full_text` always have the whole
+    value (``PreviewDetails.value`` reads the latter, not the shown text)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full = ""
+
+    def full_text(self) -> str:
+        return self._full
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        width = max(self.contentsRect().width(), 0)
+        shown = (QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideMiddle, width)
+                 if width else self._full)
+        if shown != super().text():
+            super().setText(shown)
 
 
 class PreviewDetails(QWidget):
@@ -62,7 +95,7 @@ class PreviewDetails(QWidget):
             ("fdi", strings.PREVIEW_DETAIL_FDI), ("key", strings.PREVIEW_DETAIL_KEY),
             ("name", strings.PREVIEW_DETAIL_NAME),
         ):
-            value = QLabel()
+            value = _ValueLabel()
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             # Paths and entry names have no spaces to wrap at: the value must
             # not widen the pane (and push the splitter); the tooltip has it all.
@@ -151,11 +184,10 @@ class PreviewDetails(QWidget):
             button.setEnabled(hit is not None)
 
     def _set(self, key: str, text: str) -> None:
-        self.values[key].setText(text)
-        self.values[key].setToolTip(text)
+        self.values[key].set_full_text(text)
 
     def value(self, key: str) -> str:
-        return self.values[key].text()
+        return self.values[key].full_text()
 
     # -- actions -----------------------------------------------------------
 

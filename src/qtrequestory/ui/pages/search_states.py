@@ -65,7 +65,6 @@ class EmptyState(QWidget):
         theme.set_role(self.footer, "muted")
         if icon_name:
             ThemedIcons(self).set(self.icon, icon_name, "muted", ICON_PX)
-        self.icon.setVisible(bool(icon_name))
 
         block = QWidget()
         block.setMaximumWidth(BLOCK_MAX_WIDTH)
@@ -82,6 +81,9 @@ class EmptyState(QWidget):
         self._buttons_layout.addStretch(1)
         for widget in (self.rows_title, self.footer):
             widget.setVisible(False)
+        # Only now, inside the block: setVisible(True) on a widget without a
+        # parent would show it as a window of its own for an instant (D7).
+        self.icon.setVisible(bool(icon_name))
 
         outer = QVBoxLayout(self)
         outer.addStretch(1)

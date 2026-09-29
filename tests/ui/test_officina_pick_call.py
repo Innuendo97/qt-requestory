@@ -282,7 +282,7 @@ def test_changing_a_case_call_keeps_the_versions_and_offers_the_asis(qtbot, page
     page.refresh()
     page.open_initiative(ini.id)
     page.open_case(case.id)
-    assert page.case_view.call_strip.text() == ""
+    assert page.case_view.call_strip.message() == ""
     assert page.case_view.change_call_action.isEnabled()
     newer = next(h for h in fake_core.index.hits if h.template_key == KEY_SINT and h.fdi == FDI_C)
     monkeypatch.setattr(officina_pick_question, "ask_resolution",
@@ -295,19 +295,19 @@ def test_changing_a_case_call_keeps_the_versions_and_offers_the_asis(qtbot, page
 
     _answer_window(monkeypatch, pick)
     page.case_view.change_call_action.trigger()
-    qtbot.waitUntil(lambda: page.case_view.call_strip.text() == strings.CHIAMATA_STALE_ASIS, timeout=5000)
+    qtbot.waitUntil(lambda: page.case_view.call_strip.message() == strings.CHIAMATA_STALE_ASIS, timeout=5000)
     again = api.load(ini.id).cases[0]
     assert again.source_fdi == FDI_C and again.asis() is not None
     assert api.payload(again) == json.loads(fake_core.index.read_body(newer))
     assert asis_predates_call(again)
     assert shell.statuses[-1] == "«Cambio»: chiamata sostituita in 1 caso."
 
-    page.case_view.call_strip.button.click()  # "Rigenera AS-IS": the note is given for the user
+    page.case_view.call_strip.click()  # "Rigenera AS-IS": the note is given for the user
     qtbot.waitUntil(lambda: api.load(ini.id).cases[0].history[-1]["note"] == strings.CHIAMATA_ASIS_NOTE,
                     timeout=5000)
     qtbot.waitUntil(lambda: not page.queue.is_busy(), timeout=5000)
     assert not asis_predates_call(api.load(ini.id).cases[0])
-    qtbot.waitUntil(lambda: page.case_view.call_strip.text() == "", timeout=5000)
+    qtbot.waitUntil(lambda: page.case_view.call_strip.message() == "", timeout=5000)
 
 
 def test_the_editor_link_opens_the_window_on_the_case(qtbot, page, fake_core, tmp_path, monkeypatch):  # noqa: F811
@@ -322,7 +322,7 @@ def test_the_editor_link_opens_the_window_on_the_case(qtbot, page, fake_core, tm
     monkeypatch.setattr(PayloadHeaderDialog, "exec",
                         lambda dialog: dialog.change_call_button.click() or int(dialog.result()))
     monkeypatch.setattr(page, "pick_calls", lambda case=None: opened.append(case.id if case else None))
-    page.case_view.editor_button.click()
+    page.case_view.editor_action.trigger()
     assert opened == [case.id]
 
 
@@ -502,7 +502,7 @@ def test_the_same_call_with_an_unchanged_payload_changes_nothing(qtbot, page, fa
     assert shell.statuses[-1] == "«Stessa»: " + strings.CHIAMATA_DONE_UNCHANGED_ONE + "."
     again = api.load(ini.id).cases[0]
     assert again.history == [] and not list(again.folder.glob("payload.*.json"))
-    assert page.case_view.call_strip.text() == ""
+    assert page.case_view.call_strip.message() == ""
 
 
 def test_the_same_call_restores_an_edited_payload(qtbot, page, fake_core, shell, monkeypatch):  # noqa: F811

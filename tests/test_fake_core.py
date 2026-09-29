@@ -585,7 +585,7 @@ def _officina_pair(tmp_path: Path):
                                      generators=[GeneratorEndpoint("svil", server.url),
                                                  GeneratorEndpoint("coll", server.url, enabled=False)]),
     )
-    real = OfficinaService(lambda: real_cfg)
+    real = OfficinaService(lambda: real_cfg, control_runner=None)
     src = tmp_path / "payload.json"
     src.write_text(__import__("json").dumps(_OFFICINA_PAYLOAD), encoding="utf-8")
     return real, server, fake.officina, fake, src
@@ -1071,7 +1071,7 @@ def test_fake_noise_rules_presets_and_hits(fake, tmp_path: Path):
     api.set_noise_rules(ini, None, rules, [presets[0].name])
     api.set_noise_rules(ini, case, [NoiseRule("caso", "x")])
     loaded = api.load(ini.id)
-    assert loaded.noise_rules == rules and loaded.noise_presets == [presets[0].name]
+    assert loaded.noise_rules == rules and loaded.filters == {f"avanzate.{p.name}": p is presets[0] for p in presets}
     assert next(c for c in loaded.cases if c.id == case.id).review.noise_rules == [NoiseRule("caso", "x")]
 
     api.set_noise_text(case.id, "anno 2026 e 2027")
@@ -1193,7 +1193,7 @@ def test_fake_ids_are_unique_within_judged(fake, tmp_path: Path):
 def test_fake_preset_names_match_the_engine():
     from tests.fakes.fake_verdict import FAKE_PRESETS
 
-    assert [p.name for p in FAKE_PRESETS] == ["Numero di pagina", "Data", "IBAN", "Codice fiscale", "CAP",
+    assert [p.name for p in FAKE_PRESETS] == ["Numero di pagina nel testo", "Data", "IBAN", "Codice fiscale", "CAP",
                                               "Importo", "Marcatore di firma", "Parametri di tracciamento"]
     assert not any(p.enabled for p in FAKE_PRESETS)
 
@@ -1223,7 +1223,7 @@ def test_fake_initiative_settings_unchanged_when_the_save_is_refused(fake, tmp_p
         api.set_profile(ini, None, "stretto")
     with pytest.raises(ValueError):
         api.set_noise_rules(ini, None, [NoiseRule("x", "x")], ["Data"])
-    assert (ini.profile, ini.noise_rules, ini.noise_presets) == ("tollerante", [], [])
+    assert (ini.profile, ini.noise_rules, ini.filters) == ("tollerante", [], {})
 
 
 # ------------------------------------------- E7: the fake agrees with the real engine ---

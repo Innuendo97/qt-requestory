@@ -157,11 +157,12 @@ def test_a_toast_with_an_action_takes_clicks_and_calls_it(qtbot):
 # ------------------------------------------------------- U3 minors in rows ---
 
 def test_the_struck_and_inserted_runs_touch_without_a_space():
-    """U3 deferred minor: the hairline read as a space ("senpelmo a")."""
-    diff = dataclasses.replace(fake_diff("cambiato", "testo", "abilitata", "abilitato"),
-                               left_spans=((8, 9),), right_spans=((8, 9),))
+    """U3 deferred minor: the hairline read as a space ("senpelmo a"); since
+    I1b a letter is marked only when removed or added inside its word."""
+    diff = dataclasses.replace(fake_diff("cambiato", "testo", "indirizzo", "indirizo"),
+                               left_spans=((6, 7),), right_spans=((6, 6),))
     html = snippet_html(diff, LIGHT)
-    assert "</s><b" in html
+    assert "indiri<s" in html and "</s>zo" in html
     assert "&#8202;" not in html and " " not in html
 
 
@@ -175,12 +176,12 @@ def test_a_link_rows_link_text_is_underlined():
 
 def test_fit_context_measures_the_changed_runs_in_bold_only():
     """U3 leftover: the context is drawn normal, only the change bold."""
-    diff = dataclasses.replace(fake_diff("cambiato", "testo", "abilitata", "abilitato",
+    diff = dataclasses.replace(fake_diff("cambiato", "testo", "indirizo", "indirizzo",
                                          before="La carta sarà", after="agli acquisti"),
-                               left_spans=((8, 9),), right_spans=((8, 9),))
+                               left_spans=((6, 6),), right_spans=((6, 7),))
     plain = snippet_width(diff, len)
     weighted = snippet_width(diff, len, lambda text: 2 * len(text))
-    assert weighted - plain == len("a") + len("o"), "only the struck and the inserted letter"
+    assert weighted - plain == len("z"), "only the inserted letter"
 
 
 def test_rows_are_refitted_when_the_scroll_bar_appears(qtbot):
@@ -496,7 +497,7 @@ def test_annulla_i_segni_is_undone_by_ctrl_z(qtbot, page, fake_core, tmp_path):
     before = sorted((m.anchor.target_text, m.version) for m in page._case(case.id).review.marks)
     assert len(before) == 2
     calls = len(api.compare_case_calls)
-    page.case_view.banners.unmark_all_requested.emit()
+    page.case_view.unmark_action.trigger()  # "⋯" → "Annulla i segni" (U2)
     _settle(qtbot, page, calls)
     assert not page._case(case.id).review.marks
     calls = len(api.compare_case_calls)
@@ -566,13 +567,15 @@ def test_f_three_times_on_row_one_marks_rows_one_two_three(qtbot, page, fake_cor
     assert not page._case(case.id).review.marks
 
 
-def test_the_bars_fatta_moves_the_selection_on(qtbot, page, fake_core, tmp_path):
+def test_the_bars_fatta_does_not_move_the_selection_on(qtbot, page, fake_core, tmp_path):
+    """Phase 2.5 (spec §4.2) replaces R40 for the bar: the user is looking at
+    that spot, so the selection stays (tests/ui/test_officina_no_jump.py)."""
     first = placed(fake_diff("cambiato", "testo", "12,00", "11,00"), 100)
     second = placed(fake_diff("cambiato", "testo", "Titolo", "Titol"), 200)
     _open(qtbot, page, fake_core, tmp_path, [first, second])
     _click(page.case_view.right.view, _id_of(page, first))
     page.case_view.bars["right"].done_button.click()
-    assert page.case_view.diffs.current_id() == _id_of(page, second)
+    assert page.case_view.diffs.current_id() == _id_of(page, first)
     _idle(qtbot, page)
 
 

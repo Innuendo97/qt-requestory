@@ -138,10 +138,10 @@ class VerdictStrip(QWidget):
 #: coverage strip; "non risolta" is a da-fare square with a red band on top.
 SEGMENT_LOOKS: dict[str, tuple[str | None, str | None, bool]] = {
     "regressione": ("bad", None, False),
-    "non_risolta": ("warn", None, False),  # plus a red band on top, below
+    "non_risolta": ("flag", None, False),  # plus a red band on top, below
     "da_fare": ("warn", None, False),
     "in_corso": ("progress", None, False),
-    "da_verificare": (None, "ok", True),
+    "da_verificare": (None, "verify", True),
     "fatta": ("ok", None, False),
     "tollerata": ("neutral_bg", "muted", False),  # hatched below
 }

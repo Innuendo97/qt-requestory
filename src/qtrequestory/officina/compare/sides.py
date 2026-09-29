@@ -8,6 +8,17 @@ its line ends with the same :func:`line_ends`): the service hands them to the
 noise guard's child, which matches the user's rules on them, so no user
 regex ever runs in the application (ruling R46).
 
+Phase 2.5 (spec §3.2, §3.6): two PDFs first go through the zone stage
+(``zones.zone_pair``, both sides together), and only the words of the body
+and the title (:data:`FLOW_ZONES`) become blocks: header, footer, shoulders,
+page numbers and watermarks leave the flow, so a text reflowed across a
+page break costs nothing again. The zoned documents are kept
+(:attr:`Prepared.left` / :attr:`Prepared.right`: same words, same order,
+``rotated`` and ``light`` still valid) for the zone-by-zone comparison
+(``zonediff``), with each side's zone boxes. The column corridors of each
+page are measured on the whole page on the side with more lines and
+borrowed by the other side when they hold there too (``blocks.page_columns``).
+
 Deterministic and pure; stdlib only, no Qt, no pypdfium2.
 """
 from __future__ import annotations
@@ -15,17 +26,26 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from qtrequestory.officina.compare import moves
 from qtrequestory.officina.compare.align import align
-from qtrequestory.officina.compare.blocks import make_blocks
+from qtrequestory.officina.compare.blocks import Layout, fits, layout, make_blocks, page_columns
 from qtrequestory.officina.compare.extract_pdf import DocText
-from qtrequestory.officina.compare.model import Anchor, Block, Word
+from qtrequestory.officina.compare.model import Anchor, Block, Word, ZoneBox
 from qtrequestory.officina.compare.noise import apply
 from qtrequestory.officina.compare.normalise import line_end, units
+from qtrequestory.officina.compare.placeholders import rewrite
 from qtrequestory.officina.compare.slots import Slot, find_slots
+from qtrequestory.officina.compare.zones import zone_pair
 
-__all__ = ["Prepared", "Side", "line_ends", "noise_stage", "prepare"]
+if TYPE_CHECKING:
+    from qtrequestory.officina.compare.zonesides import ZoneSide
+
+__all__ = ["FLOW_ZONES", "Prepared", "Side", "line_ends", "noise_stage", "prepare"]
+
+#: The zones whose words flow across pages as the body (spec §3.2).
+FLOW_ZONES = frozenset({"corpo", "titolo"})
 
 Pair = tuple[int | None, int | None]
 
@@ -54,7 +74,9 @@ class Side:
 @dataclass
 class Prepared:
     """Both sides before noise. Without text on a side (``has_text`` False)
-    only the first group of fields is set."""
+    only the first group of fields is set. Two PDFs are the ZONED documents
+    (``zones``), their blocks made of the flow words only, with each side's
+    zone boxes (``left_zones`` / ``right_zones``, empty for HTML)."""
 
     left: DocText | Sequence[Block]
     right: DocText | Sequence[Block]
@@ -66,6 +88,10 @@ class Prepared:
     right_has: bool
     left_label: str
     right_label: str
+    left_zones: tuple[ZoneBox, ...] = ()
+    right_zones: tuple[ZoneBox, ...] = ()
+    left_zone: ZoneSide | None = None       # the zone text (``zonesides``), None without zones
+    right_zone: ZoneSide | None = None
     pairs: list[Pair] = field(default_factory=list)
     moved: list[tuple[list[int], list[int]]] = field(default_factory=list)
     left_side: Side = field(default_factory=lambda: Side([], [], []))    # the target's slotted keys
@@ -79,30 +105,55 @@ class Prepared:
     def noise_sides(self) -> tuple[tuple[list[str], list[int]], tuple[list[str], list[int]]]:
         """``((keys, line ends), (keys, line ends))`` of the target and the
         generated side, exactly as the noise stage matches them (empty
-        without text)."""
-        return ((list(self.left_side.keys), line_ends(self.left_side)),
-                (list(self.right_side.keys), line_ends(self.right_side)))
+        without text): the body's keys, then — after a line end — the zone
+        text's (ruling F13; ``zonesides.split_spans`` splits the spans back)."""
+        return (_with_zones(self.left_side, self.left_zone), _with_zones(self.right_side, self.right_zone))
 
 
 def prepare(left: DocText | Sequence[Block], right: DocText | Sequence[Block], *,
             disabled_slots: Collection[Anchor] = (), left_label: str = "target",
-            right_label: str = "TO-BE") -> Prepared:
-    """Stages 1–3 of the pipeline (see ``pipeline``'s module doc)."""
-    left_blocks, left_pages, left_has = _blocks(left)
-    right_blocks, right_pages, right_has = _blocks(right)
+            right_label: str = "TO-BE", zones: bool = True) -> Prepared:
+    """Stages 1–3 of the pipeline (see ``pipeline``'s module doc), after
+    the zones for two PDFs (module doc). ``zones=False``: no zone stage, the
+    whole text flows as the body (the body stages alone)."""
+    boxes: tuple[tuple[ZoneBox, ...], tuple[ZoneBox, ...]] = ((), ())
+    guides: tuple[dict | None, dict | None] = (None, None)
+    lays: tuple[Layout | None, Layout | None] = (None, None)
+    if zones and isinstance(left, DocText) and isinstance(right, DocText):
+        zoned = zone_pair(left, right)
+        left, right = zoned[0].doc, zoned[1].doc
+        boxes = (zoned[0].boxes, zoned[1].boxes)
+        lays = (layout(_flow(left)), layout(_flow(right)))
+        guides = _borrowed(lays[0], lays[1])
+    left_blocks, left_pages, left_has = _blocks(left, guides[0], lays[0])
+    right_blocks, right_pages, right_has = _blocks(right, guides[1], lays[1])
     prepared = Prepared(left, right, left_blocks, right_blocks, left_pages, right_pages, left_has, right_has,
-                        left_label, right_label)
+                        left_label, right_label, *boxes)
     if not prepared.has_text:
         return prepared
+    if zones and isinstance(left, DocText) and isinstance(right, DocText):
+        from qtrequestory.officina.compare.zonesides import zone_side  # zonesides builds on this module
+        prepared.left_zone = zone_side(left, target=True, disabled=disabled_slots)  # type: ignore[arg-type]
+        prepared.right_zone = zone_side(right, target=False)  # type: ignore[arg-type]
     prepared.pairs = align(list(left_blocks), list(right_blocks))
     order, prepared.moved = moves.reading_order(prepared.pairs, left_blocks, right_blocks)
     keys, members, block = _units(left_blocks, range(len(left_blocks)))
+    keys = rewrite(keys)   # the target's {{…}}: a value as a leader (a slot), a conditional text without braces
     # HTML words may have no boxes: block boundaries are line ends for the slots too (final review I1)
     slotted, s_members, prepared.slots = find_slots(
         keys, members, disabled_slots, _block_ends(block) if not isinstance(left, DocText) else ())
     prepared.left_side = Side(slotted, s_members, _blocks_of(s_members, keys, members, block))
     prepared.right_side = Side(*_units(right_blocks, order))
     return prepared
+
+
+def _with_zones(body: Side, zone: ZoneSide | None) -> tuple[list[str], list[int]]:
+    ends = line_ends(body)
+    if zone is None or not zone.side.keys:
+        return list(body.keys), ends
+    n = len(body.keys)
+    joint = [n - 1] if n else []
+    return [*body.keys, *zone.side.keys], [*ends, *joint, *(e + n for e in line_ends(zone.side))]
 
 
 def line_ends(side: Side) -> list[int]:
@@ -133,14 +184,40 @@ def noise_stage(side: Side, rules: Sequence[tuple[str, re.Pattern]]) -> tuple[
 
 # ------------------------------------------------------------ helpers ---
 
-def _blocks(doc: DocText | Sequence[Block]) -> tuple[list[Block], int, bool]:
-    """(blocks, pages, has text) of one side."""
+def _blocks(doc: DocText | Sequence[Block], columns: dict | None = None,
+            lines: Layout | None = None) -> tuple[list[Block], int, bool]:
+    """(blocks, pages, has text) of one side: a PDF's blocks hold its flow
+    words only, but a PDF with zone text alone still has text."""
     if isinstance(doc, DocText):
-        blocks = make_blocks(doc.words) if doc.has_text else []
-        return blocks, len(doc.page_sizes), doc.has_text and bool(blocks)
+        blocks = make_blocks(_flow(doc), columns, lines=lines) if doc.has_text else []
+        return blocks, len(doc.page_sizes), doc.has_text and bool(doc.words)
     blocks = list(doc)
     pages = max(b.page for b in blocks) + 1 if blocks else 0
     return blocks, pages, any(b.words for b in blocks)
+
+
+def _flow(doc: DocText) -> list[Word]:
+    return [w for w in doc.words if w.zone in FLOW_ZONES]
+
+
+def _borrowed(left: Layout, right: Layout) -> tuple[dict, dict]:
+    """Per page, the column corridors each side reads its body with: those
+    of the side with more lines on that page (the other side's when it
+    found none), when they hold on the other side too (``blocks.fits``),
+    else each side's own (measured once, here)."""
+    mine, theirs = page_columns(left), page_columns(right)
+    out: tuple[dict, dict] = ({p: c for p, (c, _) in mine.items()}, {p: c for p, (c, _) in theirs.items()})
+    for page in set(mine) & set(theirs):
+        (a, na), (b, nb) = mine[page], theirs[page]
+        # the side with more lines first; the other when it found none
+        options = [(a, right), (b, left)] if na >= nb else [(b, left), (a, right)]
+        for corridors, other in options:
+            if corridors:
+                if fits(other, page, corridors):
+                    out[0][page] = corridors
+                    out[1][page] = corridors
+                break
+    return out
 
 
 def _units(blocks: Sequence[Block], order: Sequence[int]) -> tuple[list[str], list[tuple[Word, ...]], list[int]]:

@@ -31,7 +31,7 @@ def indexed(env: Env, mirror):  # noqa: F811 - the fixture above
                               environments=[Environment("coll", "https://example.invalid/coll/")])
     index = IndexService(lambda: cfg)
     index.update(["coll"], full_rebuild=True, sink=CollectingSink(), cancel=CancelToken())
-    svc = OfficinaService(lambda: env.config, index=index, clock=lambda: NOW)
+    svc = OfficinaService(lambda: env.config, control_runner=None, index=index, clock=lambda: NOW)
     return svc, index
 
 

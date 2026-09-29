@@ -439,6 +439,8 @@ def _scenarios():
     yield "stuck in corso", _cmp(c2), _cmp(c), Review(marks=[Mark(c.anchor, "tres", 1, WHEN)]), "tollerante", 2
     yield "dormant by profile", _cmp(e_style), _cmp(e_style), Review(marks=[Mark(e_style.anchor, "5", 1, WHEN)]),         "tollerante", 2
     yield "dormant back to life", _cmp(e_style), _cmp(), Review(marks=[Mark(e_style.anchor, "5", 1, WHEN)]),         "stretto", 3
+    yield "1.3.x marks", _cmp(b), _cmp(a, b), Review(marks=[Mark(a.anchor, "one", 1, WHEN, engine=1),
+                                                            Mark(b.anchor, "two", 1, WHEN, engine=1)]), "tollerante", 2
     yield "nothing", _cmp(), None, Review(), "tollerante", 1
     yield "tobe without text", dataclasses.replace(_cmp(), right_has_text=False), _cmp(a),         Review(marks=[Mark(a.anchor, "one", 1, WHEN)]), "tollerante", 2
     yield "target without text", dataclasses.replace(_cmp(), left_has_text=False), None,         Review(marks=[Mark(a.anchor, "one", 1, WHEN)]), "tollerante", 2
@@ -463,3 +465,49 @@ def test_duplicate_anchors_warn_and_are_judged_apart_instead_of_raising(caplog):
     assert len({j.diff.anchor for j in judged}) == 2
     assert [j.verdict for j in judged] == ["da_fare", "da_fare"]
     assert "ancore" in caplog.text or "anchor" in caplog.text
+
+
+# ------------------------------------------------ phase 2.5: arredo (ruling F3) ---
+
+@pytest.mark.parametrize("profile", ["tollerante", "stretto", "solo_testo"])
+def test_arredo_has_no_verdict_and_its_own_counter(profile):
+    """Page number / watermark differences are never judged: not "tollerata",
+    not counted in the progress; ``summary.arredo`` counts them. ``zona`` counts."""
+    tobe = _cmp(_diff("Pag. 1 di 2", "Pag. 1 di 3", klass="arredo"), _diff("Acme S.p.A.", "Acme", klass="zona"))
+    for run in (lambda: _run(tobe, None, profile=profile),
+                lambda: fake_judge(tobe, None, Review(), profile, 2, WHEN)):
+        judged, summary, _, _ = run()
+        got = {t: j.verdict for t, j in _by_target(judged).items()}
+        assert got == {"Pag. 1 di 2": None, "Acme S.p.A.": "da_fare"}
+        assert (summary.arredo, summary.tollerate, summary.rumore, summary.da_fare) == (1, 0, 0, 1)
+
+
+# ------------------------------------------- marks made before the zones (1.3.x) ---
+
+def test_a_mark_from_1_3_whose_anchor_no_longer_matches_is_never_claimed_resolved():
+    """Final review M4: 1.4.0 anchors zone text and body contexts differently,
+    so a 1.3.x mark whose anchor matches nothing may still be open under a new
+    anchor: it stays in the review, dormant, never counted «risolta»."""
+    old = _diff("uno", "one", context="prima dopo")
+    now = _diff("uno", "one", klass="zona", context="nuovo contesto")
+    review = Review(marks=[Mark(old.anchor, generated_text(old), 2, WHEN, engine=1)])
+    judged, summary, verification, updated = _run(_cmp(now), None, review, version=3)
+    assert verification is None, "nothing verified: no «N risolte»"
+    assert updated.marks == review.marks, "kept (inactive), never removed as resolved"
+    assert [j.verdict for j in judged] == ["da_fare"]
+    assert inactive(updated, judged) == 1
+
+
+def test_a_mark_from_1_3_whose_anchor_still_matches_is_verified_as_usual():
+    d = _diff("uno", "one")
+    review = Review(marks=[Mark(d.anchor, generated_text(d), 2, WHEN, engine=1)])
+    judged, _summary, verification, updated = _run(_cmp(d), None, review, version=3)
+    assert verification == Verification(checked=1, resolved=0, unresolved=1, changed=0, version=3)
+    assert updated.marks == [] and judged[0].unresolved
+
+
+def test_a_mark_of_this_engine_whose_difference_is_gone_is_resolved():
+    d = _diff("uno", "one")
+    review = Review(marks=[Mark(d.anchor, generated_text(d), 2, WHEN)])
+    _judged, _summary, verification, updated = _run(_cmp(), None, review, version=3)
+    assert verification.resolved == 1 and updated.marks == []

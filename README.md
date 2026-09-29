@@ -106,16 +106,25 @@ Gli indirizzi degli ambienti non sono dentro il programma. Puoi darglieli così:
 
 ## Uso normale
 
-In alto ci sono le pagine principali, **Ricerca** (`Ctrl+1`),
-**Sincronizzazione** (`Ctrl+2`) e **Officina** (`Ctrl+3`, vedi
-[Officina](#officina)); a destra lo stato della sincronizzazione di ogni
-ambiente (cliccalo per aprire la pagina) e le icone di **Impostazioni**
-(`Ctrl+,`) e **Info** (`F1`).
+In alto ci sono le pagine principali, **Ricerca** (`Ctrl+1`) e **Officina**
+(`Ctrl+3`, vedi [Officina](#officina)); a destra un **chip di
+sincronizzazione** (l'icona ⟳ con lo stato di ogni ambiente), poi le icone di
+**Impostazioni** (`Ctrl+,`) e **Info** (`F1`). All'avvio compare per un
+istante una schermata di caricamento (logo, nome, versione e fase — «Apro
+l'archivio…», «Preparo le pagine…»): oltre a quella e alla finestra principale
+non si apre nient'altro.
 
-- **Sincronizzazione** — dice se la sincronizzazione automatica è attiva, se
-  nell'archivio manca qualche giorno (un calendario degli ultimi 30 giorni per
-  ambiente, vedi sotto) e permette di scaricare subito con *Sincronizza ora*
-  (`Ctrl+Shift+S`). Normalmente non serve: ci pensa l'attività pianificata, e
+- **Sincronizzazione** non è più una scheda a sé: clic, `Invio` o `Ctrl+2` sul
+  chip aprono un pannello a tendina con lo stato di ogni ambiente, l'ultima
+  sincronizzazione, il calendario dei 30 giorni (vedi sotto) e *Sincronizza
+  ora* (`Ctrl+Shift+S` funziona comunque da qualsiasi pagina); «Apri la
+  pagina completa» porta al registro dell'ultima esecuzione e alla
+  configurazione dell'attività pianificata. Il chip segnala quando serve
+  attenzione (giorni da scaricare, VPN giù, giorni persi, errori) con **tre
+  segnali**, mai il solo colore: un pallino ambra o rosso (rosso solo per un
+  giorno perso), la sua forma (un punto piccolo o un disco con «!») e il
+  testo del suggerimento («Sincronizzazione: 1 ambiente da controllare»).
+  Normalmente non serve toccarlo: ci pensa l'attività pianificata, e
   all'apertura il programma aggiorna da solo l'indice e fa una
   sincronizzazione se ce n'è bisogno.
 - **Ricerca** — scegli l'ambiente e incolla nel campo di ricerca un FDI (basta
@@ -145,7 +154,10 @@ del giorno la sera, quindi arrivano con la sincronizzazione del giorno dopo.
 
 ### Il calendario della Sincronizzazione
 
-Ogni ambiente ha un quadratino per ciascuno degli ultimi 30 giorni. La legenda
+Il calendario completo, con la legenda e il registro, è nella pagina che si
+apre da «Apri la pagina completa» nel pannello del chip; il pannello stesso
+mostra già una barra compatta dei 30 giorni per ambiente. Ogni ambiente ha un
+quadratino per ciascuno degli ultimi 30 giorni. La legenda
 sotto le schede mostra solo i tipi che compaiono davvero:
 
 | Quadratino | Significa |
@@ -444,6 +456,20 @@ con colore, simbolo e parola:
 | {x} **variabile** | sottolineatura viola | un dato del cliente dove il target ha un buco (vedi sotto) |
 | ~ **rumore** | bordo grigio tratteggiato | testo coperto da una regola di rumore |
 
+Il programma riconosce da solo le **zone** della pagina — intestazione,
+titolo, piè di pagina, spalla sinistra e destra (spesso ruotate a 90°/270°,
+come l'edizione stampata a lato), numero di pagina, filigrana — sui **due
+lati insieme**: una zona trovata con sicurezza su un lato (un divisore, un
+logo, la posizione) vale anche per l'altro. Intestazione e piè di pagina
+contengono spesso testo vero (una ragione sociale, una nota legale) e si
+confrontano come il resto; numero di pagina e filigrana **non contano** di
+serie (si riaccendono dai Filtri, vedi sotto). Il corpo (con il titolo)
+fluisce liberamente da una pagina all'altra, senza intestazioni, piè di
+pagina o spalle in mezzo: il testo che va a capo su un'altra pagina non
+diventa una differenza. Una stessa differenza di zona ripetuta identica su
+più pagine (un piè di pagina cambiato su tutto il documento) conta **una
+volta sola**, con «uguale su N pagine».
+
 Dentro una parola, i **caratteri cambiati** sono in giallo, in grassetto e
 sottolineati: «abilitat**a**» contro «abilitat**o**» si vede anche da lontano.
 Variabili e rumore non hanno verdetto e non contano mai.
@@ -456,22 +482,45 @@ in ordine di documento (clic = ci vai). Accanto a ciascun documento una
 verdetto è **a due vie**: tutto ciò che conta è «da fare», niente regressioni;
 la pillola «⚠ a due vie» lo dice e offre *Genera l'AS-IS*.
 
-L'**elenco** ha sei schede con il conteggio: *Da guardare* (regressioni, non
+Il **pannello laterale** (292 px, richiudibile a una colonna di 40 px con i
+contatori) ha sei schede con il conteggio: *Da guardare* (regressioni, non
 risolte, da fare, in corso), *Da verificare*, *Fatte*, *Tollerate*,
-*Variabili*, *Tutte* (anche il rumore). Sotto le schede, *Mostra fatte*
-sottolinea in verde sul target (e nella minimappa) le differenze già fatte;
-aprire la scheda *Fatte* lo accende. Ogni riga ha il verdetto, il tipo
-(Aa testo, ▦ composizione — sezione mancante o in più, pagine —, ⇄ spostato,
-¶ stile, ↔ spaziatura, 🔗 link), la pagina e un pezzo di testo attorno alla
-differenza, con il testo del target barrato e quello generato in grassetto.
+*Variabili*, *Tutte* (anche il rumore). Sotto le schede, una fascia di
+**chip per tipo** — icona, nome e numero (Aa parola, ▭ zona, # numeri, A/a
+maiuscole, `.,` punteggiatura, `␣` spazi, `≡` frase, `▤` sezione, ⇄
+spostamento, 🔗 link, ✱ altro) — filtra l'elenco per tipo, anche insieme al
+verdetto; i tipi a zero non sono mostrati: stanno dietro il chip «+k altri», che li apre
+(e «meno» li richiude). Sotto, *Mostra
+fatte* sottolinea in verde sul target (e nella minimappa) le differenze già
+fatte; aprire la scheda *Fatte* lo accende. **Tutti i tipi contano** allo
+stesso modo (anche una maiuscola o una virgola) tranne le zone messe da
+parte (numero di pagina, filigrana): nessuna tolleranza automatica per tipo.
+L'elenco è **raggruppato per tipo**, ogni gruppo richiudibile; ogni riga ha
+il verdetto, la **zona** in cui si trova, la pagina e un pezzo di testo
+attorno alla differenza, con il testo del target barrato e quello generato
+in grassetto. Una «?» in alto apre la **legenda**: ogni verdetto come è
+disegnato sulla pagina, le icone dei tipi per esteso, i colori delle zone a
+margine.
 
 Il programma riconosce da solo:
 
-- le **variabili** del target: righe di puntini o trattini bassi
-  (`Località ..........`) ed etichette seguite dal vuoto (`CAP:` a fine riga,
-  `Città, ` in testa a una lettera). Quello che il documento generato ci mette è
-  una *variabile*; un'etichetta «probabile» accetta al massimo un valore corto
-  (6 parole, una riga), oltre resta una differenza normale;
+- le **variabili** del target: servono **due prove**, una di posizione e una
+  di valore. Di posizione: un segnaposto (`[xx]`, `XXXX`, `gg/mm/aaaa`, una
+  riga di puntini o trattini bassi, `{{…}}` nelle email), un **buco** — un
+  valore inserito fra due parole del target sulla stessa riga con uno spazio
+  largo abbastanza, dopo un'etichetta a fine riga (`CAP:`) o prima di una
+  parola rientrata (`Città, ` in testa a una lettera) —, una **cella** vuota
+  o con la sola unità di misura, o una **sezione** (un titolo seguito da
+  spazio vuoto). Di valore: la forma del valore stesso, il payload (un
+  numero o una data in formato italiano), una voce del **dizionario dei
+  prezzi** dell'iniziativa se presente (vedi sotto), oppure l'**esecuzione**
+  — la prova che il programma genera da solo mandando in background una
+  copia del payload con valori cambiati e guardando cosa cambia nel
+  documento (vedi [Filtri del confronto](#profili-e-filtri-del-confronto)).
+  Il payload da solo non basta mai: da solo aveva nascosto veri cambi di
+  marchio. **Non è mai una variabile**: sola punteggiatura, sola differenza
+  di maiuscole, un testo presente identico come testo fisso altrove nel
+  target;
 - **caselle** e **campi a caselle**: `❏`, `☐` o una `q` Wingdings contro `[ ]`,
   `[x]` contro `☒`, un IBAN scritto una lettera per casella;
 - **sezioni** mancanti o in più (una differenza sola, non un muro di parole),
@@ -526,7 +575,7 @@ chiede conferma: segni, «non risolte» e riepilogo si azzerano; tolleranze e
 «non è una variabile» restano, ma valgono solo dove il testo coincide ancora
 (la scheda *Tutte* dice quante non si applicano più: «Tutte 7 ⊘1»).
 
-### Profili e regole di rumore
+### Profili e filtri del confronto
 
 Il **profilo** decide che cosa conta; si sceglie nell'intestazione del caso
 (*Profilo: … ▾*):
@@ -540,24 +589,73 @@ Il **profilo** decide che cosa conta; si sceglie nell'intestazione del caso
 «Come l'iniziativa» segue il profilo dell'iniziativa (`profilo` in
 `iniziativa.json`, di serie `tollerante`).
 
-Le **regole di rumore** (*Regole di rumore…*, sulla bacheca per l'iniziativa e
-nell'intestazione del caso) tolgono dal conteggio il testo che cambia a ogni
-generazione. Ci sono dei **preset**, tutti spenti finché non li accendi:
-numero di pagina, data, IBAN, codice fiscale, CAP, importo, marcatore di firma,
-parametri di tracciamento nei link. Puoi aggiungere regole tue (un nome e
-un'espressione regolare, per esempio `PR-\d{6}` per un numero di pratica):
-prima di salvare, ogni regola mostra quante volte la trova nel target e
-nell'ultimo TO-BE, e un'espressione sbagliata è segnata in rosso sulla sua
-riga. Le regole cercano nel testo normalizzato (virgolette e trattini
-uniformati). Le regole del caso si sommano a quelle dell'iniziativa; i preset
-valgono per tutta l'iniziativa; due regole non possono avere lo stesso nome.
-*Salva e riconfronta* rifà il confronto.
+**Filtri del confronto** (*Filtri (n)* sulla barra del caso) sostituisce i
+vecchi preset di rumore: calcolato dal documento appena confrontato, con un
+numero reale accanto a ogni riga, non un elenco fisso da accendere alla
+cieca. Tre gruppi:
+
+- **Zone** — header, titolo, footer, spalla sx/dx, numero di pagina,
+  filigrana, testo invisibile: quante differenze ci sono e un interruttore
+  *Conta* per ognuna (numero di pagina e filigrana spenti di serie; il testo
+  invisibile è solo informativo, non entra mai nel confronto). Ogni riga si
+  apre sulle sue occorrenze; un clic porta alla differenza nel caso;
+- **Variabili riconosciute** — segnaposto, buchi, celle, sezioni, esecuzione,
+  listino: un interruttore *Variabile* per gruppo di prova;
+- **Da decidere** — solo maiuscole, solo punteggiatura: contano, ma con
+  *Tollera tutte* a portata di un clic.
+
+Per una singola variabile presa per sbaglio c'è *Non è una variabile* / di
+nuovo variabile nel caso (tasto `V` o clic destro sulla differenza), valida
+per qualsiasi tipo di prova; le righe dei Filtri valgono per un intero gruppo.
+Le scelte si salvano nel caso. Con *Usa per tutta l'iniziativa* spuntato, un
+interruttore diventa il predefinito di **tutti i casi dell'iniziativa** che
+non hanno una scelta propria per quella riga (anche quelli già esistenti, da
+subito), e questo caso perde la sua scelta per quella riga. I riepiloghi
+salvati nella bacheca degli altri casi si aggiornano solo quando ciascun
+caso viene confrontato di nuovo (aprendolo). Un cambio si applica subito,
+senza rigenerare: il caso dietro il pannello si rifiltra da solo.
+*Ripristina predefiniti* toglie tutte le scelte proprie del caso.
+
+Le vecchie regole con espressione regolare restano, sotto **«Regole
+avanzate ▸»** dentro i Filtri (stesso motore di prima, stesso limite di 2
+secondi in un processo a parte — vedi sotto); si aprono anche dalla bacheca
+con *Regole di rumore…*, che però lì modifica solo le regole proprie
+dell'iniziativa, non più gli interruttori: quelli si decidono sempre dai
+Filtri, caso per caso o come predefinito. Puoi aggiungere regole tue (un nome
+e un'espressione, per esempio `PR-\d{6}` per un numero di pratica): prima di
+salvare, ogni regola mostra quante volte la trova nel target e nell'ultimo
+TO-BE, e un'espressione sbagliata è segnata in rosso sulla sua riga. Le
+regole cercano nel testo normalizzato (virgolette e trattini uniformati), zone
+comprese. Le regole del caso si sommano a quelle dell'iniziativa; due regole
+non possono avere lo stesso nome.
 
 Un'espressione che rischia di bloccare il programma viene rifiutata con
 «espressione potenzialmente troppo lenta: semplificala». Le regole tue non
 girano mai dentro il programma: le cerca un processo a parte, sullo stesso
 testo che il confronto usa, con un limite di 2 secondi; una che lo supera (o
 che non si può usare) resta fuori dal confronto, e una nota lo dice.
+
+**Riconoscimento esteso (generazione di controllo).** Dopo la prima
+generazione riuscita di un caso, e dopo ogni *Cambia chiamata…*, il
+programma manda da solo — in background, su svil, senza creare una versione
+— una copia del payload con qualche valore cambiato (stesso formato, stessa
+lunghezza), la confronta con il documento appena generato e usa le parole
+che cambiano come prova «esecuzione» per le variabili. Non tocca mai i campi
+che decidono la struttura del documento (chiave, id, codici tecnici); se
+qualcosa va storto (timeout, risposta non valida, il documento cambia
+struttura) non lo vedi mai come un errore del caso: al più una riga
+discreta in fondo ai Filtri, «Riconoscimento esteso non disponibile per
+questo caso», e viene ritentato alla generazione successiva. Quando è
+pronto, la versione aperta viene rigiudicata da sola (senza rigenerare).
+I casi email (HTML) non hanno generazione di controllo: la riga lo dice.
+Eliminare un'iniziativa ferma le sue generazioni di controllo in corso.
+
+**Dizionario dei prezzi.** Se una cartella d'iniziativa contiene un file
+`dizionario.xlsx` (per ora solo per convenzione — nessuna schermata lo
+sceglie), i suoi valori diventano nomi di variabile riconosciuti come prova
+di valore («listino»): un numero è cercato per uguaglianza arrotondata alle
+sue cifre decimali, un testo ignorando maiuscole/minuscole. Un file
+danneggiato o troppo grande viene ignorato con una nota, mai un errore.
 
 ### Casi HTML
 
@@ -605,6 +703,20 @@ usata per quell'iniziativa. Il risultato è:
   soli file di questa consegna. Se la consegna non è completa lo zip non viene
   creato.
 
+### Eliminare un'iniziativa
+
+L'icona cestino sulla riga dell'elenco (o il tasto destro) toglie
+un'iniziativa **subito** dall'elenco, ma non ancora dal disco: in fondo alla
+finestra compare una barra «Iniziativa «X» eliminata · Annulla» con un conto
+alla rovescia di 5 secondi (`Ctrl+Z` fa lo stesso). Solo alla scadenza il
+programma cancella davvero la cartella — non c'è un secondo livello di
+recupero dopo. Più eliminazioni ravvicinate si raggruppano in una sola barra
+(«3 elementi eliminati · Annulla tutto», con l'elenco espandibile e
+l'annullamento di ognuna per conto suo); alla chiusura del programma le
+eliminazioni ancora in coda vengono eseguite prima di uscire, mai
+abbandonate a metà. Se un file risulta bloccato l'eliminazione fallisce con
+un messaggio e l'iniziativa torna nell'elenco.
+
 ### Sicurezza
 
 - **Fuori dai log nginx**: ogni chiamata porta un `Postman-Token` non vuoto (di
@@ -623,6 +735,21 @@ usata per quell'iniziativa. Il risultato è:
   dell'Officina, mai nei log del programma. Tienila sul disco locale, non in
   OneDrive: il programma lo permette ma avvisa, perché tutto verrebbe copiato
   nel cloud.
+
+### Aggiornare dalla 1.3
+
+La 1.4 legge le zone della pagina (header, footer, spalle…) e le confronta a
+parte, quindi alcune differenze hanno ora un riferimento diverso da prima.
+Dopo l'aggiornamento **rivedi tolleranze, «non è una variabile» e segni
+«fatta» sulle differenze di header, footer e spalle e su quelle vicine**:
+- una tolleranza o un «non è una variabile» fatti nella 1.3 che non trovano
+  più la loro differenza restano nel caso ma non fanno nulla (la differenza
+  torna da guardare e va tollerata di nuovo);
+- un segno «fatta» della 1.3 che non trova più la sua differenza non viene
+  mai contato come «risolta»: resta nel caso, inattivo, e la differenza (se
+  c'è ancora) torna da fare.
+
+I vecchi preset di rumore dell'iniziativa diventano le scelte dei Filtri.
 
 ### Limiti
 

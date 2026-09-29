@@ -16,7 +16,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_ACCESSIBILITY", "0")
 
-from PySide6.QtCore import QMarginsF, QRectF, QSizeF  # noqa: E402
+from PySide6.QtCore import QMarginsF, QPointF, QRectF, QSizeF  # noqa: E402
 from PySide6.QtGui import (  # noqa: E402
     QColor,
     QFont,
@@ -204,3 +204,64 @@ def comb_pdf(path: Path, label: str, letters: str, *, pitch_pt: float = 14.0, fo
         painter.drawText(int(centre - metrics.horizontalAdvance(letter) / 2), int(baseline), letter)
     painter.end()
     return path
+
+
+# ------------------------------------------ painted pages (rotation, lines) ---
+
+def painted_pdf(path: Path, paint, *, pages: int = 1, font_pt: float = 10.0) -> Path:
+    """A4 pages drawn by ``paint(painter, page)``; draw with :func:`draw_text`
+    and :func:`draw_line`, which take POINTS from the top-left of the page.
+
+    Written at 1200 dpi: Qt rounds every glyph position to a device pixel, and
+    at 300 dpi the jitter between glyphs makes PDFium insert spaces inside words."""
+    writer = _writer(path)
+    writer.setResolution(1200)
+    painter = QPainter(writer)
+    font = QFont(FONT_FAMILY)
+    font.setPointSizeF(font_pt)
+    painter.setFont(font)
+    for page in range(pages):
+        if page:
+            writer.newPage()
+        paint(painter, page)
+    painter.end()
+    return path
+
+
+def _pt(painter: QPainter) -> float:
+    """Device pixels per point of the painter's PDF writer."""
+    return painter.device().resolution() / 72
+
+
+def draw_text(painter: QPainter, x: float, y: float, text: str, *, angle: float = 0,
+              color: QColor | None = None) -> None:
+    """``text`` with its baseline starting at ``(x, y)`` points (top-left
+    origin), turned ``angle`` degrees clockwise on the page (-90: it reads
+    from the bottom up, as in a left margin; 90: from the top down)."""
+    pt = _pt(painter)
+    painter.save()
+    if color is not None:
+        painter.setPen(color)
+    painter.translate(x * pt, y * pt)
+    if angle:  # rotate(0) still makes Qt write one text object per glyph, spaced
+        painter.rotate(angle)
+    painter.drawText(0, 0, text)
+    painter.restore()
+
+
+def draw_line(painter: QPainter, x0: float, y0: float, x1: float, y1: float, *, width: float = 2.0) -> None:
+    """A black line (points, top-left origin), ``width`` points thick."""
+    pt = _pt(painter)
+    painter.save()
+    pen = painter.pen()
+    pen.setColor(QColor("black"))
+    pen.setWidthF(width * pt)
+    painter.setPen(pen)
+    painter.drawLine(QPointF(x0 * pt, y0 * pt), QPointF(x1 * pt, y1 * pt))
+    painter.restore()
+
+
+def fill_rect(painter: QPainter, x: float, y: float, w: float, h: float, color: QColor) -> None:
+    """A filled rectangle without outline (points, top-left origin)."""
+    pt = _pt(painter)
+    painter.fillRect(QRectF(x * pt, y * pt, w * pt, h * pt), color)

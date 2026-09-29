@@ -11,8 +11,10 @@
   the words keep zero boxes (spec §6: "Senza Edge: confronto DOM normale").
 * :meth:`CaseInputsMixin._compare_pairs` — the comparisons of the target
   with each version of a case comparison (the TO-BE, the AS-IS), cached in
-  memory by content hashes, rules and tracking flag: re-judging (a profile
-  or a tolerance changed) costs nothing. The presets are matched by the
+  memory by content hashes, rules, tracking flag, the zones set aside and the
+  variables' values (``compare.values.Values.key``: payload, dictionary,
+  control words, proofs): re-judging
+  (a profile or a tolerance changed) costs nothing. The presets are matched by the
   pipeline; the user's own rules NEVER run in this process (ruling R46): the
   pipeline's pre-noise sides (``compare.sides.prepare``) of every pair go
   to ONE ``noise_guard.match_spans`` child, which matches the rules on the
@@ -36,17 +38,18 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from qtrequestory.officina.compare import noise, noise_guard, urls
 from qtrequestory.officina.compare.extract_html import extract_html
 from qtrequestory.officina.compare.extract_pdf import DocText
 from qtrequestory.officina.compare.html_boxes import place
-from qtrequestory.officina.compare.model import Block, Comparison, Word
+from qtrequestory.officina.compare.model import ARREDO_ZONES, Block, Comparison, Word
 from qtrequestory.officina.compare.normalise import line_end, units
 from qtrequestory.officina.compare.pipeline import CustomHits, finish
 from qtrequestory.officina.compare.sides import Prepared, prepare
+from qtrequestory.officina.compare.values import Values
 from qtrequestory.officina.model import Version
 from qtrequestory.officina.model_review import NoiseRule
 from qtrequestory.officina.service_compare import CompareError, _case_folder, _label, _read_version, _sha
@@ -83,6 +86,7 @@ class CaseInputsMixin:
         self._pairs: OrderedDict[tuple, Comparison] = OrderedDict()
         self._probes: OrderedDict[tuple, int | str] = OrderedDict()
         self._spans: OrderedDict[tuple, object] = OrderedDict()
+        self._dictionaries: dict = {}   # dictionary path -> (mtime, (Dictionary, note)): service_review._values
 
     # ------------------------------------------------------------- inputs ---
 
@@ -134,11 +138,13 @@ class CaseInputsMixin:
 
     def _compare_pairs(self, target: CaseInput, others: Sequence[tuple[str, CaseInput]],
                        presets: Sequence[NoiseRule], custom: Sequence[NoiseRule],
-                       tracking: bool) -> tuple[list[Comparison], dict[str, str]]:
+                       tracking: bool, values: Values | Mapping[str, Values] | None = None,
+                       aside: Collection[str] = ARREDO_ZONES) -> tuple[list[Comparison], dict[str, str]]:
         """The comparison of ``target`` with each ``(label, input)`` of
         ``others`` (cached), and ``{name: why}`` of the ``custom`` rules
-        dropped from all of them (see module doc). Without notes: see
-        :meth:`_noted`."""
+        dropped from all of them (see module doc). ``values``: one for every
+        pair, or one per label (the control's proofs differ per version);
+        ``aside``: the zones set aside. Without notes: see :meth:`_noted`."""
         found: dict[str, dict[str, object]] = {label: {} for label, _ in others}
         prepared: dict[str, Prepared] = {}
 
@@ -180,13 +186,16 @@ class CaseInputsMixin:
         out = []
         for label, other in others:
             hits: list[CustomHits] = [(r.name, *found[label][r.name]) for r in applied]  # type: ignore[misc]
-            out.append(self._finished(target, other, label, prepared.get(label), presets, applied, hits, tracking))
+            mine = values.get(label) if isinstance(values, Mapping) else values
+            out.append(self._finished(target, other, label, prepared.get(label), presets, applied, hits, tracking,
+                                      mine, aside))
         return out, dropped
 
     def _finished(self, target: CaseInput, other: CaseInput, label: str, prepared: Prepared | None,
                   presets: Sequence[NoiseRule], applied: Sequence[NoiseRule], hits: list[CustomHits],
-                  tracking: bool) -> Comparison:
-        key = (target.sha, other.sha, label, tuple((r.name, r.pattern) for r in (*presets, *applied)), tracking)
+                  tracking: bool, values: Values | None = None, aside: Collection[str] = ARREDO_ZONES) -> Comparison:
+        key = (target.sha, other.sha, label, tuple((r.name, r.pattern) for r in (*presets, *applied)), tracking,
+               values.key() if values is not None else "", tuple(sorted(aside)))
         with self._case_lock:
             cached = self._pairs.get(key)
         if cached is not None:
@@ -194,7 +203,7 @@ class CaseInputsMixin:
         if prepared is None:
             prepared = prepare(target.doc, other.doc, right_label=label)
         made = finish(prepared, rules=presets, custom_hits=hits,
-                      link_drop=urls.tracking_drop if tracking else urls.keep_all)
+                      link_drop=urls.tracking_drop if tracking else urls.keep_all, values=values, aside=aside)
         if isinstance(target.doc, tuple) and isinstance(other.doc, tuple):
             made = dataclasses.replace(made, left_pages=target.pages or made.left_pages,
                                        right_pages=other.pages or made.right_pages)

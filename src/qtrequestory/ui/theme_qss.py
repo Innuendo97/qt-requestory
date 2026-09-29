@@ -13,6 +13,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from qtrequestory.ui.theme_qss_officina import QSS_OFFICINA_25
+
 __all__ = ["QSS", "glyph"]
 
 log = logging.getLogger(__name__)
@@ -32,20 +34,45 @@ QLabel[pill="bad"] {{ background: {bad_bg}; color: {bad}; }}
 QLabel[pill="neutral"] {{ background: {neutral_bg}; color: {muted}; }}
 QLabel[pill="progress"] {{ background: {progress_bg}; color: {progress}; }}
 QLabel[pill="variable"] {{ background: {variable_bg}; color: {variable}; }}
+QLabel[pill="flag"] {{ background: {flag_bg}; color: {flag}; }}
+QLabel[pill="verify"] {{ background: {verify_bg}; color: {verify}; }}
+QLabel[pill="noise"] {{ background: transparent; color: {muted}; border: 1px dotted {muted}; }}
+QLabel[pill="ignored"] {{ background: transparent; color: {muted}; border: 1px solid {border}; }}
 
 QFrame[role="card"] {{ background: {surface}; border: 1px solid {border}; border-radius: 6px; }}
 
-QWidget#appBar {{ background: {surface}; border-bottom: 1px solid {border}; }}
-QPushButton[tab="true"] {{ background: transparent; border: none; border-radius: 0;
+QWidget#appBar {{ border: none;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, {header_gradient}); }}
+QWidget#appBar QLabel {{ color: {on_header}; background: transparent; }}
+QWidget#appBar QPushButton[tab="true"] {{ background: transparent; border: none; border-radius: 0;
+    border-bottom: 3px solid transparent; color: {on_header_muted}; padding: 6px 12px 3px 12px;
+    font-weight: 500; }}
+QWidget#appBar QPushButton[tab="true"]:hover {{ color: {on_header};
+    border-bottom-color: {on_header_muted}; }}
+QWidget#appBar QPushButton[tab="true"]:checked {{ color: {on_header}; border-bottom: 3px solid {identity};
+    font-weight: 600; }}
+QPushButton[tab="pane"] {{ background: transparent; border: none; border-radius: 0;
     border-bottom: 3px solid transparent; color: {muted}; padding: 6px 12px 3px 12px;
     font-weight: 500; }}
-QPushButton[tab="true"]:hover {{ color: {text}; }}
-QPushButton[tab="true"]:checked {{ color: {text}; border-bottom: 3px solid {accent}; }}
-QLabel#appBarBrand {{ font-weight: 600; }}
-QPushButton#statusChip {{ background: {surface2}; border: 1px solid {border};
+QPushButton[tab="pane"]:hover {{ color: {text}; border-bottom-color: {border}; }}
+QPushButton[tab="pane"]:checked {{ color: {text}; border-bottom: 3px solid {accent};
+    font-weight: 600; }}
+QLabel#appBarBrand {{ font-weight: 700; font-size: 11pt; }}
+QPushButton#statusChip {{ background: {header_raise}; border: 1px solid {header_raise};
     border-radius: 12px; padding: 0 10px; min-height: 22px; max-height: 22px; }}
-QPushButton#statusChip:hover {{ border-color: {accent}; }}
+QPushButton#statusChip:hover {{ border-color: {on_header_muted}; }}
 QPushButton#statusChip QLabel {{ background: transparent; }}
+QPushButton#statusChip:focus {{ border-color: {on_header}; }}
+QPushButton#statusChip[current="true"] {{ border-color: {identity}; }}
+QFrame#syncPanel {{ background: {surface}; border: 1px solid {border}; border-radius: 8px; }}
+QFrame#syncPanel QFrame#syncPanelRule {{ background: {border}; border: none; max-height: 1px; }}
+QPushButton[role="link"] {{ background: transparent; border: none; color: {accent};
+    padding: 4px 2px; font-weight: 600; }}
+QPushButton[role="link"]:hover, QPushButton[role="link"]:focus {{ text-decoration: underline; }}
+QWidget#appBar QPushButton[role="icon"]:hover {{ background: {header_raise};
+    border-color: {header_raise}; }}
+QWidget#appBar QPushButton[role="icon"]:checked {{ background: {header_raise};
+    border-color: {identity}; }}
 QLabel[dot] {{ font-size: 10pt; }}
 QLabel[dot="ok"] {{ color: {ok}; }}
 QLabel[dot="warn"] {{ color: {warn}; }}
@@ -61,6 +88,24 @@ QFrame#toast QPushButton#toastAction {{ background: transparent; color: {selecti
     padding: 0 2px; min-height: 0; font-weight: 700; text-decoration: underline; }}
 QFrame#toast QPushButton#toastAction:hover {{ background: transparent; color: {bg}; }}
 QFrame#toast QLabel#toastHint {{ color: {border}; }}
+QFrame#pendingBar {{ background: {surface}; border: 1px solid {border};
+    border-left: 4px solid {danger}; border-radius: 6px; }}
+QFrame#pendingBar QLabel {{ background: transparent; color: {text}; }}
+QFrame#pendingBar QLabel#pendingCountdown {{ color: {muted}; }}
+QFrame#pendingBar QScrollArea#pendingList, QFrame#pendingBar QScrollArea#pendingList > QWidget > QWidget {{
+    background: transparent; }}
+QFrame#pendingBar QPushButton#pendingUndo {{ background: transparent; color: {accent};
+    border: 1px solid transparent; padding: 2px 6px; min-height: 0; font-weight: 700; }}
+QFrame#pendingBar QPushButton#pendingUndo:hover {{ text-decoration: underline; }}
+QFrame#pendingBar QPushButton#pendingUndo:focus, QFrame#pendingBar QToolButton#pendingToggle:focus {{
+    border: 1px solid {accent}; }}
+QFrame#pendingBar QToolButton#pendingToggle {{ background: transparent; border: 1px solid transparent;
+    padding: 0 6px; min-height: 0; color: {muted}; }}
+QFrame#pendingBar QToolButton#pendingToggle:hover {{ background: {surface2}; }}
+QToolButton#rowDelete {{ background: transparent; border: 1px solid transparent; padding: 0;
+    min-height: 0; margin: 0 2px; }}
+QToolButton#rowDelete:hover, QToolButton#rowDelete:focus {{ background: {danger_bg};
+    border-color: {danger}; }}
 
 QPushButton, QToolButton {{ background: {surface}; color: {text}; border: 1px solid {border};
     border-radius: 4px; padding: 4px 12px; min-height: 20px; }}
@@ -77,6 +122,17 @@ QPushButton[role="primary"] {{ background: {accent}; color: {on_accent}; border:
 QPushButton[role="primary"]:hover {{ background: {accent_hover}; border-color: {accent_hover}; }}
 QPushButton[role="primary"]:disabled {{ background: {neutral_bg}; color: {muted};
     border-color: {neutral_bg}; }}
+
+QPushButton[role="danger"] {{ background: {danger_bg}; color: {danger}; border: 1px solid {danger};
+    font-weight: 600; }}
+QPushButton[role="danger"]:hover {{ background: {danger}; color: {on_accent}; }}
+QPushButton[role="dangerPrimary"] {{ background: {danger}; color: {on_accent};
+    border: 1px solid {danger}; font-weight: 600; padding: 5px 18px; }}
+QPushButton[role="positive"] {{ background: {positive_bg}; color: {positive};
+    border: 1px solid {positive}; font-weight: 600; }}
+QPushButton[role="positive"]:hover {{ background: {positive}; color: {on_accent}; }}
+QPushButton[role="danger"]:disabled, QPushButton[role="dangerPrimary"]:disabled,
+QPushButton[role="positive"]:disabled {{ background: {bg}; color: {muted}; border-color: {border}; }}
 
 QPushButton[role="icon"], QToolButton[role="icon"] {{ background: transparent;
     border: 1px solid transparent; border-radius: 4px; padding: 0; min-width: 28px;
@@ -256,13 +312,14 @@ QFrame#actionsBar QToolButton[barAction="more"] {{ font-weight: 700; padding: 3p
 QPushButton[role="row"] {{ background: transparent; border: 1px solid transparent;
     text-align: left; padding: 4px 8px; color: {text}; }}
 QPushButton[role="row"]:hover {{ background: {surface2}; border-color: {border}; }}
+QPushButton[role="row"]:disabled {{ color: {muted}; font-style: italic; }}
 QTreeView#results::item {{ padding: 5px 6px; }}
 QPushButton[toggle="true"] {{ background: transparent; border: 1px solid transparent;
     color: {muted}; padding: 2px 8px; }}
 QPushButton[toggle="true"]:hover {{ border-color: {border}; color: {text}; }}
 QPushButton[toggle="true"]:checked {{ background: {selection}; color: {selection_text};
     border-color: {selection}; }}
-"""
+""" + QSS_OFFICINA_25
 
 
 #: Stroked paths in a 10x10 box: the glyphs the stylesheet draws itself.

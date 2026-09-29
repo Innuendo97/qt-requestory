@@ -8,8 +8,8 @@
     │                          │▯│ │   ▯ the part of the document on screen
     └──────────────────────────┴─┴─┘
 
-One segment for every difference the viewer draws on that side, at the
-vertical position of its words in the whole document (its top and bottom over
+One segment for every difference the viewer draws on that side (one per
+page it is on), at the vertical position of its words in the whole document (its top and bottom over
 the scene height), in the verdict strip's colours (``officina_strip``: the
 chrome follows the theme, R13): regressione red, da fare amber, non risolta
 amber with a red band down its left edge, in corso blue, da verificare a
@@ -50,7 +50,7 @@ HIT_SLACK = 3.0
 INSET = 2.0
 #: States without a segment: variables and noise (no verdict). The AS-IS view's neutral
 #: "nessuno" keeps its grey segment: it still says where a difference is.
-_NO_SEGMENT = frozenset({"variabile", "rumore"})
+_NO_SEGMENT = frozenset({"variabile", "rumore", "arredo"})  # arredo: ruling F3
 #: Paint order: the mildest first, so the worst state is on top where they overlap.
 _PAINT_RANK = {state: i for i, state in enumerate(reversed((*WORST_ORDER, "nessuno", "tollerata")))}
 
@@ -63,7 +63,7 @@ class Segment:
     state: str
     top: float
     bottom: float
-    page: int  # 0-based, of its first words
+    page: int  # 0-based: a difference on several pages has one segment on each
 
 
 def document_segments(items: Sequence[tuple[Judged, str]], *, show_done: bool,
@@ -79,15 +79,16 @@ def document_segments(items: Sequence[tuple[Judged, str]], *, show_done: bool,
         if state in _NO_SEGMENT or (state == "fatta" and (side != "left" or not show_done)):
             continue
         words = judged.diff.left if side == "left" else judged.diff.right
-        spans = [(page_tops[page] + rect.top(), page_tops[page] + rect.bottom(), page)
-                 for page, rect in line_boxes(words) if 0 <= page < len(page_tops)]
-        if not spans:
-            continue
-        top = min(s[0] for s in spans)
-        bottom = max(s[1] for s in spans)
-        first = min(spans)[2]
-        out.append(Segment(judged.diff.id, state, max(0.0, top / height),
-                           min(1.0, bottom / height), first))
+        # one segment per page: a zone difference "uguale su N pagine" marks
+        # each page where it is, not the whole stretch between them
+        per_page: dict[int, tuple[float, float]] = {}
+        for page, rect in line_boxes(words):
+            if 0 <= page < len(page_tops):
+                top, bottom = page_tops[page] + rect.top(), page_tops[page] + rect.bottom()
+                was = per_page.get(page, (top, bottom))
+                per_page[page] = (min(was[0], top), max(was[1], bottom))
+        for page, (top, bottom) in per_page.items():
+            out.append(Segment(judged.diff.id, state, max(0.0, top / height), min(1.0, bottom / height), page))
     return sorted(out, key=lambda s: (s.top, s.diff_id))
 
 

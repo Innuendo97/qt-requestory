@@ -63,7 +63,7 @@ def test_board_counts_take_the_marks_out_of_the_verdicts_and_keep_every_flag():
     # the non risolte are the summary's (R44: also counted in their verdict)
     assert counts == {"regressione": 1, "non_risolta": 1, "da_fare": 3, "in_corso": 0,
                       "da_verificare": 2, "fatta": 4, "tollerata": 1, "variabile": 5,
-                      "rumore": 2}
+                      "rumore": 2, "arredo": 0}
 
 
 def _j(verdict, *, klass="testo", **flags) -> Judged:

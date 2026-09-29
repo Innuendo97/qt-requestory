@@ -124,9 +124,9 @@ def test_read_chars_lets_go_of_pdfium_between_pages(pdfs: Path, monkeypatch):
     held_per_page: list[int] = []
     real_page_chars = pdf._page_chars
 
-    def page_chars(page):
+    def page_chars(page, *args):
         held_per_page.append(lock.depth)
-        return real_page_chars(page)
+        return real_page_chars(page, *args)
 
     monkeypatch.setattr(pdf, "_page_chars", page_chars)
 

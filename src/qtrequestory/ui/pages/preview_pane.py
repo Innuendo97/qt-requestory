@@ -58,6 +58,7 @@ __all__ = ["MAX_LINES", "PREVIEW_JOB", "ElidedLabel", "PreviewPane", "editor_lab
 #: The job name: it supersedes, which is what makes arrow-key browsing cheap.
 PREVIEW_JOB = "preview"
 TAB_JSON, TAB_DETAILS = 0, 1
+TAB_CHROME_PX = 28  # ``[tab="pane"]`` padding (12 + 12) and a little slack.
 
 
 def editor_label(services: CoreServices) -> str:
@@ -305,9 +306,10 @@ class PreviewPane(QWidget):
         for index, label in ((TAB_JSON, strings.PREVIEW_TAB_JSON),
                              (TAB_DETAILS, strings.PREVIEW_TAB_DETAILS)):
             tab = QPushButton(label)
-            tab.setProperty("tab", True)
+            tab.setProperty("tab", "pane")
             tab.setCheckable(True)
             tab.setAutoDefault(False)
+            tab.setMinimumWidth(theme.bold_min_width(tab, label, TAB_CHROME_PX))
             self.tabs.addButton(tab, index)
             row.addWidget(tab)
         self.tabs.button(TAB_JSON).setChecked(True)

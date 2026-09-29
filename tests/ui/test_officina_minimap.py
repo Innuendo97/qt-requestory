@@ -67,6 +67,18 @@ def test_segments_sit_at_the_relative_position_of_their_difference():
     assert 0.0 < first.top < first.bottom < last.top < last.bottom < 1.0
 
 
+def test_a_difference_on_several_pages_has_one_segment_per_page():
+    """I1b: a zone difference "uguale su N pagine" (a header slot grouped
+    across pages) marks each page where it is, never the whole stretch between."""
+    tops = [MARGIN + i * (PAGE[1] + GAP) for i in range(3)]
+    header = _j(1, "da_fare", 0, 30)
+    words = tuple(dataclasses.replace(header.diff.left[0], page=p) for p in (0, 2))
+    header = Judged(dataclasses.replace(header.diff, left=words, right=words), "da_fare")
+    segs = document_segments([(header, "left")], show_done=False, page_tops=tops, height=_height())
+    assert [(s.diff_id, s.page) for s in segs] == [(1, 0), (1, 2)]
+    assert all(s.bottom - s.top < 20 / _height() for s in segs), "a line each, not the pages between"
+
+
 def test_fatte_are_hidden_unless_shown_and_only_on_the_target_side():
     tops = [MARGIN]
     done = _j(1, "fatta", 0, 100)
@@ -86,14 +98,15 @@ def test_variables_noise_and_wordless_sides_have_no_segment():
     assert [s.diff_id for s in segs] == [4]
 
 
-def test_a_marked_difference_is_a_green_dashed_segment():
+def test_a_marked_difference_is_a_cyan_dashed_segment():
     tops = [MARGIN]
     segs = document_segments([(_j(1, "da_fare", 0, 100, marked=True), "left")], show_done=False,
                              page_tops=tops, height=900)
     assert segs[0].state == "da_verificare"
     from qtrequestory.ui.pages.officina_strip import SEGMENT_LOOKS
     fill, edge, dashed = SEGMENT_LOOKS["da_verificare"]
-    assert (fill, edge, dashed) == (None, "ok", True)
+    assert (fill, edge, dashed) == (None, "verify", True)
+    assert SEGMENT_LOOKS["non_risolta"][0] == "flag"
 
 
 def test_the_view_feeds_its_minimap_and_it_sits_beside_the_scroll_bar(view, qtbot):

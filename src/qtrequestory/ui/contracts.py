@@ -29,7 +29,7 @@ turns those into queued Qt signals. Cancellation is a ``CancelToken``.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -100,8 +100,33 @@ from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
 from qtrequestory.officina.compare.extract_pdf import DocText
+from qtrequestory.officina.compare.filter_model import (
+    CONTROL_STATES,
+    CONTROL_UNAVAILABLE_NOTE,
+    FILTER_DEFAULTS,
+    INFORMATIONAL_IDS,
+    FILTER_GRUPPI,
+    FILTER_IDS,
+    FILTER_TITLES,
+    ControlState,
+    ControlStatus,
+    FilterGroup,
+    FilterGruppo,
+    FilterOccurrence,
+    FilterPanel,
+    advanced_filter_id,
+    advanced_rule_name,
+    filter_gruppo,
+    is_filter_id,
+)
 from qtrequestory.officina.compare.model import (
+    ARREDO_ZONES,
     COUNTING,
+    KLASSES,
+    NO_VERDICT,
+    PROVE,
+    TIPI,
+    ZONES,
     Anchor,
     Block,
     CaseComparison,
@@ -112,9 +137,13 @@ from qtrequestory.officina.compare.model import (
     Klass,
     Op,
     Profile,
+    Prova,
+    Tipo,
     Verdict,
     Verification,
     Word,
+    Zone,
+    ZoneBox,
 )
 from qtrequestory.officina.delivery import (
     DeliveryItem,
@@ -128,7 +157,7 @@ from qtrequestory.officina.delivery import (
 from qtrequestory.officina.generator import SendResult
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version
 from qtrequestory.officina.model_call import HISTORY_KIND as CALL_REPLACED_KIND
-from qtrequestory.officina.model_review import Mark, NoiseRule, Review, Tolerance
+from qtrequestory.officina.model_review import ControlRecord, Mark, NoiseRule, Review, Tolerance
 from qtrequestory.officina.links import mask_text
 from qtrequestory.officina.service import CompareError
 
@@ -144,6 +173,13 @@ __all__ = [
     # Officina phase 2: the comparison contract (officina.compare.model) and review state (model_review)
     "Anchor", "Block", "CaseComparison", "CaseSummary", "Comparison", "Diff", "Judged", "Verification",
     "Op", "Klass", "Verdict", "Profile", "COUNTING", "Mark", "NoiseRule", "Review", "Tolerance",
+    # Officina phase 2.5: zones, types, proofs (compare.model), the Filtri panel and the control
+    # generation (compare.filter_model, model_review.ControlRecord)
+    "KLASSES", "NO_VERDICT", "Zone", "ZONES", "ARREDO_ZONES", "Tipo", "TIPI", "Prova", "PROVE", "ZoneBox",
+    "FilterPanel", "FilterGroup", "FilterOccurrence", "FilterGruppo", "FILTER_GRUPPI", "FILTER_IDS",
+    "FILTER_TITLES", "FILTER_DEFAULTS", "INFORMATIONAL_IDS", "is_filter_id", "filter_gruppo",
+    "advanced_filter_id", "advanced_rule_name",
+    "ControlState", "ControlStatus", "CONTROL_STATES", "CONTROL_UNAVAILABLE_NOTE", "ControlRecord",
     # archive import (core/archive.py, core/importer.py)
     "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
@@ -499,6 +535,20 @@ class OfficinaApi(Protocol):
         blank name or no root."""
         ...
 
+    def delete_initiative(self, ini: Initiative) -> None:
+        """Delete the initiative's folder PERMANENTLY (phase 2.5, D6: the UI
+        calls it only once the 5 s "Annulla" window of the deletion bar has
+        passed, or at app close). Refuses with ``ValueError`` — nothing
+        touched — unless ``ini.folder`` is one folder directly inside
+        ``workspace_root()``, not a link, holding ``iniziativa.json``;
+        ``FileNotFoundError`` when it is already gone; ``PermissionError`` /
+        ``OSError`` when a file inside is in use (the folder is renamed away
+        first, so a locked file leaves the initiative whole). Its cases'
+        control generations in progress are cancelled first (never a refusal:
+        their answers are dropped, nothing is written) and what their
+        comparisons found for the Filtri panel is forgotten."""
+        ...
+
     def load(self, initiative_id: str) -> Initiative:
         """Re-read one initiative from disk, by its id: its FOLDER's name
         (``Initiative.id``), never its display name — a folder copied in
@@ -714,6 +764,44 @@ class OfficinaApi(Protocol):
     def dom_view(self, case: Case, version: Version) -> tuple[str, str]:
         """``(target source, version source)`` as pretty text for the DOM
         tab; ``("", "")`` for a PDF case."""
+        ...
+
+    # -- phase 2.5: "Filtri del confronto" and the control generation -----
+    # (spec §3.4, §3.8; ids, switch semantics and precedence in
+    # ``officina.compare.filter_model``). The real service: ``officina.service_filters``
+    # (panel, switches) and ``officina.service_control`` (control generation).
+
+    def filters(self, ini: Initiative, case: Case) -> FilterPanel:
+        """The panel of ``case`` in ``ini`` (both as in hand, F6): every
+        fixed row (``FILTER_IDS``, in order; ``zona.invisibile`` informational)
+        then one ``avanzate.<name>`` row per noise preset, initiative rule and
+        case rule (first name wins), each with its switch (case choice →
+        initiative choice → built-in / the rule's ``enabled``), its count
+        (whatever the switch) and its occurrences with their anchors and
+        pages from the last comparison (0 and none before any; ``diff_ids``
+        always ``()`` here), plus the control generation's state. Quick
+        enough for the GUI thread; never raises for a case without a
+        comparison."""
+        ...
+
+    def set_filters(self, ini: Initiative, case: Case | None, choices: Mapping[str, bool | None]) -> None:
+        """Merge ``choices`` (``id → on``; ``None`` removes that choice) into
+        the case's ``filtri`` or, with ``case`` None, into the initiative's
+        (the defaults of its cases). Saved at once (``save_review`` /
+        ``save_initiative_settings``), then ``case.review.filters`` /
+        ``ini.filters`` updated; stale ``avanzate.<name>`` keys (no such
+        preset or rule in scope any more) are pruned in the same save
+        (``prune_choices``). ``ValueError`` (Italian) — nothing changed — for
+        an id that is not a filter id, an informational row, a value that is
+        not a bool/None, or a refused save. The next ``compare_case`` applies them."""
+        ...
+
+    def control_state(self, case: Case) -> ControlState:
+        """The control generation of ``case`` now (D14): ``in_corso`` while
+        it runs in the background, else what ``caso.json`` ``controllo``
+        says (``pronta`` / ``non_disponibile`` with its discreet note;
+        a stored ``in_corso`` reads ``assente``), ``assente`` when there is
+        none. Never raises; never an error."""
         ...
 
 

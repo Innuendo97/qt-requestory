@@ -72,8 +72,11 @@ def _unique_tmp(path: Path) -> Path:
     return Path(name)
 
 
-def write_bytes_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def write_bytes_atomic(path: Path, data: bytes, *, make_parents: bool = True) -> None:
+    """``make_parents=False``: ``FileNotFoundError`` when the folder is gone
+    (a writer that must never recreate a deleted folder)."""
+    if make_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _unique_tmp(path)
     try:
         tmp.write_bytes(data)
@@ -83,8 +86,9 @@ def write_bytes_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def write_json_atomic(path: Path, data: object) -> None:
-    write_bytes_atomic(path, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
+def write_json_atomic(path: Path, data: object, *, make_parents: bool = True) -> None:
+    write_bytes_atomic(path, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"),
+                       make_parents=make_parents)
 
 
 def atomic_copy_text(src: Path, dst: Path) -> None:

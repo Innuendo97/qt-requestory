@@ -1,22 +1,33 @@
-"""The one place ``qtrequestory.officina`` imports ``pypdfium2``.
+"""The one place ``qtrequestory.officina`` imports ``pypdfium2``: this package.
 
-Every other module in this package — and everything outside it, including
-``qtrequestory.cli`` — must reach PDF rendering/extraction through this
-module rather than importing ``pypdfium2`` directly, so that importing
-``qtrequestory.officina`` (or running ``--sync``) never loads it. See
-``tests/test_officina_boundary.py``.
+Every other module of ``qtrequestory.officina`` — and everything outside it,
+including ``qtrequestory.cli`` — must reach PDF rendering/extraction through
+this package's public API (here, in ``__init__``) rather than importing
+``pypdfium2`` directly, so that importing ``qtrequestory.officina`` (or running
+``--sync``) never loads it. See ``tests/test_officina_boundary.py``.
+
+The private submodules (``_chars``, ``_objects``, ``_ink``, ``_geometry``) hold
+the reading of a page; every call into them happens with :data:`_LOCK` held.
 """
 from __future__ import annotations
 
-import ctypes
-import math
-import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
+
+from qtrequestory.officina.compare.graphics import PageGraphics
+from qtrequestory.officina.pdf._chars import PageChars, font_name, is_bold
+from qtrequestory.officina.pdf._chars import page_chars as _page_chars
+from qtrequestory.officina.pdf._geometry import display_transform as _display_transform
+from qtrequestory.officina.pdf._ink import hidden_layer_graphics as _hidden_layer_graphics
+from qtrequestory.officina.pdf._objects import Reader as _Reader
+from qtrequestory.officina.pdf._objects import graphics as _graphics
+
+__all__ = ["Box", "PageChars", "PdfReadError", "RenderedPage", "TextSearch", "font_name", "is_bold",
+           "page_count", "page_sizes", "read_chars", "read_graphics", "render_page"]
 
 
 #: PDFium is not thread-safe: every call into it from this module holds this
@@ -46,84 +57,10 @@ def _open_pdf(path: Path) -> pdfium.PdfDocument:
 
 
 Box = tuple[float, float, float, float]
-
-
-@dataclass(frozen=True)
-class PageChars:
-    """The raw text layer of one page, for ``compare.extract_pdf``.
-
-    ``width``/``height`` are the page as DISPLAYED (after its CropBox and
-    /Rotate). ``chars`` holds ``(text, text_box, display_box)`` per character
-    in PDFium's order; a box is ``(x0, y0, x1, y1)``:
-
-    * ``display_box``: points of the displayed page, origin at its TOP-left —
-      where a viewer shows the glyph;
-    * ``text_box``: unrotated user space with y pointing down — the text's own
-      direction, for grouping characters into words and lines even on a
-      rotated page.
-
-    Whitespace and characters PDFium generated (implicit spaces, line breaks)
-    come with ``None`` boxes: they only separate words. PDFium reports
-    a hyphen at a line end as U+0002; it is returned as ``"-"``. A glyph with
-    no Unicode mapping becomes U+FFFD, so its word stays whole.
-
-    ``fonts`` runs parallel to ``chars``: ``(size in points, bold)`` for a
-    character that may open a word — the first of the page and every one
-    after a separator — and ``None`` elsewhere (sampling every glyph would
-    cost ~30% of the extraction). The size is the one DISPLAYED (the font
-    size times the text matrix and CTM scale); bold comes from :func:`is_bold`.
-    Empty when nothing was sampled.
-    """
-    width: float
-    height: float
-    chars: list[tuple[str, Box | None, Box | None]]
-    image_count: int
-    fonts: list[tuple[float, bool] | None] = field(default_factory=list)
-
-
-#: Font-name markers of a bold face (matched case-insensitively).
-_BOLD_NAMES = ("bold", "black", "heavy")  # "bold" also covers "Semibold"
-#: A font subset's tag: six capitals and a plus ("ABCDEF+Arial-BoldMT").
-_SUBSET = re.compile(r"^[A-Z]{6}\+")
-
-
-def font_name(raw: bytes) -> str:
-    """A font's base name as PDFium returns it, without the subset tag."""
-    return _SUBSET.sub("", raw.decode("latin-1").rstrip("\0"))
-
-
-def is_bold(weight: int, name: str) -> bool:
-    """Whether a font is bold: by its weight when PDFium knows it (≥ 600), and
-    by its name either way ("Bold", "Black", "Heavy", "Semibold"): PDFium
-    derives the weight from the stem width, which puts a real bold face well
-    under 600 (Arial Bold reads 520)."""
-    lowered = name.lower()
-    return weight >= 600 or any(marker in lowered for marker in _BOLD_NAMES)
-
-
-class _FontSampler:
-    """Reads one character's font from a text page (buffers reused)."""
-
-    def __init__(self, textpage_raw) -> None:
-        self._raw = textpage_raw
-        self._name = ctypes.create_string_buffer(256)
-        self._flags = ctypes.c_int()
-        self._matrix = pdfium_c.FS_MATRIX()
-
-    def __call__(self, index: int) -> tuple[float, bool]:
-        size = pdfium_c.FPDFText_GetFontSize(self._raw, index)
-        if pdfium_c.FPDFText_GetMatrix(self._raw, index, ctypes.byref(self._matrix)):
-            m = self._matrix
-            size *= math.sqrt(abs(m.a * m.d - m.b * m.c))
-        length = pdfium_c.FPDFText_GetFontInfo(self._raw, index, self._name, len(self._name),
-                                               ctypes.byref(self._flags))
-        name = font_name(self._name.raw[:length]) if 0 < length <= len(self._name) else ""
-        weight = pdfium_c.FPDFText_GetFontWeight(self._raw, index)
-        return round(size, 2), is_bold(weight, name)
-
-
 def read_chars(path: Path) -> list[PageChars]:
-    """Every page's characters with loose glyph boxes, and its image count.
+    """Every page's characters (see :class:`PageChars`: loose glyph boxes,
+    tight ones for rotated text, the invisible ones marked after the ink test)
+    and its graphics.
 
     The lock is taken per page, not for the whole document, so a long
     extraction in a worker never keeps the viewer's render threads waiting
@@ -136,9 +73,10 @@ def read_chars(path: Path) -> list[PageChars]:
         with _LOCK:
             count = len(doc)
         pages = []
+        layers: set[str] = set()  # optional-content layers seen drawing (document-wide state)
         for i in range(count):
             with _LOCK:
-                pages.append(_page_chars(doc[i]))
+                pages.append(_page_chars(doc[i], layers))
         return pages
     except pdfium.PdfiumError as exc:
         raise PdfReadError(f"impossibile leggere il PDF {Path(path).name}: {exc}") from exc
@@ -298,86 +236,21 @@ def render_page(path: Path, page: int, scale: float) -> RenderedPage:
             doc.close()
 
 
-#: Device scale used to read PDFium's page-to-display transform exactly
-#: (FPDF_PageToDevice returns whole device pixels).
-_SCALE = 1000
-
-
-def _display_transform(page: pdfium.PdfPage, width: float, height: float):
-    """PDF user space -> displayed page (points, top-left origin).
-
-    Built from ``FPDF_PageToDevice``, so it applies the CropBox offset and the
-    page's /Rotate exactly as a viewer does.
-    """
-    dev_w, dev_h = round(width * _SCALE), round(height * _SCALE)
-
-    def device(x: float, y: float) -> tuple[float, float]:
-        dx, dy = ctypes.c_int(), ctypes.c_int()
-        pdfium_c.FPDF_PageToDevice(page.raw, 0, 0, dev_w, dev_h, 0, x, y, dx, dy)
-        return dx.value / _SCALE, dy.value / _SCALE
-
-    ox, oy = device(0, 0)
-    ax, ay = device(1000, 0)
-    bx, by = device(0, 1000)
-    a, b = (ax - ox) / 1000, (ay - oy) / 1000   # d(display)/dx
-    c, d = (bx - ox) / 1000, (by - oy) / 1000   # d(display)/dy
-
-    def apply(x: float, y: float) -> tuple[float, float]:
-        return ox + a * x + c * y, oy + b * x + d * y
-
-    return apply
-
-
-def _page_chars(page: pdfium.PdfPage) -> PageChars:
-    """One page's characters.
-
-    The text page is built with the page's /Rotate neutralised (in memory only;
-    the document is never saved): on a page rotated 180°, PDFium's text page
-    takes the upside-down text for right-to-left and returns it reversed and
-    split. Glyph boxes are in user space either way; the REAL rotation is then
-    applied to them by the display transform, computed before neutralising.
-    """
-    textpage = None
-    rotation = 0
+def read_graphics(page: pdfium.PdfPage) -> PageGraphics:
+    """The paths and images of ``page`` (form XObjects included, those of
+    optional-content layers that are OFF left out), boxes on the page as
+    DISPLAYED (points, top-left origin, like word boxes). The caller holds
+    :data:`_LOCK`; the page is left as it was."""
+    width, height = page.get_size()
+    to_display = _display_transform(page, width, height)
+    reader = _Reader()
+    objects = reader.objects(page)
+    rotation = page.get_rotation()
+    if rotation:
+        page.set_rotation(0)
     try:
-        width, height = page.get_size()
-        images = sum(1 for _ in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE]))
-        to_display = _display_transform(page, width, height)
-        chars: list[tuple[str, Box | None, Box | None]] = []
-        fonts: list[tuple[float, bool] | None] = []
-        rotation = page.get_rotation()
-        if rotation:
-            page.set_rotation(0)
-        textpage = page.get_textpage()
-        raw = textpage.raw
-        sample = _FontSampler(raw)
-        for i in range(textpage.count_chars()):
-            code = pdfium_c.FPDFText_GetUnicode(raw, i)
-            generated = pdfium_c.FPDFText_IsGenerated(raw, i) == 1
-            if code == 2:
-                ch = "-"
-            elif 0 < code < 0x110000:
-                ch = chr(code)
-            else:
-                ch = " " if generated else "\ufffd"
-            if ch.isspace() or (generated and code != 2):
-                chars.append((" ", None, None))
-                fonts.append(None)
-                continue
-            left, bottom, right, top = textpage.get_charbox(i, loose=True)
-            x_a, y_a = to_display(left, bottom)
-            x_b, y_b = to_display(right, top)
-            chars.append((
-                ch,
-                (left, -top, right, -bottom),
-                (min(x_a, x_b), min(y_a, y_b), max(x_a, x_b), max(y_a, y_b)),
-            ))
-            opens_word = len(chars) == 1 or chars[-2][1] is None
-            fonts.append(sample(i) if opens_word else None)
-        return PageChars(width, height, chars, images, fonts)
+        hidden = _hidden_layer_graphics(page, reader, objects)
     finally:
-        if textpage is not None:
-            textpage.close()
         if rotation:
-            page.set_rotation(rotation)  # leave the in-memory document as it was
-        page.close()
+            page.set_rotation(rotation)
+    return _graphics(reader, objects, to_display, hidden)

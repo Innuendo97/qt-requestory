@@ -106,6 +106,7 @@ class Board(QWidget):
         theme.set_role(self.title, "pageTitle")
         self.accepted = pill("")
         self.add_search_button = QPushButton(strings.OFFICINA_ADD_FROM_SEARCH)
+        theme.set_role(self.add_search_button, "positive")
         self.add_search_button.setToolTip(strings.OFFICINA_ADD_FROM_SEARCH_TIP)
         self.add_file_button = QPushButton(strings.OFFICINA_ADD_FROM_FILE)
         self.missing_button = QPushButton(strings.OFFICINA_GENERATE_MISSING_ASIS)
@@ -157,9 +158,7 @@ class Board(QWidget):
             actions.addWidget(button)
         actions.addStretch(1)
         actions.addWidget(self.deliver_button)
-        self.body = QStackedLayout()
-        self.body.addWidget(self.table)
-        self.body.addWidget(self.empty)
+        self.body = QStackedLayout()  # filled once it has a parent, below (D7)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SPACE[1])
@@ -168,6 +167,8 @@ class Board(QWidget):
         layout.addWidget(self.notice)
         layout.addWidget(self.progress_row)
         layout.addLayout(self.body, 1)
+        self.body.addWidget(self.table)  # addWidget shows the first page: never an orphan
+        self.body.addWidget(self.empty)
 
     def _connect(self) -> None:
         self.back_button.clicked.connect(self.back_requested)

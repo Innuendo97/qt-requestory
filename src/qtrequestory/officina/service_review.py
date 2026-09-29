@@ -5,7 +5,9 @@ spec §5–§6). The inputs and the cached comparisons are ``officina.service_ca
 **compare_case** (run it in a worker): the target, the TO-BE asked for and
 the AS-IS (when there is one: else the verdict is two-way) go through the
 engine with the effective profile (case → initiative → "tollerante") and
-the noise rules — the presets the initiative turned on, then the
+the case's "Filtri del confronto" switches (``officina.service_filters``:
+the ``filtri`` maps own them, F4) — the zones set aside, the proofs on, the
+tipi tolerated, and the noise rules switched on: the presets, then the
 initiative's own rules, then the case's; the user's own rules are matched
 only in the noise guard's child process, on the exact texts the noise stage
 sees (R46), and one that cannot be used there (out of time, R22) is dropped
@@ -18,6 +20,12 @@ When the TO-BE or the target has no text nothing is judged and nothing saved
 the verdict two-way, with a note.
 "Non è una variabile" is applied by ``judge`` (rule 1, ruling R36), so the
 pipeline's ``disabled_slots`` is not used here: the anchor stays the slot's.
+The variables' second pass (``compare.variables``) gets the case's payload
+(names only: it never proves a variable), the initiative's optional
+price-list dictionary ``dizionario.xlsx`` (a file that cannot be read adds a
+note, never an error) and the words the case's control generation changed
+(the ``esecuzione`` proof, ``officina.service_control``). The result carries
+the panel (``CaseComparison.filters``).
 
 **Persisting** (rulings R8/R16): every write goes through
 ``Workspace.save_review`` (only the review keys of ``caso.json``), and starts
@@ -45,17 +53,19 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 
 from qtrequestory.officina.compare import noise, noise_guard
-from qtrequestory.officina.compare.model import PROFILES, CaseComparison, Judged, Profile
+from qtrequestory.officina.compare.filter_rows import Switches
+from qtrequestory.officina.compare.model import PROFILES, CaseComparison, Comparison, Judged, Profile
+from qtrequestory.officina.compare.values import DICTIONARY_NAME, Dictionary, Values, load_dictionary
 from qtrequestory.officina.compare.verdict import generated_text, has_text, inactive, judge
 from qtrequestory.officina.model import Case, Initiative, Version
 from qtrequestory.officina.model_case import append_history, case_write_lock, read_caso_strict
 from qtrequestory.officina.model_io import UnreadableJsonError
 from qtrequestory.officina.model_review import DEFAULT_PROFILE, Mark, NoiseRule, Review, Tolerance, review_from_json
 from qtrequestory.officina.service_case import CaseInputsMixin, noise_side
-from qtrequestory.officina.service_compare import CompareError
+from qtrequestory.officina.service_compare import CompareError, _label
 
 __all__ = ["ReviewMixin"]
 
@@ -85,31 +95,31 @@ class ReviewMixin(CaseInputsMixin):
         except ValueError as exc:
             raise CompareError(f"confronto non fatto: {exc}") from None
         profile: Profile = review.profile or ini.profile or DEFAULT_PROFILE
-        presets = [NoiseRule(p.name, p.pattern, True) for p in noise.PRESETS if p.name in ini.noise_presets]
-        custom, clashes = _unique_rules(presets, [r for r in (*ini.noise_rules, *review.noise_rules) if r.enabled])
+        switched, rules = self._switches(ini, review)  # type: ignore[attr-defined]
+        presets, custom, clashes, tracking = _applied(switched, ini.noise_rules, review.noise_rules)
         target_in, tobe_in = self._input(target), self._input(version)
         asis_in = self._input(asis) if asis is not None else None
         others = [("TO-BE", tobe_in)] + ([("AS-IS", asis_in)] if asis_in is not None else [])
-        tracking = noise.TRACKING_PRESET in ini.noise_presets
-        made, dropped = self._compare_pairs(target_in, others, presets, custom, tracking)
-        notes = [f"regola «{name}» ignorata: {message}" for name, message in dropped.items()
-                 if message != noise_guard.UNAVAILABLE]
-        notes += [f"regola «{name}» ignorata: nome già usato da un'altra regola" for name in clashes]
-        unchecked = [name for name, message in dropped.items() if message == noise_guard.UNAVAILABLE]
-        if unchecked:  # R37: dropped, never run in this process
-            notes.append(f"{noise_guard.UNAVAILABLE} ({', '.join(f'«{n}»' for n in unchecked)})")
+        payload, dictionary, dictionary_note = self._values(ini, case)
+        executed = self._executed(case, review, payload, dict(others))  # type: ignore[attr-defined]
+        values = {label: Values.of(payload, dictionary, executed.get(label, ()), switched.proofs)
+                  for label, _ in others}
+        made, dropped = self._compare_pairs(target_in, others, presets, custom, tracking, values, switched.aside)
+        notes = _rule_notes(dropped, clashes, [dictionary_note] if dictionary_note else [])
         tobe = self._noted(made[0], target_in, tobe_in, notes)
         asis_cmp = self._noted(made[1], target_in, asis_in, notes) if asis_in is not None else None
 
         if asis_cmp is not None and has_text(tobe) and not has_text(asis_cmp):
             tobe = dataclasses.replace(tobe, note="; ".join(n for n in (tobe.note, ASIS_WITHOUT_TEXT) if n))
         judged, summary, verification, updated = judge(tobe, asis_cmp, review, profile, version.number,
-                                                       when=self._now())
+                                                       when=self._now(), tolerated_tipi=switched.tolerated)
         if has_text(tobe):  # R49: without text nothing is verified, nothing saved
             latest = case.latest_tobe()
             self._save_compared(case, review, updated, latest is None or version.number >= latest.number)
+        filters = self._panel_of(ini, case, review, rules, tobe, (target_in, tobe_in),  # type: ignore[attr-defined]
+                                 judged)
         result = CaseComparison(version.number, judged, summary, tobe, asis_cmp, verification, profile,
-                                inactive(updated, judged))
+                                inactive(updated, judged), filters)
         log.info("Officina: confronto del caso %s su v%d (%s%s): %d differenze, %d fatte, %d da fare, "
                  "%d in corso, %d regressioni, %d da verificare, %d tollerate, %d variabili, %d rumore%s (%d ms)",
                  case.id, version.number, profile, ", a due vie" if asis_cmp is None else "", len(judged),
@@ -119,6 +129,40 @@ class ReviewMixin(CaseInputsMixin):
                  f"({verification.resolved} risolte, {verification.unresolved} non risolte, "
                  f"{verification.changed} cambiate)", int((time.monotonic() - started) * 1000))
         return result
+
+    def _view_with_rules(self, left: Version, right: Version, switched: Switches, ini_rules: Sequence[NoiseRule],
+                         case_rules: Sequence[NoiseRule], values: Values | None) -> Comparison:
+        """``compare`` (the AS-IS view) when the case switches regex rules or
+        presets on (``FiltersMixin._view_settings``): the pair through the
+        case comparison's pipeline, with the same rules as ``compare_case``."""
+        presets, custom, clashes, tracking = _applied(switched, ini_rules, case_rules)
+        left_in, right_in = self._input(left), self._input(right)
+        made, dropped = self._compare_pairs(left_in, [(_label(right), right_in)], presets, custom, tracking,
+                                            values, switched.aside)
+        return self._noted(made[0], left_in, right_in, _rule_notes(dropped, clashes))
+
+    def _values(self, ini: Initiative, case: Case) -> tuple[dict, Dictionary, str]:
+        """What the variables' values of ``case`` are made of (spec §3.3): its
+        payload and the initiative's optional price-list dictionary
+        (``dizionario.xlsx`` in the initiative's folder), with the dictionary's load note
+        ("" when read or absent). The payload is read fresh (it can be edited);
+        a dictionary is read once per file state."""
+        path = ini.folder / DICTIONARY_NAME
+        try:
+            stamp = path.stat().st_mtime_ns if path.is_file() else None
+        except OSError:
+            stamp = None
+        with self._case_lock:
+            known = self._dictionaries.get(path)
+        if stamp is None:
+            dictionary, note = Dictionary(), ""
+        elif known is not None and known[0] == stamp:
+            dictionary, note = known[1]
+        else:
+            dictionary, note = load_dictionary(path)
+            with self._case_lock:
+                self._dictionaries[path] = (stamp, (dictionary, note))
+        return self._workspace().payload(case), dictionary, note
 
     def _save_compared(self, case: Case, before: Review, after: Review, latest: bool) -> None:
         """Save what the comparison changed onto the review on disk: the marks
@@ -193,18 +237,6 @@ class ReviewMixin(CaseInputsMixin):
             self._save_initiative(ini, profile=profile or DEFAULT_PROFILE)
         else:
             self._act("profilo", case, lambda r: dataclasses.replace(r, profile=profile))
-
-    def set_noise_rules(self, ini: Initiative, case: Case | None, rules: list[NoiseRule],
-                        presets: list[str] | None = None) -> None:
-        noise_guard.refuse_duplicates(rules)
-        _refuse_name_clashes(ini, case, rules)
-        copies = [dataclasses.replace(r) for r in rules]
-        if case is not None:
-            self._act("regole di rumore", case, lambda r: dataclasses.replace(r, noise_rules=copies))
-        elif presets is not None:
-            self._save_initiative(ini, noise_rules=copies, noise_presets=list(presets))
-        else:
-            self._save_initiative(ini, noise_rules=copies)
 
     def noise_presets(self) -> list[NoiseRule]:
         return noise.preset_rules()
@@ -290,22 +322,28 @@ class ReviewMixin(CaseInputsMixin):
         return now.isoformat(timespec="seconds")
 
 
-def _refuse_name_clashes(ini: Initiative, case: Case | None, rules: list[NoiseRule]) -> None:
-    """Rule names are keys across levels too (the comparison applies the
-    initiative's presets and rules and the case's together): a name of a
-    preset, of an initiative rule (saving a case's) or of any case's rule
-    (saving the initiative's) is refused with an Italian ``ValueError``."""
-    taken = {p.name: "da un preset" for p in noise.PRESETS}
-    if case is None:
-        for other in ini.cases:
-            for rule in other.review.noise_rules:
-                taken.setdefault(rule.name, f"da una regola del caso {other.key}")
-    else:
-        for rule in ini.noise_rules:
-            taken.setdefault(rule.name, "da una regola dell'iniziativa")
-    for rule in rules:
-        if rule.name in taken:
-            raise ValueError(f"regola di rumore «{rule.name}»: nome già usato {taken[rule.name]}")
+def _applied(switched: Switches, ini_rules: Sequence[NoiseRule], case_rules: Sequence[NoiseRule]
+             ) -> tuple[list[NoiseRule], list[NoiseRule], list[str], bool]:
+    """The rules a comparison applies: the presets switched on, the
+    initiative's then the case's own rules switched on (without a name
+    already used: those names apart) and whether tracking keys drop."""
+    presets = [NoiseRule(p.name, p.pattern, True) for p in noise.PRESETS if p.name in switched.rules_on]
+    on = [r for r in (*ini_rules, *case_rules) if r.name in switched.rules_on]
+    custom, clashes = _unique_rules([dataclasses.replace(p, enabled=True) for p in noise.PRESETS], on)
+    return presets, custom, clashes, noise.TRACKING_PRESET in switched.rules_on
+
+
+def _rule_notes(dropped: Mapping[str, str], clashes: Sequence[str], extra: Sequence[str] = ()) -> list[str]:
+    """The notes of the rules a comparison could not use (``extra`` after
+    the ones dropped, before the name clashes)."""
+    notes = [f"regola «{name}» ignorata: {message}" for name, message in dropped.items()
+             if message != noise_guard.UNAVAILABLE]
+    notes += list(extra)
+    notes += [f"regola «{name}» ignorata: nome già usato da un'altra regola" for name in clashes]
+    unchecked = [name for name, message in dropped.items() if message == noise_guard.UNAVAILABLE]
+    if unchecked:  # R37: dropped, never run in this process
+        notes.append(f"{noise_guard.UNAVAILABLE} ({', '.join(f'«{n}»' for n in unchecked)})")
+    return notes
 
 
 def _unique_rules(presets: list[NoiseRule], custom: list[NoiseRule]) -> tuple[list[NoiseRule], list[str]]:

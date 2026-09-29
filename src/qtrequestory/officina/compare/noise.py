@@ -85,7 +85,7 @@ def _tracking() -> str:
 #: Built-in presets, all off (spec §4.2 step 5). Names are part of the contract
 #: (ruling R11). Use :func:`preset_rules` for copies to edit.
 PRESETS: tuple[NoiseRule, ...] = (
-    NoiseRule("Numero di pagina",
+    NoiseRule("Numero di pagina nel testo",  # 2.5: was "Numero di pagina" (filter_model.RENAMED_RULES)
               r"\b[Pp]ag(?:ina|\.)? ?\d+ ?(?:di|/) ?\d+\b|(?<![\d/.,])\b\d{1,3} ?/ ?\d{1,3}$", False),
     NoiseRule("Data",
               r"\b\d{1,2}[/.-]\d{1,2}[/.-](?:\d{4}|\d{2})\b"

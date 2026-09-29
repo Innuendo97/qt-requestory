@@ -2,23 +2,32 @@
 
 One :class:`Look` per *state* a difference can be in — its verdict, refined
 by the "da verificare" mark and the "non risolta" flag, or its class when it
-has no verdict (variabile, rumore). A look names theme **tokens**, never
+has no verdict (variabile, rumore, arredo). A look names theme **tokens**, never
 colours, so the viewer, the list and the board re-derive the colours on a
 theme switch. Qt-free.
 
-=============  ===============  ============  ====  =====  =====
-state          fill             edge          dash  px     glyph
-=============  ===============  ============  ====  =====  =====
-regressione    ``bad_bg``       ``bad``       no    1.5    ▲
-non risolta    ``warn_bg``      ``warn``      no    1.5    ○!
-da fare        ``warn_bg``      ``warn``      no    1.5    ○
-in corso       ``progress_bg``  ``accent``    no    1.5    ◐
-da verificare  —                ``ok``        yes   **2**  ✓?
-fatta          — (underline)    ``ok``        no    1      ✓
-tollerata      —                ``muted``     yes   1      ⊘
-rumore         —                ``muted``     yes   1      ~
-variabile      — (underline)    ``variable``  yes   1      {x}
-=============  ===============  ============  ====  =====  =====
+=============  ===============  ============  ======  =====  =====
+state          fill             edge          line    px     glyph
+=============  ===============  ============  ======  =====  =====
+regressione    ``bad_bg``       ``bad``       solid   1.5    ▲
+non risolta    ``flag_bg``      ``flag``      solid   1.5    ○!
+da fare        ``warn_bg``      ``warn``      solid   1.5    ○
+in corso       ``progress_bg``  ``accent``    solid   1.5    ◐
+da verificare  —                ``verify``    dashed  **2**  ✓?
+fatta          — (underline)    ``ok``        solid   1      ✓
+tollerata      —                ``muted``     dashed  1      ⊘
+rumore         —                ``muted``     dotted  1      ~
+variabile      — (underline)    ``variable``  dashed  1      {x}
+arredo         — (underline)    ``muted``     dotted  1      ◌
+=============  ===============  ============  ======  =====  =====
+
+Palette B (research §3): every state that asks for a decision has its own
+hue — "non risolta" vermilion (``flag``), "da verificare" cyan
+(``verify``) — and the two grey states differ by texture (tollerata dashed,
+rumore dotted). **arredo** (ruling F3: page number, watermark) has no
+verdict and is never "tollerata": a faint dotted underline, its own
+"ignored" pill, the word "non conta" — never a minimap segment, never in a
+verdict count (the side panel lists it only in "Tutte").
 
 **"non risolta" (R31, R42)** is a flag on an open verdict, not a verdict:
 on "da fare" and "in corso" it is the state ``non_risolta`` (worse than
@@ -62,6 +71,8 @@ class Look:
     label: str
     #: Drawn as a line under the words instead of a box around them.
     underline: bool = False
+    #: A dotted line (finer than ``dash``): rumore and arredo.
+    dotted: bool = False
     #: The QSS pill tone (``QLabel[pill=...]``) of this state in lists, strip and board (R14).
     pill: str = "neutral"
 
@@ -69,22 +80,24 @@ class Look:
 LOOKS: dict[str, Look] = {
     "regressione": Look("bad_bg", "bad", False, 1.5, strings.VERDETTO_ICON_REGRESSIONE,
                         strings.VERDETTO_REGRESSIONE, pill="bad"),
-    "non_risolta": Look("warn_bg", "warn", False, 1.5, strings.VERDETTO_ICON_NON_RISOLTA,
-                        strings.VERDETTO_NON_RISOLTA, pill="warn"),
+    "non_risolta": Look("flag_bg", "flag", False, 1.5, strings.VERDETTO_ICON_NON_RISOLTA,
+                        strings.VERDETTO_NON_RISOLTA, pill="flag"),
     "da_fare": Look("warn_bg", "warn", False, 1.5, strings.VERDETTO_ICON_DA_FARE,
                     strings.VERDETTO_DA_FARE, pill="warn"),
     "in_corso": Look("progress_bg", "accent", False, 1.5, strings.VERDETTO_ICON_IN_CORSO,
                      strings.VERDETTO_IN_CORSO, pill="progress"),
-    "da_verificare": Look(None, "ok", True, 2.0, strings.VERDETTO_ICON_DA_VERIFICARE,
-                          strings.VERDETTO_DA_VERIFICARE, pill="ok"),
+    "da_verificare": Look(None, "verify", True, 2.0, strings.VERDETTO_ICON_DA_VERIFICARE,
+                          strings.VERDETTO_DA_VERIFICARE, pill="verify"),
     "fatta": Look(None, "ok", False, 1.0, strings.VERDETTO_ICON_FATTA, strings.VERDETTO_FATTA,
                   underline=True, pill="ok"),
     "tollerata": Look(None, "muted", True, 1.0, strings.VERDETTO_ICON_TOLLERATA,
                       strings.VERDETTO_TOLLERATA, pill="neutral"),
     "rumore": Look(None, "muted", True, 1.0, strings.VERDETTO_ICON_RUMORE, strings.VERDETTO_RUMORE,
-                   pill="neutral"),
+                   dotted=True, pill="noise"),
     "variabile": Look(None, "variable", True, 1.0, strings.VERDETTO_ICON_VARIABILE,
                       strings.VERDETTO_VARIABILE, underline=True, pill="variable"),
+    "arredo": Look(None, "muted", True, 1.0, strings.VERDETTO_ICON_ARREDO, strings.VERDETTO_ARREDO,
+                   underline=True, dotted=True, pill="ignored"),
     "nessuno": Look("neutral_bg", "muted", False, 1.0, strings.VERDETTO_ICON_NESSUNO,
                     strings.VERDETTO_NESSUNO, pill="neutral"),
 }
@@ -93,7 +106,7 @@ LOOKS: dict[str, Look] = {
 def state_of(j: Judged) -> str:
     """The key of :data:`LOOKS` for ``j``."""
     if j.verdict is None:
-        return j.diff.klass if j.diff.klass in ("variabile", "rumore") else "nessuno"
+        return j.diff.klass if j.diff.klass in ("variabile", "rumore", "arredo") else "nessuno"
     if j.marked and j.verdict in _OPEN:
         return "da_verificare"
     if j.unresolved and j.verdict in ("da_fare", "in_corso"):
@@ -152,7 +165,7 @@ def board_counts(summary: CaseSummary) -> dict[str, int]:
         marks -= taken
     counts.update(da_verificare=summary.da_verificare, fatta=summary.fatte,
                   tollerata=summary.tollerate, variabile=summary.variabili,
-                  rumore=summary.rumore)
+                  rumore=summary.rumore, arredo=summary.arredo)
     return counts
 
 

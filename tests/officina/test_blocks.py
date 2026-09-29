@@ -1,6 +1,7 @@
 """Blocks from positioned words (spec §4.2 step 6)."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from qtrequestory.officina.compare.blocks import content_keys, make_blocks
@@ -165,3 +166,93 @@ def test_content_keys_drop_slot_leaders():
     assert content_keys(_line("Località.......... Provincia ____ Nome ……", 60.0)) == ["Località", "Provincia", "Nome"]
     assert content_keys(_line("Nome .......... Cognome", 60.0)) == ["Nome", "Cognome"]
     assert content_keys(_line("fine. punto...", 60.0)) == ["fine.", "punto..."]
+
+
+# ------------------------------------------------ phase 2.5: page-wide columns ---
+
+FULL = tuple(r for r in range(12) if r != 5)   # the right column skips the poking line's row
+
+
+def _column_page(poke: bool, *, right_rows: tuple[int, ...] = FULL, title: bool = False) -> list[Word]:
+    """Two text columns (left at x=42, right at x=330), 12 rows; with
+    ``poke`` the 6th left line runs into the gutter (a justified long line),
+    leaving it narrower than a corridor: the old consecutive-lines rule
+    broke the columns there."""
+    words: list[Word] = []
+    if title:
+        words += [replace(w, zone="titolo") for w in _line("CONDIZIONI OFFERTA", 30.0, size=16.0)]
+        words += [replace(w, zone="titolo") for w in _line("-", 30.0, x=540.0, size=16.0)]
+    for row in range(12):
+        bottom = 60.0 + row * PITCH
+        text = f"sinistra{chr(97 + row)} alfa beta gamma delta eps"
+        words += _line(text + (" zeta eta theta" if poke and row == 5 else ""), bottom)
+        if row in right_rows:
+            words += _line(f"destra{chr(97 + row)} uno due tre quattro", bottom, x=330.0)
+    return words
+
+
+def _column_texts(words: list[Word], **kw) -> list[str]:
+    return [" ".join(w.text for w in b.words) for b in make_blocks(words, **kw)]
+
+
+def test_a_line_poking_into_the_gutter_keeps_both_columns_whole():
+    blocks = _column_texts(_column_page(poke=True))
+    left = " ".join(t for t in blocks if t.startswith("sinistra"))
+    right = " ".join(t for t in blocks if t.startswith("destra"))
+    assert "destra" not in left and "sinistra" not in right
+    first_right = next(k for k, t in enumerate(blocks) if t.startswith("destra"))
+    assert all(t.startswith("sinistra") for t in blocks[:first_right])
+    assert all(t.startswith("destra") for t in blocks[first_right:])
+
+
+def test_the_page_corridor_is_measured_on_the_whole_page():
+    from qtrequestory.officina.compare.blocks import layout, page_columns
+
+    [(corridors, lines)] = page_columns(layout(_column_page(poke=True))).values()
+    assert lines == 12 and len(corridors) == 1
+    g0, g1 = corridors[0]
+    assert 230.0 < g0 < g1 <= 330.0, "between the usual left line ends and the right column"
+
+
+def test_the_title_is_read_first_even_with_a_hole():
+    blocks = _column_texts(_column_page(poke=False, title=True))
+    assert blocks[0] == "CONDIZIONI OFFERTA -"
+
+
+def test_a_sparse_column_borrows_the_structure_of_the_fuller_side():
+    """The target's right column holds two lines far apart (too few for a
+    corridor of its own, and the poking line breaks the local rule); the
+    generated side's full column lends its corridor: only the missing
+    right-column lines differ."""
+    from qtrequestory.officina.compare.pipeline import compare_docs
+    from tests.officina.zonegen import build
+
+    def doc(rows):
+        from tests.officina.zonegen import Page
+        page = Page()
+        page.flat.extend(_column_page(poke=True, right_rows=rows))
+        return build(page)
+
+    sparse, full = doc((0, 8)), doc(FULL)
+    result = compare_docs(sparse, full)
+    assert {d.op for d in result.diffs} == {"in_piu"}
+    added = " ".join(d.right_text for d in result.diffs).split()
+    missing = " ".join(f"destra{chr(97 + r)} uno due tre quattro" for r in FULL if r not in (0, 8)).split()
+    assert sorted(added) == sorted(missing), "only the right column's missing lines, the left column untouched"
+
+
+def test_a_raised_glyph_stays_on_its_line_between_the_other_columns_baselines():
+    """A glyph from a fallback font drawn 1.7 pt higher, on a left-column
+    line, while the right column's baseline falls between two left lines
+    (pitch 8.6 pt, right column 4.5 pt lower): it stays in its own line."""
+    words: list[Word] = []
+    for row in range(8):
+        left_bottom = 100.0 + row * 8.6
+        text = f"sinistra{chr(97 + row)} alfa beta gamma delta"
+        words += _line(text, left_bottom, height=8.0, size=8.0)
+        words += _line(f"destra{chr(97 + row)} uno due tre", left_bottom + 4.5, x=330.0, height=8.0, size=8.0)
+    raised = next(i for i, w in enumerate(words) if w.text == "gamma" and w.y1 == 100.0 + 4 * 8.6)
+    w = words[raised]
+    words[raised] = replace(w, y0=w.y0 - 1.7, y1=w.y1 - 1.7)
+    left = " ".join(t for t in _column_texts(words) if t.startswith("sinistra"))
+    assert left == " ".join(f"sinistra{chr(97 + r)} alfa beta gamma delta" for r in range(8))

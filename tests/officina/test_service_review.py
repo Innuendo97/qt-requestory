@@ -446,7 +446,8 @@ def test_noise_rules_of_initiative_and_case_apply_and_a_slow_one_is_dropped(env:
     assert "regola «lenta» ignorata: " + noise.SLOW in cc.tobe.note
     assert dict(cc.tobe.noise_hits) == {"Data": 2, "citta": 2}
     ini2, case2 = _reload(env, ini, case)
-    assert ini2.noise_presets == ["Data"] and [r.name for r in case2.review.noise_rules] == ["citta", "lenta"]
+    assert ini2.filters.get("avanzate.Data") is True
+    assert [r.name for r in case2.review.noise_rules] == ["citta", "lenta"]
     with pytest.raises(ValueError, match="stesso nome"):
         env.svc.set_noise_rules(ini, case, [NoiseRule("a", "x"), NoiseRule("a", "y")])
 
@@ -462,14 +463,14 @@ def test_extractions_are_cached_on_disk_across_services(env: Env, server: FakeSe
     calls: list[Path] = []
     monkeypatch.setattr(service_mod, "extract", lambda path: calls.append(path))
 
-    fresh = OfficinaService(lambda: env.config, html_to_pdf=env._html_to_pdf)
+    fresh = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=env._html_to_pdf)
     cc = fresh.compare_case(ini, case, v1)
 
     assert calls == [] and len(cc.judged) == 2
     for stored in (case.folder / "cache").glob("extract-*.json"):
         stored.write_text("{rotto", encoding="utf-8")                      # corrupt: silently redone
     monkeypatch.undo()
-    assert len(OfficinaService(lambda: env.config).compare_case(ini, case, v1).judged) == 2
+    assert len(OfficinaService(lambda: env.config, control_runner=None).compare_case(ini, case, v1).judged) == 2
 
 
 # --------------------------------------------------------------------- HTML ---
@@ -491,7 +492,7 @@ def _html_case(env: Env, server: FakeServer, tmp_path: Path, svc: OfficinaServic
 
 def test_html_case_is_compared_through_its_dom_even_without_a_print(env: Env, server: FakeServer, tmp_path: Path):
     ini, case, v1 = _html_case(env, server, tmp_path)
-    svc = OfficinaService(lambda: env.config, html_to_pdf=lambda *a, **k: "Edge non trovato")
+    svc = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=lambda *a, **k: "Edge non trovato")
 
     cc = svc.compare_case(ini, case, v1)
 
@@ -513,7 +514,7 @@ def test_dom_view_of_a_pdf_case_is_empty(env: Env, server: FakeServer, tmp_path:
 @pytest.mark.skipif(find_edge() is None, reason="Microsoft Edge non installato")
 def test_html_case_end_to_end_with_edge(env: Env, server: FakeServer, tmp_path: Path):
     ini, case, v1 = _html_case(env, server, tmp_path)
-    svc = OfficinaService(lambda: env.config)          # the real Edge print
+    svc = OfficinaService(lambda: env.config, control_runner=None)          # the real Edge print
 
     cc = svc.compare_case(ini, case, v1)
 
@@ -563,7 +564,7 @@ def test_a_comparison_without_a_print_is_not_reused_once_the_print_works(env: En
         out_pdf.write_bytes(canned_pdf(" ".join(text.split())))
         return None
 
-    svc = OfficinaService(lambda: env.config, html_to_pdf=printer)
+    svc = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=printer)
     for _ in range(2):
         cc = svc.compare_case(ini, case, v1)
         assert "stampa dell'HTML non disponibile" in cc.tobe.note

@@ -82,7 +82,8 @@ class Env:
                                                   officina=settings)
         self.uuid_n = 0
         self.conversions: list[tuple[Path, Path]] = []
-        self.svc = OfficinaService(lambda: self.config, clock=lambda: NOW, new_uuid=self._uuid,
+        self.svc = OfficinaService(lambda: self.config, control_runner=None,  # no control generation here
+                                   clock=lambda: NOW, new_uuid=self._uuid,
                                    html_to_pdf=self._html_to_pdf)
 
     def _uuid(self) -> str:
@@ -197,7 +198,7 @@ def test_case_from_hit_uses_the_real_index(env: Env, mirror, tmp_path: Path):
     index = IndexService(lambda: cfg)
     index.update(["coll"], full_rebuild=True, sink=CollectingSink(), cancel=CancelToken())
     hit = index.search(SearchQuery("coll", fdi_prefix=FDI_B, template_key=KEY_SINT))[0]
-    svc = OfficinaService(lambda: env.config, index=index, clock=lambda: NOW)
+    svc = OfficinaService(lambda: env.config, control_runner=None, index=index, clock=lambda: NOW)
     ini = svc.create_initiative("Da ricerca")
 
     case = svc.case_from_hit(ini, hit, "variante")
@@ -212,7 +213,7 @@ def test_case_from_hit_refuses_a_non_json_body(env: Env, mirror):
     index = IndexService(lambda: cfg)
     index.update(["coll"], full_rebuild=True, sink=CollectingSink(), cancel=CancelToken())
     hit = next(h for h in index.search(SearchQuery("coll", fdi_prefix="bbbb")) if not h.json_ok)
-    svc = OfficinaService(lambda: env.config, index=index)
+    svc = OfficinaService(lambda: env.config, control_runner=None, index=index)
     ini = svc.create_initiative("I")
     with pytest.raises(ValueError, match="JSON"):
         svc.case_from_hit(ini, hit)
@@ -567,7 +568,7 @@ def test_html_is_converted_under_the_case_cache(env: Env, tmp_path: Path):
     assert len(cached) == 1 and cached[0].endswith(".pdf")
 
     # a new service (app restarted) reuses the converted PDF on disk
-    again = OfficinaService(lambda: env.config, html_to_pdf=env._html_to_pdf)
+    again = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=env._html_to_pdf)
     again.compare(tgt, tobe)
     assert len(env.conversions) == 1
 
@@ -576,7 +577,8 @@ def test_an_edge_failure_is_a_compare_error(env: Env, tmp_path: Path):
     case, tgt, _ = _versions(env, tmp_path, HTML, PDF, name="email.html")
     from qtrequestory.officina.model import Workspace
     tobe = Workspace(env.svc.workspace_root()).add_version(case, "tobe", HTML, "html", {})
-    svc = OfficinaService(lambda: env.config, html_to_pdf=lambda *a, **k: "Microsoft Edge non trovato")
+    svc = OfficinaService(lambda: env.config, control_runner=None,
+                          html_to_pdf=lambda *a, **k: "Microsoft Edge non trovato")
     with pytest.raises(CompareError, match="Edge non trovato"):
         svc.compare(tgt, tobe)
     assert not any((case.folder / "cache").glob("*.pdf"))
@@ -655,7 +657,7 @@ def _html_case(env: Env, tmp_path: Path, html: bytes = HTML):
 def test_concurrent_compares_of_the_same_html_convert_once(env: Env, tmp_path: Path):
     case, tgt, tobe = _html_case(env, tmp_path)
     slow = SlowConverter(delay_s=0.4)
-    svc = OfficinaService(lambda: env.config, html_to_pdf=slow)
+    svc = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow)
     results, errors = [], []
 
     def run() -> None:
@@ -682,13 +684,13 @@ def test_concurrent_compares_of_the_same_html_convert_once(env: Env, tmp_path: P
 def test_a_truncated_cached_pdf_is_reconverted(env: Env, tmp_path: Path):
     case, tgt, tobe = _html_case(env, tmp_path)
     slow = SlowConverter()
-    OfficinaService(lambda: env.config, html_to_pdf=slow).compare(tgt, tobe)
+    OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow).compare(tgt, tobe)
     (final,) = (case.folder / "cache").glob("*.pdf")
     whole = final.read_bytes()
     assert len(whole) > 1024
     final.write_bytes(whole[:1100])  # a crash mid-write: header and size, no %%EOF
 
-    again = OfficinaService(lambda: env.config, html_to_pdf=slow)
+    again = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow)
     assert again.compare(tgt, tobe).equal       # its words come from the extraction cache (E7)...
     assert again.render_path(case, tobe) == final  # ...the viewer's print is checked and redone
     assert len(slow.calls) == 2 and final.read_bytes() == whole
@@ -698,7 +700,7 @@ def test_a_failed_conversion_leaves_nothing_behind(env: Env, tmp_path: Path):
     case, tgt, tobe = _html_case(env, tmp_path)
     slow = SlowConverter(fail="Edge si è chiuso")
     with pytest.raises(CompareError, match="Edge si è chiuso"):
-        OfficinaService(lambda: env.config, html_to_pdf=slow).compare(tgt, tobe)
+        OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow).compare(tgt, tobe)
     assert files_under(case.folder / "cache") == []
 
 
@@ -716,7 +718,7 @@ def test_the_html_converted_is_the_html_hashed(env: Env, tmp_path: Path, monkeyp
         return data
 
     monkeypatch.setattr(service_mod, "_read_version", read_then_edit)
-    OfficinaService(lambda: env.config, html_to_pdf=slow).compare(tgt, tobe)
+    OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow).compare(tgt, tobe)
     assert slow.calls and all(html_in.parent == case.folder / "cache" for html_in, _, _ in slow.calls)
     printed = {hashlib.sha256(data).hexdigest()[:32] for _, _, data in slow.calls}
     names = {p.stem.removeprefix("html-") for p in (case.folder / "cache").glob("*.pdf")}
@@ -770,7 +772,7 @@ def test_case_from_hit_of_a_deleted_daily_file_is_a_readable_error(env: Env, mir
     index.update(["coll"], full_rebuild=True, sink=CollectingSink(), cancel=CancelToken())
     hit = index.search(SearchQuery("coll", fdi_prefix=FDI_B, template_key=KEY_SINT))[0]
     hit.file_path.unlink()
-    svc = OfficinaService(lambda: env.config, index=index)
+    svc = OfficinaService(lambda: env.config, control_runner=None, index=index)
     ini = svc.create_initiative("I")
     with pytest.raises(ValueError, match="la chiamata non è più nel log locale"):
         svc.case_from_hit(ini, hit)
@@ -786,7 +788,7 @@ def test_render_path_of_a_pdf_is_the_version_itself(env: Env, tmp_path: Path):
 def test_render_path_of_an_html_is_the_cached_edge_pdf(env: Env, tmp_path: Path):
     case, tgt, tobe = _html_case(env, tmp_path)
     slow = SlowConverter()
-    svc = OfficinaService(lambda: env.config, html_to_pdf=slow)
+    svc = OfficinaService(lambda: env.config, control_runner=None, html_to_pdf=slow)
     first = svc.render_path(case, tobe)
     assert first.parent == case.folder / "cache" and first.read_bytes().startswith(b"%PDF-")
     assert svc.render_path(case, tgt) == first  # same content, same PDF

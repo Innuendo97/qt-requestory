@@ -1,4 +1,4 @@
-"""Guard: pypdfium2 must load only behind ``qtrequestory.officina.pdf``.
+"""Guard: pypdfium2 must load only behind the ``qtrequestory.officina.pdf`` package.
 
 The hourly ``--sync`` run (``qtrequestory.cli``) and merely importing the
 ``qtrequestory.officina`` package must never pull pypdfium2 in — it is a
@@ -8,6 +8,7 @@ runs in a subprocess so ``sys.modules`` reflects a single, fresh import.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -41,3 +42,15 @@ def test_officina_package_import_is_light():
 def test_pdf_helper_loads_pypdfium2():
     mods = _imported_after("import qtrequestory.officina.pdf")
     assert "pypdfium2" in mods
+
+
+def test_only_the_officina_pdf_package_imports_pypdfium2():
+    """Ruling F9: ``officina/pdf/`` is a package (public API in ``__init__``,
+    private submodules); no module outside it imports pypdfium2."""
+    package = SRC / "qtrequestory" / "officina" / "pdf"
+    importing = re.compile(r"^\s*(import|from)\s+pypdfium2", re.MULTILINE)
+    outside = [path.relative_to(SRC).as_posix() for path in (SRC / "qtrequestory").rglob("*.py")
+               if package not in path.parents and importing.search(path.read_text(encoding="utf-8"))]
+    assert outside == []
+    assert (package / "__init__.py").is_file()
+    assert not (SRC / "qtrequestory" / "officina" / "pdf.py").exists()

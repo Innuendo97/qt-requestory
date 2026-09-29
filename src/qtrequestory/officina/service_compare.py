@@ -1,9 +1,10 @@
 """The comparison half of ``OfficinaService`` (``officina.service``).
 
 Both sides go through the staged engine (``compare.extract_pdf`` +
-``compare.pipeline.compare_docs``, without noise rules, verdicts or a
-review: the AS-IS view and "cos'altro ho cambiato"; ``compare_case`` is
-``service_review``'s). An HTML side is printed to PDF by Edge first, in the
+``compare.pipeline.compare_docs``, without verdicts or a review: the AS-IS
+view and "cos'altro ho cambiato"; ``compare_case`` is ``service_review``'s,
+and so is a view whose case switches regex rules or presets on,
+``ReviewMixin._view_with_rules``). An HTML side is printed to PDF by Edge first, in the
 case's ``cache\\`` folder, never in ``target\\``, ``asis\\`` or ``tobe\\``:
 
 * the bytes that were hashed are copied to a private file in ``cache\\`` and
@@ -53,8 +54,9 @@ from qtrequestory.core.fsutil import remove_quietly, replace_with_retry
 from qtrequestory.officina.compare import cache as extract_cache
 from qtrequestory.officina.compare.edge import MIN_PDF_BYTES
 from qtrequestory.officina.compare.extract_pdf import DocText, extract
-from qtrequestory.officina.compare.model import Comparison
+from qtrequestory.officina.compare.model import ARREDO_ZONES, Comparison
 from qtrequestory.officina.compare.pipeline import compare_docs
+from qtrequestory.officina.compare.values import Values
 from qtrequestory.officina.model import Case, Version
 
 __all__ = ["CompareError", "CompareMixin", "EDGE_TIMEOUT_S"]
@@ -85,17 +87,30 @@ class CompareMixin:
         self._lock = threading.Lock()
         self._path_locks: dict[Path, threading.Lock] = {}  # one per cached HTML->PDF name
         self._docs: OrderedDict[str, DocText] = OrderedDict()
-        self._results: OrderedDict[tuple[str, str, str, str], Comparison] = OrderedDict()
+        self._results: OrderedDict[tuple, Comparison] = OrderedDict()
 
     def compare(self, left: Version, right: Version) -> Comparison:
         """Engine comparison of ``left`` (the reference, usually the TARGET) with
-        ``right``. Cached by the two contents' SHA-256. :class:`CompareError`
-        when it cannot be made (see the module docstring). The returned object
-        may be shared with later calls: do not mutate it."""
+        ``right``, with the zones, proofs, regex rules and presets the case's
+        filters switch on (the AS-IS view counts like the TO-BE view). Cached
+        by the two contents' SHA-256 and those switches. :class:`CompareError` when it cannot be
+        made (see the module docstring). The returned object may be shared
+        with later calls: do not mutate it."""
         left_label, right_label = _label(left), _label(right)
         left_data, right_data = _read_version(left, left_label), _read_version(right, right_label)
         left_sha, right_sha = _sha(left_data), _sha(right_data)
-        key = (left_sha, right_sha, left_label, right_label)
+        # the case's "Filtri del confronto" (zones set aside, proofs on), like its TO-BE view (D15)
+        settings = getattr(self, "_view_settings", lambda _v: None)(right)
+        switched = settings[0] if settings is not None else None
+        aside = switched.aside if switched is not None else ARREDO_ZONES
+        values = Values.of(proofs=switched.proofs) if switched is not None else None
+        with_rules = getattr(self, "_view_with_rules", None)
+        if switched is not None and switched.rules_on and with_rules is not None:
+            # regex rules / presets switched on: the case comparison's pipeline (the user's
+            # rules only in the noise guard's child, R46), cached there
+            return with_rules(left, right, *settings, values)
+        key = (left_sha, right_sha, left_label, right_label, tuple(sorted(aside)),
+               values.key() if values is not None else "")
         with self._lock:
             cached = self._results.get(key)
             if cached is not None:
@@ -104,7 +119,7 @@ class CompareMixin:
         started = time.monotonic()
         result = compare_docs(self._doc(left, left_data, left_sha, left_label),
                               self._doc(right, right_data, right_sha, right_label),
-                              left_label=left_label, right_label=right_label)
+                              left_label=left_label, right_label=right_label, aside=aside, values=values)
         log.info("Officina: confronto %s/%s: %d differenze (%d ms)", left_label, right_label,
                  len(result.diffs), int((time.monotonic() - started) * 1000))
         with self._lock:
@@ -160,7 +175,9 @@ class CompareMixin:
                 doc = self._extract(copy, label)
             finally:
                 remove_quietly(copy)
-        extract_cache.store(folder, sha, doc.words, doc.page_sizes, doc.has_text)
+        extract_cache.store(folder, sha, doc.words, doc.page_sizes, doc.has_text,
+                            rotated=doc.rotated, invisible=doc.invisible, graphics=doc.graphics,
+                            light=doc.light)
         self._remember(sha, doc)
         return doc
 

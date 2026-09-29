@@ -156,7 +156,7 @@ def test_an_html_case_shows_the_dom_and_shares_the_selection(qtbot, page, fake_c
     other = next(j.diff.id for j in judged if j.diff.klass == "testo")
 
     # the list -> the DOM
-    row = view.diffs.row_ids().index(link)
+    row = view.diffs.list_row(link)  # the type headers are rows too (U3)
     view.diffs.list.setCurrentRow(row)
     assert dom.current_line("left") == LINK_LINE and dom.current_line("right") == LINK_LINE
     item = dom.tree.currentItem()
@@ -209,7 +209,7 @@ def test_reopening_the_case_keeps_the_dom_on_the_lists_selection(qtbot, page, fa
     view.set_dom_mode(True)
     qtbot.waitUntil(lambda: view.dom.stack.currentWidget() is view.dom.splitter, timeout=10000)
     link = next(j.diff.id for j in view.docs.judged.judged if j.diff.klass == "link")
-    view.diffs.list.setCurrentRow(view.diffs.row_ids().index(link))
+    view.diffs.list.setCurrentRow(view.diffs.list_row(link))
     old = view.docs
     page.open_initiative(page.ini.id)
     page.open_case(view.case.id)

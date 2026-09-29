@@ -13,6 +13,13 @@ WINDOW_TITLE = "qtRequestory"
 #: The title while something is on screen; {context} = e.g. "coll · 1a2b3c4d".
 WINDOW_TITLE_CONTEXT = "qtRequestory — {context}"
 
+# -- splash (the one window shown while the pages are built) -----------------
+
+#: {version} = the application version, e.g. "1.4.0".
+SPLASH_VERSION = "Versione {version}"
+SPLASH_OPENING = "Apro l'archivio…"
+SPLASH_PAGES = "Preparo le pagine…"
+
 # -- app bar -----------------------------------------------------------------
 
 NAV_SEARCH = "Ricerca"
@@ -24,7 +31,6 @@ NAV_TOOLTIP = "{label} ({shortcut})"
 
 #: The sync-status chip: one "env when" entry per environment, joined by this.
 CHIP_SEPARATOR = " · "
-STATUS_SYNC_SUMMARY_TOOLTIP = "Apri la pagina Sincronizzazione"
 
 # -- status bar --------------------------------------------------------------
 #: {name} = the LABEL of the refused operation, never its internal job name —

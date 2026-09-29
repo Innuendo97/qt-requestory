@@ -133,7 +133,7 @@ DYNAMIC_IMPORT = re.compile(
     r"|(?<!\.)\b__import__\s*\("               # the builtin
 )
 #: file -> the package name (a module-level constant) it imports from dynamically.
-KNOWN_DYNAMIC_IMPORTERS = {"ui/main_window.py": "qtrequestory.ui.pages"}
+KNOWN_DYNAMIC_IMPORTERS = {"ui/page_registry.py": "qtrequestory.ui.pages"}
 
 
 def _modules_using_dynamic_import() -> set[str]:
@@ -190,7 +190,7 @@ def test_the_detector_does_not_cry_wolf(line):
 
 def test_the_package_name_the_spec_relies_on_is_the_real_one():
     """Renaming ``PAGES_PACKAGE`` without touching the spec must not pass silently."""
-    source = (PACKAGE / "ui" / "main_window.py").read_text(encoding="utf-8")
+    source = (PACKAGE / "ui" / "page_registry.py").read_text(encoding="utf-8")
     assert 'PAGES_PACKAGE = "qtrequestory.ui.pages"' in source
 
 
@@ -209,7 +209,7 @@ def test_no_new_dynamic_import_slips_in_unnoticed():
 
 # ------------------------------------------------------------- pypdfium2 ---
 #
-# officina/pdf.py is the only importer of pypdfium2 (see
+# the officina/pdf/ package is the only importer of pypdfium2 (see
 # tests/test_officina_boundary.py), and pypdfium2 ships its own binaries
 # (pdfium.dll / libpdfium.so) that PyInstaller's static analysis cannot find
 # on its own — they never show up as a Python import. collect_all pulls in

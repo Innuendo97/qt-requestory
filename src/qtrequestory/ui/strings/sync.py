@@ -259,3 +259,29 @@ SYNC_SCHEDULE_LOGON = ", e al login"
 # No full stop here: the sentence ends without one because this page shows it
 # between " · " separators. Impostazioni and the wizard close it with their own
 # string (``SETTINGS_SCHEDULE_SUMMARY``, ``WIZARD_P3_AUTOSYNC_NOTE``).
+
+# -- the header chip and its dropdown panel (Officina 2.5, D5) ---------------
+
+#: The chip's tooltip head; {shortcut} = "Ctrl+2". The problems follow, one per line.
+SYNC_CHIP_TOOLTIP = "Sincronizzazione ({shortcut}): clic per i dettagli"
+#: Accessible name of the chip, followed by SYNC_CHIP_A11Y_SEP and the chip text.
+SYNC_CHIP_A11Y_OK = "Sincronizzazione: tutto aggiornato"
+SYNC_CHIP_A11Y_RUNNING = "Sincronizzazione in corso"
+SYNC_CHIP_A11Y_ATTENTION_ONE = "Sincronizzazione: 1 ambiente da controllare"
+#: {n} = environments that need attention (2 or more).
+SYNC_CHIP_A11Y_ATTENTION = "Sincronizzazione: {n} ambienti da controllare"
+SYNC_CHIP_A11Y_SEP = ". "
+#: What a badge means for the user, under the environment in the panel.
+SYNC_HINT_LOST = "Giorni ripuliti dal server prima di essere scaricati: non recuperabili."
+SYNC_HINT_ERRORS = "Alcuni file non sono stati scaricati: il registro è nella pagina completa."
+SYNC_HINT_PENDING = "Giorni ancora sul server: «Sincronizza ora» li scarica."
+SYNC_HINT_UNREACHABLE = "Server non raggiungibile: serve la VPN aziendale."
+SYNC_HINT_STALE = "L'archivio locale non è aggiornato: «Sincronizza ora» lo completa."
+SYNC_HINT_NEVER = "Mai sincronizzato: «Sincronizza ora» scarica l'archivio."
+SYNC_PANEL_TITLE = "Sincronizzazione"
+SYNC_PANEL_ACCESSIBLE = "Stato della sincronizzazione"
+#: {when} = "oggi 09:23" / "mai".
+SYNC_PANEL_LAST = "Ultima sincronizzazione: {when}"
+SYNC_PANEL_RUNNING = "In corso…"
+SYNC_PANEL_OPEN_PAGE = "Apri la pagina completa →"
+SYNC_PANEL_OPEN_PAGE_TOOLTIP = "Registro, sincronizzazione automatica e legenda del calendario"

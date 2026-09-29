@@ -44,13 +44,13 @@ def window(qtbot, fake_core, runner):
 
 # --------------------------------------------------------------- the shell ---
 
-def test_the_registry_lists_three_tabs_then_two_icon_buttons():
+def test_the_registry_lists_two_tabs_the_hidden_sync_page_then_two_icon_buttons():
     assert [p.key for p in PAGES] == ["search", "sync", "officina", "settings", "about"]
     assert [p.label for p in PAGES] == [
         strings.NAV_SEARCH, strings.NAV_SYNC, strings.OFFICINA_NAV, strings.NAV_SETTINGS,
         strings.NAV_ABOUT,
     ]
-    assert [p.placement for p in PAGES] == ["tab", "tab", "tab", "icon", "icon"]
+    assert [p.placement for p in PAGES] == ["tab", "hidden", "tab", "icon", "icon"]
     assert [p.icon_name for p in PAGES][2:] == ["wrench", "settings", "info"]
     assert all(isinstance(p.icon_name, str) and p.icon_name for p in PAGES)
     assert all(callable(p.factory) for p in PAGES)
@@ -65,11 +65,10 @@ def test_the_window_opens_on_ricerca_with_every_page_loaded(window):
     assert sorted(window.pages()) == ["about", "officina", "search", "settings", "sync"]
 
 
-def test_the_app_bar_has_three_tabs_and_two_icon_buttons_in_order(window):
+def test_the_app_bar_has_two_tabs_and_two_icon_buttons_in_order(window):
     bar = window.app_bar
-    assert list(bar.tabs) == ["search", "sync", "officina"]
-    assert [b.text() for b in bar.tabs.values()] == [strings.NAV_SEARCH, strings.NAV_SYNC,
-                                                     strings.OFFICINA_NAV]
+    assert list(bar.tabs) == ["search", "officina"]
+    assert [b.text() for b in bar.tabs.values()] == [strings.NAV_SEARCH, strings.OFFICINA_NAV]
     assert list(bar.icon_buttons) == ["settings", "about"]
     assert bar.icon_buttons["settings"].toolTip() == "Impostazioni (Ctrl+,)"
     assert bar.icon_buttons["about"].toolTip() == "Info (F1)"
@@ -107,7 +106,7 @@ def test_a_broken_import_inside_a_page_is_reported_as_an_error(qtbot, fake_core,
     def factory(services, runner_, window_):
         raise ModuleNotFoundError("No module named 'requests'", name="requests")
 
-    with caplog.at_level("INFO", logger="qtrequestory.ui.main_window"):
+    with caplog.at_level("INFO", logger="qtrequestory.ui.page_registry"):
         win = MainWindow(fake_core, runner,
                          pages=[PageSpec("x", "X", "info", factory, "tab")])
     qtbot.addWidget(win)
@@ -123,7 +122,7 @@ def test_a_page_module_that_does_not_exist_yet_is_only_an_info_line(
         raise ModuleNotFoundError("No module named 'qtrequestory.ui.pages.sync_page'",
                                   name="qtrequestory.ui.pages.sync_page")
 
-    with caplog.at_level("INFO", logger="qtrequestory.ui.main_window"):
+    with caplog.at_level("INFO", logger="qtrequestory.ui.page_registry"):
         win = MainWindow(fake_core, runner,
                          pages=[PageSpec("sync", "Sync", "info", factory, "tab")])
     qtbot.addWidget(win)
@@ -154,7 +153,7 @@ def test_the_window_starts_with_the_focus_in_the_fdi_field(qtbot, window):
 
 def test_tab_walks_the_app_bar_in_order_then_enters_the_page(qtbot, window):
     bar = window.app_bar
-    expected = [bar.tabs["search"], bar.tabs["sync"], bar.tabs["officina"], bar.status_chip,
+    expected = [bar.tabs["search"], bar.tabs["officina"], bar.status_chip,
                 bar.icon_buttons["settings"], bar.icon_buttons["about"]]
     walked = [expected[0]]
     widget = expected[0]
@@ -175,9 +174,9 @@ def test_the_bar_buttons_do_not_take_the_focus_on_click(window):
 
 
 def test_clicking_a_tab_switches_the_stack(qtbot, window):
-    qtbot.mouseClick(window.app_bar.tabs["sync"], Qt.MouseButton.LeftButton)
-    assert window.current_page_key() == "sync"
-    assert window.stack.currentWidget() is window.page("sync")
+    qtbot.mouseClick(window.app_bar.tabs["officina"], Qt.MouseButton.LeftButton)
+    assert window.current_page_key() == "officina"
+    assert window.stack.currentWidget() is window.page("officina")
 
     qtbot.mouseClick(window.app_bar.icon_buttons["settings"], Qt.MouseButton.LeftButton)
     assert window.current_page_key() == "settings"
@@ -202,7 +201,7 @@ def test_show_page_ignores_an_unknown_key(window):
     ("key", "modifier", "expected"),
     [
         (Qt.Key.Key_1, Qt.KeyboardModifier.ControlModifier, "search"),
-        (Qt.Key.Key_2, Qt.KeyboardModifier.ControlModifier, "sync"),
+        (Qt.Key.Key_3, Qt.KeyboardModifier.ControlModifier, "officina"),
         (Qt.Key.Key_Comma, Qt.KeyboardModifier.ControlModifier, "settings"),
         (Qt.Key.Key_F1, Qt.KeyboardModifier.NoModifier, "about"),
     ],
@@ -251,13 +250,21 @@ def test_set_sync_state_fills_the_chip(window):
     window.set_sync_state([("coll", "ok", "oggi 11:24"), ("svil", "warn", "ieri 18:40")])
     chip = window.app_bar.status_chip
     assert chip.summary() == "coll oggi 11:24 · svil ieri 18:40"
-    assert [d.property("dot") for d in chip.dots()] == ["ok", "warn"]
 
 
-def test_clicking_the_chip_opens_the_sync_page(qtbot, window):
+def test_clicking_the_chip_opens_the_sync_panel_not_the_page(qtbot, window):
     assert window.current_page_key() == "search"
     qtbot.mouseClick(window.app_bar.status_chip, Qt.MouseButton.LeftButton)
-    assert window.current_page_key() == "sync"
+    assert window.current_page_key() == "search"
+    assert window.sync_panel is not None and window.sync_panel.isVisible()
+    window.sync_panel.close()
+
+
+def test_without_a_real_sync_page_the_chip_opens_the_page(qtbot, fake_core, runner):
+    win = MainWindow(fake_core, runner, pages=[spec("search"), spec("sync", "hidden")])
+    qtbot.addWidget(win)
+    win.toggle_sync_panel()
+    assert win.current_page_key() == "sync" and win.sync_panel is None
 
 
 def test_the_chip_shows_the_state_the_sync_page_had_at_startup(qtbot, fake_core, runner):
@@ -390,7 +397,7 @@ def test_closing_while_a_sync_runs_asks_first(qtbot, window, runner, monkeypatch
     asked: list[object] = []
     monkeypatch.setattr(
         mw, "confirm_quit_during_job",
-        lambda parent, name, detail="": asked.append(parent) or False,
+        lambda parent, name, detail="", pending=0: asked.append(parent) or False,
     )
     gate = threading.Event()
     job = runner.submit("sync", lambda: gate.wait(5.0))
@@ -405,7 +412,7 @@ def test_closing_while_a_sync_runs_asks_first(qtbot, window, runner, monkeypatch
 
 
 def test_interrompi_ed_esci_cancels_the_sync_and_closes(qtbot, window, runner, monkeypatch):
-    monkeypatch.setattr(mw, "confirm_quit_during_job", lambda parent, name, detail="": True)
+    monkeypatch.setattr(mw, "confirm_quit_during_job", lambda parent, name, detail="", pending=0: True)
     gate = threading.Event()
     job = runner.submit("sync", lambda *, cancel: gate.wait(5.0))
 
@@ -432,8 +439,8 @@ def test_the_answer_follows_the_button_the_user_pressed(window, monkeypatch):
     built: list[QMessageBox] = []
 
     def build(answer_stop: bool):
-        def builder(parent, name, detail=""):
-            box, stop = real_build(parent, name, detail)
+        def builder(parent, name, detail="", pending=0):
+            box, stop = real_build(parent, name, detail, pending)
             keep = next(b for b in box.buttons() if b is not stop)
             box.clickedButton = (lambda: stop) if answer_stop else (lambda: keep)
             built.append(box)

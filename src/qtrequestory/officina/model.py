@@ -98,11 +98,10 @@ class Initiative:
     load_error: str | None = None
     #: What loading had to leave out (a header default whose value is null).
     load_notes: list[str] = field(default_factory=list)
-    #: Phase 2 (``iniziativa.json``: ``profilo``, ``regole_rumore``,
-    #: ``preset_rumore``), saved with ``Workspace.save_initiative_settings``.
+    #: ``iniziativa.json``: profilo, regole_rumore, filtri (2.5: default panel choices, presets included)
     profile: Profile = DEFAULT_PROFILE
     noise_rules: list[NoiseRule] = field(default_factory=list)
-    noise_presets: list[str] = field(default_factory=list)
+    filters: dict[str, bool] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -135,7 +134,7 @@ class Workspace:
             "name": name,
             "created": datetime.now().isoformat(),
             "header_defaults": {},
-            **initiative_settings_to_json(DEFAULT_PROFILE, [], []),
+            **initiative_settings_to_json(DEFAULT_PROFILE, []),
             "delivery": {},
             "notes": "",
         })
@@ -161,7 +160,7 @@ class Workspace:
             raw, load_error = {}, str(exc)
         name = str(raw.get("name") or folder.name)
         header_defaults, notes = headers_from(raw.get("header_defaults"), "iniziativa.json")
-        profile, noise_rules, noise_presets = initiative_settings_from_json(raw, notes)
+        profile, noise_rules, filters = initiative_settings_from_json(raw, notes)
         cases_dir = folder / "casi"
         cases: list[Case] = []
         if cases_dir.exists():
@@ -170,7 +169,7 @@ class Workspace:
                     cases.append(_load_case(case_dir))
         return Initiative(name=name, folder=folder, header_defaults=header_defaults, cases=cases,
                           load_error=load_error, load_notes=notes, profile=profile,
-                          noise_rules=noise_rules, noise_presets=noise_presets)
+                          noise_rules=noise_rules, filters=filters)
 
     # --------------------------------------------------------------- delivery ---
 
@@ -198,12 +197,13 @@ class Workspace:
         _write_json_atomic(meta, raw)
 
     def save_initiative_settings(self, ini: Initiative) -> None:
-        """Merge ``profile``, ``noise_rules`` and ``noise_presets`` into
-        ``iniziativa.json`` (the legacy ``noise_rules`` key goes: it was read
-        once). ``ValueError`` and nothing written when the file cannot be read."""
+        """Merge ``profile``, ``noise_rules`` and ``filters`` into
+        ``iniziativa.json`` (the legacy ``noise_rules`` and ``preset_rumore`` go:
+        read once). ``ValueError`` and nothing written when the file cannot be read."""
         raw = _read_initiative_for_merge(ini, "impostazioni non salvate")
-        raw.pop("noise_rules", None)
-        raw.update(initiative_settings_to_json(ini.profile, ini.noise_rules, ini.noise_presets))
+        for legacy in ("noise_rules", "preset_rumore"):  # read once (F4: presets live in filtri)
+            raw.pop(legacy, None)
+        raw.update(initiative_settings_to_json(ini.profile, ini.noise_rules, ini.filters))
         _write_json_atomic(ini.folder / "iniziativa.json", raw)
 
     # ------------------------------------------------------------------ cases ---
@@ -237,9 +237,8 @@ class Workspace:
         return case
 
     def save_review(self, case: Case) -> None:
-        """Merge ONLY ``case.review`` into ``caso.json`` (``profilo``, ``tolleranze``,
-        ``non_variabili``, ``segnate``, ``non_risolte``, ``regole_rumore``, ``riepilogo``);
-        refused like :meth:`save_case`. The one writer of the review state (R8)."""
+        """Merge ONLY ``case.review`` into ``caso.json`` (the ``model_review`` keys, ``filtri``
+        and ``controllo`` included); refused like :meth:`save_case`. The one writer of the review (R8)."""
         _write_review(case)
 
     def save_case(self, case: Case) -> None:

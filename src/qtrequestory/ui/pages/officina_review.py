@@ -46,6 +46,7 @@ from qtrequestory.ui.pages.officina_undo import (
     Entry,
     Intent,
     Step,
+    filter_steps,
     mark_steps,
     tolerate_steps,
     unmark_all_steps,
@@ -162,6 +163,14 @@ class ReviewActionsMixin:
             forward, undo = unmark_all_steps(case.review, cc.judged if cc is not None else ())
             text = strings.REVISIONE_UNMARKED.format(n=len(case.review.marks))
             return forward, Entry(text, cc.version if cc is not None else -1, tuple(undo)), False
+        if intent.kind in ("filtri", "filtri_reset"):  # U4: "Filtri del confronto"
+            choices = (intent.choices or {}) if intent.kind == "filtri" else dict.fromkeys(case.review.filters)
+            if not choices:
+                self._notify(strings.FILTRI_RESET_NOTHING)
+                return None
+            forward, undo = filter_steps(case.review.filters, self.ini.filters, choices, intent.initiative)
+            version = cc.version if cc is not None else -1
+            return forward, Entry(intent.what, version, tuple(undo), filtri=True), False
         j = next((x for x in cc.judged if x.diff.anchor == intent.anchor), None) if cc else None
         if j is None:
             self._notify(strings.AZIONI_GONE.format(what=intent.what))
@@ -197,11 +206,12 @@ class ReviewActionsMixin:
         key = (self.ini.id, self.case_id)
         entry = intent.entry
         if entry is None:
-            entry = self.undo.top(key, cc.version) if cc is not None else None
+            entry = self.undo.top(key, cc.version if cc is not None else None)
             if entry is None:
                 self._notify(strings.AZIONI_NOTHING_TO_UNDO)
                 return None
-        elif cc is None or entry.version != cc.version or not self.undo.holds(key, entry):
+        elif not self.undo.holds(key, entry) or not (
+                entry.filtri or (cc is not None and entry.version == cc.version)):
             return None  # an old toast: another version on screen, or already undone
         return list(entry.undo), entry, True
 
@@ -248,6 +258,8 @@ class ReviewActionsMixin:
             self.undo.push(where, entry)
             message = entry.text
             action = (strings.AZIONI_UNDO, partial(self._undo_from_toast, where, entry))
+            if entry.filtri:  # a burst of switches: one toast, its "Annulla" undoes them all (U4)
+                message, action = self._filter_toast(where, entry)
         self._refresh_reviewed(where, key, cc)
         self._toast(message, "ok", action=action, hint=strings.AZIONI_UNDO_KEY if action else "")
 
@@ -275,3 +287,4 @@ class ReviewActionsMixin:
         view.show_case(self._case(case_id), self.ini.name, key, blocked=bool(self.ini.load_error),
                        initiative_profile=self.ini.profile)
         view.show_rejudged(cc)
+        self._sync_filters()  # the Filtri dialog shows the new switches and counts

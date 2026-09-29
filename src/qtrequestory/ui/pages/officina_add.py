@@ -228,9 +228,16 @@ def add_hit_to_officina(parent: QWidget, services: CoreServices, hit: SearchHit)
         return None
     officina = window.page("officina") if callable(getattr(window, "page", None)) else None
     current = getattr(officina, "current_initiative_id", lambda: None)()
-    choice = ask_add_case(parent, initiative_choices(api.initiatives()), current=current,
+    # never an initiative waiting to be deleted (D6): the Officina tab knows which
+    listed = getattr(officina, "listed_initiatives", None)
+    initiatives = listed() if callable(listed) else api.initiatives()
+    choice = ask_add_case(parent, initiative_choices(initiatives), current=current,
                           key=hit.template_key)
     if choice is None:
+        return None
+    pending = getattr(officina, "pending_named", None)
+    if choice.create and callable(pending) and pending(choice.initiative):  # its folder is still there (D6)
+        notify(strings.OFFICINA_ADD_FAILED.format(reason=strings.ELIMINA_NAME_PENDING.format(name=choice.initiative)))
         return None
     item = PlanItem(hit, None, choice.variant)
     if not choice.create:

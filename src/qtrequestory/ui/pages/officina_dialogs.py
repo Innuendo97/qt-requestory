@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QLineEdit, Q
 from qtrequestory.ui import strings
 
 __all__ = ["ask_conflict", "ask_folder", "ask_note", "ask_open_file", "ask_text",
-           "ask_tolerate_note", "confirm",
+           "ask_tolerate_note", "ask_unsaved_rules", "confirm",
            "in_onedrive", "on_network"]
 
 
@@ -65,6 +65,25 @@ def confirm(parent: QWidget | None, title: str, text: str) -> bool:
                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                   QMessageBox.StandardButton.No)
     return answer == QMessageBox.StandardButton.Yes
+
+
+def ask_unsaved_rules(parent: QWidget | None, *, valid: bool, cancellable: bool) -> str:
+    """Closing "Filtri del confronto" with unsaved rules: "save" | "discard" |
+    "cancel". Without ``cancellable`` (the case is being left) there is no
+    "Annulla"; with rules that cannot be saved (``valid`` False) no "Salva"."""
+    box = QMessageBox(QMessageBox.Icon.Question, strings.FILTRI_UNSAVED_TITLE,
+                      strings.FILTRI_UNSAVED_TEXT if valid else strings.FILTRI_UNSAVED_INVALID, parent=parent)
+    buttons = {}
+    if valid:
+        buttons["save"] = box.addButton(strings.FILTRI_UNSAVED_SAVE, QMessageBox.ButtonRole.AcceptRole)
+    buttons["discard"] = box.addButton(strings.FILTRI_UNSAVED_DISCARD, QMessageBox.ButtonRole.DestructiveRole)
+    if cancellable:
+        buttons["cancel"] = box.addButton(strings.FILTRI_UNSAVED_CANCEL, QMessageBox.ButtonRole.RejectRole)
+        box.setEscapeButton(buttons["cancel"])
+    box.setDefaultButton(buttons.get("save") or buttons.get("cancel") or buttons["discard"])
+    box.exec()
+    clicked = box.clickedButton()
+    return next((k for k, b in buttons.items() if b is clicked), "cancel" if cancellable else "discard")
 
 
 def ask_conflict(parent: QWidget | None, path: Path, remaining: int) -> tuple[str, bool]:

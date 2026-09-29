@@ -8,7 +8,7 @@ from qtrequestory.ui import icons
 
 NAMES = (
     "search", "arrow-sync", "settings", "info",
-    "document-arrow-right", "copy", "save", "folder-open",
+    "document-arrow-right", "copy", "save", "folder-open", "delete",
 )
 
 

@@ -3,12 +3,17 @@
 PDF words (extract_pdf, reading order) are grouped per page:
 
 * **lines** — words whose bottoms (baselines) lie within half a line height
-  of each other, left to right;
-* **columns** — a vertical corridor at least :data:`CORRIDOR_CHARS` median
-  character widths wide, free of words on at least :data:`COLUMN_MIN_LINES`
-  consecutive lines (and with words on both sides), splits those lines into
-  columns; each column is read top to bottom, left column first. A single
-  wide gap (``Luogo e data        Firma``) is not a column;
+  of their nearest neighbour's in the line, left to right (a glyph drawn a
+  little higher, from a fallback font, stays on its line even when the
+  other column's baselines fall in between);
+* **title** — the words the zone stage marked ``titolo`` are read first on
+  their page, as their own lines: a title with a hole in it never joins a
+  column below it (phase 2.5);
+* **columns** — ``compare.columns``: page-wide corridors measured on the
+  whole page first (phase 2.5, spec §3.6), else the local rule of phase 2;
+  each column read top to bottom, left column first. The corridors can be
+  given (``columns``: the structure borrowed from the other side of a
+  comparison, :func:`page_columns`, :func:`fits`);
 * **paragraphs** — inside one column, a new block starts when the pitch from
   the previous line exceeds :data:`PARAGRAPH_GAP` times the reference pitch,
   when the indent changes (a first-line indent opens a paragraph, a hanging
@@ -24,19 +29,21 @@ Deterministic and pure; stdlib only, no Qt, no pypdfium2.
 """
 from __future__ import annotations
 
+import bisect
 import re
 import statistics
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
+from qtrequestory.officina.compare.columns import (
+    COLUMN_MIN_LINES, CORRIDOR_CHARS, CROSSING, Interval, Line, both_sides, column_streams, crosses, page_corridors,
+)
 from qtrequestory.officina.compare.model import Block, Word
 from qtrequestory.officina.compare.normalise import CHECK_OFF, CHECK_ON, units
 
-__all__ = ["COLUMN_MIN_LINES", "CORRIDOR_CHARS", "PARAGRAPH_GAP", "content_keys", "is_form_row", "make_blocks"]
+__all__ = ["COLUMN_MIN_LINES", "CORRIDOR_CHARS", "CROSSING", "PARAGRAPH_GAP", "Columns", "Layout", "content_keys",
+           "fits", "is_form_row", "layout", "make_blocks", "page_columns"]
 
-#: A column corridor is at least this many median character widths wide…
-CORRIDOR_CHARS = 3.0
-#: …and empty on at least this many consecutive lines.
-COLUMN_MIN_LINES = 3
 #: A pitch above this multiple of the reference pitch starts a paragraph.
 PARAGRAPH_GAP = 1.5
 #: An indent change wider than this many character widths starts a paragraph.
@@ -49,8 +56,10 @@ _PITCH_PER_HEIGHT = 1.25
 
 _LEADER = re.compile(r"[._]{4,}")
 
-_Line = list[Word]
-_Interval = tuple[float, float]
+_Line = Line
+_Interval = Interval
+#: Per page: the page-wide corridors and the number of lines they were measured on.
+Columns = dict[int, tuple[list[_Interval], int]]
 
 
 def is_form_row(words: Sequence[Word]) -> bool:
@@ -70,17 +79,40 @@ def content_keys(words: Sequence[Word]) -> list[str]:
     return out
 
 
-def make_blocks(words: Sequence[Word]) -> list[Block]:
-    """The blocks of a PDF's words, in reading order, ids 0..n-1."""
+@dataclass(frozen=True)
+class Layout:
+    """One side's words as lines, measured once: per page, the title's lines
+    and the other lines (each top to bottom), and the median character width."""
+
+    pages: dict[int, tuple[list[_Line], list[_Line]]]
+    char: float
+
+
+def layout(words: Sequence[Word]) -> Layout:
+    """The lines of ``words``, per page (:class:`Layout`)."""
+    pages: dict[int, tuple[list[_Line], list[_Line]]] = {}
+    for page, members in sorted(_by_page(words).items()):
+        title = [w for w in members if w.zone == "titolo"]
+        rest = [w for w in members if w.zone != "titolo"]
+        pages[page] = (_lines(title) if title else [], _lines(rest) if rest else [])
+    return Layout(pages, _char(words))
+
+
+def make_blocks(words: Sequence[Word], columns: Mapping[int, Sequence[_Interval]] | None = None, *,
+                lines: Layout | None = None) -> list[Block]:
+    """The blocks of a PDF's words, in reading order, ids 0..n-1.
+    ``columns`` gives the page-wide corridors of some pages (borrowed from
+    the other side: :func:`page_columns`); the other pages measure their own.
+    ``lines``: the :func:`layout` of ``words`` when the caller already has it."""
     if not words:
         return []
-    pages: dict[int, list[Word]] = {}
-    for word in words:
-        pages.setdefault(word.page, []).append(word)
-    char = _median([(w.x1 - w.x0) / len(w.text) for w in words if w.text and w.x1 > w.x0])
+    lay = lines if lines is not None else layout(words)
     streams: list[tuple[int, list[_Line]]] = []   # (page, lines of one column)
-    for page in sorted(pages):
-        streams += [(page, s) for s in _streams(_lines(pages[page]), char)]
+    for page, (title, rest) in lay.pages.items():
+        if title:
+            streams.append((page, title))
+        given = columns.get(page) if columns is not None else None
+        streams += [(page, s) for s in column_streams(rest, lay.char, given)]
     heights = [_bottom(line) - _top(line) for _, s in streams for line in s]
     pitches = [_bottom(b) - _bottom(a) for _, s in streams for a, b in zip(s, s[1:])]
     reference = _median(pitches)
@@ -89,24 +121,63 @@ def make_blocks(words: Sequence[Word]) -> list[Block]:
         reference = _PITCH_PER_HEIGHT * height
     blocks: list[Block] = []
     for page, stream in streams:
-        for kind, group in _paragraphs(stream, reference, char):
+        for kind, group in _paragraphs(stream, reference, lay.char):
             blocks.append(Block(len(blocks), tuple(w for line in group for w in line), page, kind))
     return blocks
+
+
+def page_columns(lay: Layout) -> Columns:
+    """Per page, the page-wide corridors of a side's :func:`layout` (not the
+    title) and the number of lines measured: what a comparison borrows from
+    the side with more lines (spec §3.6)."""
+    return {page: (page_corridors(rest, lay.char), len(rest)) for page, (_, rest) in lay.pages.items()}
+
+
+def fits(lay: Layout, page: int, corridors: Sequence[_Interval]) -> bool:
+    """Whether borrowed ``corridors`` hold on the ``page`` of a side's
+    :func:`layout`: few lines cross them and there are words on both sides."""
+    lines = lay.pages.get(page, ([], []))[1]
+    if not lines or not corridors:
+        return False
+    width = CORRIDOR_CHARS * lay.char
+    crossing = sum(1 for line in lines if crosses(line, corridors, width))
+    return crossing <= CROSSING * len(lines) and all(both_sides(lines, g) for g in corridors)
+
+
+def _by_page(words: Sequence[Word]) -> dict[int, list[Word]]:
+    pages: dict[int, list[Word]] = {}
+    for word in words:
+        pages.setdefault(word.page, []).append(word)
+    return pages
+
+
+def _char(words: Sequence[Word]) -> float:
+    return _median([(w.x1 - w.x0) / len(w.text) for w in words if w.text and w.x1 > w.x0])
 
 
 # ------------------------------------------------------------------ lines ---
 
 def _lines(words: list[Word]) -> list[_Line]:
-    """Words of one page grouped on their bottom (± half a height), top to bottom."""
+    """Words of one page grouped on their bottom, top to bottom: a word
+    joins the current line when its bottom is within half a height of the
+    bottom of its NEAREST word in that line (horizontally) — the lines of
+    two columns with other baselines never pull a word off its own line."""
     lines: list[_Line] = []
-    anchor = 0.0
+    xs: list[float] = []            # the current line's x0, sorted; ``placed`` its words in that order
+    placed: list[Word] = []
     for word in sorted(words, key=lambda w: (w.y1, w.x0)):
-        tolerance = 0.5 * max(word.y1 - word.y0, (lines[-1][0].y1 - lines[-1][0].y0) if lines else 0.0)
-        if lines and word.y1 - anchor <= tolerance:
-            lines[-1].append(word)
-            continue
+        if lines:
+            k = bisect.bisect_left(xs, word.x0)
+            near = placed[k - 1] if k else placed[0]
+            if 0 < k < len(placed) and placed[k].x0 - word.x1 < word.x0 - near.x1:
+                near = placed[k]      # the word to the right is nearer than the one to the left
+            if word.y1 - near.y1 <= 0.5 * max(word.y1 - word.y0, near.y1 - near.y0):
+                lines[-1].append(word)
+                xs.insert(k, word.x0)
+                placed.insert(k, word)
+                continue
         lines.append([word])
-        anchor = word.y1
+        xs, placed = [word.x0], [word]
     return [sorted(line, key=lambda w: (w.x0, w.x1)) for line in lines]
 
 
@@ -116,84 +187,6 @@ def _top(line: _Line) -> float:
 
 def _bottom(line: _Line) -> float:
     return max(w.y1 for w in line)
-
-
-# ---------------------------------------------------------------- columns ---
-
-def _streams(lines: list[_Line], char: float) -> list[list[_Line]]:
-    """The page's lines cut into column streams, in reading order."""
-    if not lines or char <= 0:
-        return [lines] if lines else []
-    left = min(w.x0 for line in lines for w in line)
-    right = max(w.x1 for line in lines for w in line)
-    width = CORRIDOR_CHARS * char
-    free = [_free(line, left, right, width) for line in lines]
-    streams: list[list[_Line]] = []
-    single: list[_Line] = []
-    i = 0
-    while i < len(lines):
-        corridors = [g for g in free[i] if left < g[0] and g[1] < right]  # interior on the first line
-        j = i + 1
-        while j < len(lines) and corridors:
-            narrowed = _intersect(corridors, free[j], width)
-            if not narrowed:
-                break
-            corridors, j = narrowed, j + 1
-        corridors = [g for g in corridors if _both_sides(lines[i:j], g)]
-        if j - i >= COLUMN_MIN_LINES and corridors:
-            if single:
-                streams.append(single)
-                single = []
-            streams += _split(lines[i:j], corridors)
-            i = j
-        else:
-            single.append(lines[i])
-            i += 1
-    if single:
-        streams.append(single)
-    return streams
-
-
-def _free(line: _Line, left: float, right: float, width: float) -> list[_Interval]:
-    """Horizontal intervals of the page's text width that the line leaves empty."""
-    out: list[_Interval] = []
-    cursor = left
-    for word in line:
-        if word.x0 - cursor >= width:
-            out.append((cursor, word.x0))
-        cursor = max(cursor, word.x1)
-    if right - cursor >= width:
-        out.append((cursor, right))
-    return out
-
-
-def _intersect(a: list[_Interval], b: list[_Interval], width: float) -> list[_Interval]:
-    out = []
-    for a0, a1 in a:
-        for b0, b1 in b:
-            lo, hi = max(a0, b0), min(a1, b1)
-            if hi - lo >= width:
-                out.append((lo, hi))
-    return out
-
-
-def _both_sides(lines: list[_Line], corridor: _Interval) -> bool:
-    words = [w for line in lines for w in line]
-    return any(w.x1 <= corridor[0] for w in words) and any(w.x0 >= corridor[1] for w in words)
-
-
-def _split(lines: list[_Line], corridors: list[_Interval]) -> list[list[_Line]]:
-    """One stream per column (left to right); empty fragments are skipped."""
-    cuts = [(g0 + g1) / 2 for g0, g1 in corridors]
-    columns: list[list[_Line]] = [[] for _ in range(len(cuts) + 1)]
-    for line in lines:
-        parts: list[_Line] = [[] for _ in columns]
-        for word in line:
-            parts[sum(1 for c in cuts if (word.x0 + word.x1) / 2 > c)].append(word)
-        for column, part in zip(columns, parts, strict=True):
-            if part:
-                column.append(part)
-    return [c for c in columns if c]
 
 
 # ------------------------------------------------------------- paragraphs ---

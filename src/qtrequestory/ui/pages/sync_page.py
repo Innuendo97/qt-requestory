@@ -69,10 +69,12 @@ LOG_TAIL_LINES = 50
 
 
 class SyncPage(QWidget):
-    """App-bar tab ``"sync"``. Built by ``main_window.PAGES``."""
+    """Page ``"sync"``: no tab since D5 — the header chip's panel opens it.
+    Built by ``main_window.PAGES``."""
 
     summary_changed = Signal(str)
     state_changed = Signal(list)
+    attention_changed = Signal(object)
 
     #: How often the lock file is peeked at while the page is visible.
     LOCK_POLL_MS = 2000
@@ -98,6 +100,7 @@ class SyncPage(QWidget):
         self._build()
         self.presenter.summary_changed.connect(self.summary_changed)
         self.presenter.state_changed.connect(self.state_changed)
+        self.presenter.attention_changed.connect(self.attention_changed)
         self.auto_card.sync_requested.connect(
             lambda envs, dry_run: self.start_sync(envs, dry_run=dry_run))
         self.auto_card.cancel_requested.connect(self.cancel)
@@ -219,14 +222,14 @@ class SyncPage(QWidget):
     def refresh_sync_state(self) -> None:
         """The window's slow refresh: a scheduled ``--sync`` may have run.
 
-        Only the cheap reads (state file; the cards' directory listing when
-        on screen) — no lock peek, no ``schtasks``. A run of ours keeps its
-        own live state.
+        Only the cheap reads (state file, the coverage's directory listing)
+        — no lock peek, no ``schtasks``. The listing runs even off screen: the
+        header chip's dot (D5) reads the days. A run of ours keeps its own
+        live state.
         """
         if self._runner.is_running("sync"):
             return
-        if self.isVisible():
-            self.refresh_cards()
+        self.refresh_cards()
         self.presenter.emit_summary()
 
     # -- running a sync ----------------------------------------------------

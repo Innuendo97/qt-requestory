@@ -319,15 +319,18 @@ def test_the_recycle_bin_runs_as_its_own_job_and_blocks_avanti(
     assert dialog.result_view.outcome.text().startswith(strings.IMPORT_DELETED.format(n=2))
 
 
-def test_status_colours_follow_a_theme_switch(qtbot, qapp, fake_core, runner, old):
+def test_status_colours_follow_a_theme_switch(qtbot, themed, fake_core, runner, old):
+    # ``themed`` (not the bare ``qapp``): ``theme.apply`` sets an explicit
+    # application-wide font (family list) that a plain ``qapp.setFont`` in a
+    # hand-rolled ``finally`` does not undo — it leaves every later,
+    # freshly-built widget's font cascade pinned to that font instead of an
+    # ancestor's (order-dependent failures in unrelated later UI tests).
+    # ``themed`` snapshots style/palette/stylesheet/font and restores them.
     from qtrequestory.ui import theme
 
     dialog = make(qtbot, fake_core, runner, [old])
     cell = dialog.view.table.item(0, 4)
-    try:
-        theme.apply(qapp, theme.Mode.LIGHT)
-        assert cell.foreground().color().name().lower() == theme.LIGHT.ok.lower()
-        theme.apply(qapp, theme.Mode.DARK)
-        assert cell.foreground().color().name().lower() == theme.DARK.ok.lower()
-    finally:
-        theme.apply(qapp, theme.Mode.LIGHT)
+    theme.apply(themed, theme.Mode.LIGHT)
+    assert cell.foreground().color().name().lower() == theme.LIGHT.ok.lower()
+    theme.apply(themed, theme.Mode.DARK)
+    assert cell.foreground().color().name().lower() == theme.DARK.ok.lower()

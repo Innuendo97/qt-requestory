@@ -5,7 +5,7 @@ The core is the UI-agnostic engine: sync, index, search, extract, scheduler, con
 Everything here is callable from the CLI (`--sync`, `--index`, `--find`, `--task`,
 `--archivio`, `--import`) and from the PySide6 UI through the same functions.
 The Officina engine (`qtrequestory.officina`, §Officina) sits beside the core: it is Qt-free
-too, may use `pypdfium2` (only through `officina/pdf.py`, loaded lazily), and imports the
+too, may use `pypdfium2` (only through the `officina/pdf/` package, loaded lazily), and imports the
 core — never the other way round (`tests/test_no_qt_in_core.py` checks both).
 
 ## Domain facts (measured on real data; fixtures must reproduce them synthetically)
@@ -80,21 +80,50 @@ src/qtrequestory/
 │   ├── model_io.py        atomic writes (unique temp file), tolerant / strict JSON reads, read_text_retrying
 │   ├── links.py           signed links (SAS) masking: mask, mask_text, mask_bytes, mask_text_for_log
 │   ├── generator.py       resolve_headers, send, sniff, SendResult, HeaderError
+│   ├── model_call.py      Case.replace_call: swap a case's payload for another logged call, kept history
 │   ├── service.py         OfficinaService (behind ui/contracts.OfficinaApi): workspace, generate, delivery
 │   ├── service_compare.py CompareMixin (compare without verdict, render_path, Edge print cache), CompareError
 │   ├── service_case.py    CaseInputsMixin: engine inputs per version, cached pairs, custom rules via the guard
 │   ├── service_review.py  ReviewMixin: compare_case, the review actions, profile, noise rules, dom_view
+│   ├── service_filters.py phase 2.5: FiltersMixin — filters(ini, case)/set_filters, the noise rules' save
+│   ├── service_control.py phase 2.5 (D14): the automatic background control generation
+│   ├── control.py         phase 2.5: safe payload perturbation (pure half of the control generation)
+│   ├── control_proof.py   phase 2.5 (F18): proven_words, map_executed — what a control run proves
+│   ├── remove.py          phase 2.5 (D6): delete_initiative_folder, the one whole-tree deleter
 │   ├── delivery.py        build_plan/plan_delivery, deliver/run_delivery, safe_component
-│   ├── pdf.py             THE ONLY pypdfium2 importer: read_chars (+ fonts), page_sizes, page_count, render_page, TextSearch
+│   ├── pdf/               THE ONLY pypdfium2 importer (a package since phase 2.5, ruling F9); public API in
+│   │                      __init__ (read_chars, page_sizes, page_count, render_page, TextSearch); private:
+│   │   ├── _ink.py        phase 2.5 (§3.1): the ink test — render a suspect object, blank it in memory,
+│   │   │                  render again; unchanged pixels = invisible (never compared)
+│   │   ├── _geometry.py   display transform, matrices, char angles
+│   │   ├── _chars.py      PageChars, fonts, reading one page after the ink tests
+│   │   └── _objects.py    the walk into form XObjects, bounds, colours, optional-content layers, page graphics
 │   └── compare/           the staged comparison engine (§Comparison engine); pure, stdlib only
 │       ├── model.py       THE CONTRACT: Word, Block, Anchor, Diff, Comparison, Judged, CaseSummary,
-│       │                  Verification, CaseComparison, COUNTING
-│       ├── extract_pdf.py Word, DocText, extract (pypdfium2 loaded inside extract())
+│       │                  Verification, CaseComparison, COUNTING (phase 2.5 adds zone/tipo/prova/nome)
+│       ├── extract_pdf.py Word, DocText, extract (pypdfium2 loaded inside extract()); phase 2.5: the ink
+│       │                  test channel, per-character angle/origin/tight box, graphics
 │       ├── extract_html.py extract_html (html.parser) -> Blocks + pretty source; attr_diffs, locate
 │       ├── html_boxes.py  boxes for HTML words from Edge's print
+│       ├── graphics.py    phase 2.5 (§3.1): a page's paths/images, filled by officina.pdf, read by zones
 │       ├── cache.py       the extraction cache on disk (extract-<sha>.json)
 │       ├── normalise.py   normalise_token, units (comb fields, checkboxes, dehyphenation, punctuation)
+│       ├── zones.py       phase 2.5 (§3.2, D4): document zones, decided on BOTH sides together
+│       ├── zones_page.py  phase 2.5: per-page zone primitives (lines, dividers/logos/watermark paths,
+│       │                  page-number patterns, the zone rules' text normalisation)
+│       ├── zones_watermark.py phase 2.5: text watermark detection (light or diagonal, repeated)
+│       ├── zonediff.py    phase 2.5: the zone-by-zone comparison, page by page, of every zone but body/title
+│       ├── zonesides.py   phase 2.5 (F13): zone text as one more side of the comparison (noise/slots apply)
+│       ├── columns.py     phase 2.5 (§3.6): page-wide column corridors, used by blocks
 │       ├── slots.py       variable slots of the target, absorb, slot_anchor
+│       ├── holes.py       phase 2.5 (§3.3): geometry behind the variables' position proofs (target "rooms")
+│       ├── placeholders.py phase 2.5 (§3.3, §3.7): is_placeholder — [xx], XXXX, leaders, HTML {{…}}
+│       ├── values.py      phase 2.5 (§3.3): payload index, price-list dictionary, control-executed words,
+│       │                  which proofs are switched on (Values)
+│       ├── proofs.py      phase 2.5 (§3.3, ruling F16): the variables' proofs (position AND value)
+│       ├── variables.py   phase 2.5 (§3.3): the variables' second pass over the word diff (needs both proofs)
+│       ├── spread.py      phase 2.5: never let one difference span far-apart places on the page
+│       ├── tipi.py        phase 2.5 (§3.5, D8): Diff.tipo — orthogonal to klass/zone, every type counts
 │       ├── noise.py       PRESETS, compile_rules (risky-pattern check), apply (placeholders)
 │       ├── noise_guard.py custom noise rules in a killable child process (2 s budget): counts, spans
 │       ├── sides.py       prepare: both sides up to the noise stage (Prepared.noise_sides), noise_stage
@@ -110,6 +139,8 @@ src/qtrequestory/
 │       ├── display.py     context_before / context_after of a difference
 │       ├── linkdiff.py    the link differences of an HTML pair
 │       ├── urls.py        URL normalisation, TRACKING_KEYS / tracking_drop
+│       ├── filter_model.py phase 2.5 (§3.8): the "Filtri del confronto" panel contract (FilterGroup, ids)
+│       ├── filter_rows.py phase 2.5 (§3.8): filters(ini, case) computed from one comparison — found/switches
 │       ├── pipeline.py    compare_docs = sides.prepare + finish: every stage, composed
 │       ├── verdict.py     judge: three-way verdict, tolerances, marks, summary; generated_text, inactive
 │       ├── sanitise.py    sanitise_html (allow-list) + CSP
@@ -857,26 +888,32 @@ editor unless `--no-open`, exit 1 when nothing matches). `--task status` exits 1
 is registered. Qt is imported ONLY inside the GUI branch (`tests/test_cli.py` checks it in a
 subprocess).
 
-## Officina (`qtrequestory.officina`) — phases 1 and 2
+## Officina (`qtrequestory.officina`) — phases 1, 2 and 2.5
 
 The engine of the Officina tab (README §Officina, DESIGN-ui §Officina): initiatives and
 cases on disk, generation against a document generator with safe headers and upload links,
 the staged comparison of a generated document with the customer's TARGET (phase 2, release
 1.3.0: variables, noise rules, block alignment, moves and sections, a three-way verdict,
-tolerances, "segna fatta" verified on regeneration, HTML through its DOM), and the testers'
-delivery folder. What is still to come (images, tables cell by cell, the PDF summary…) is
-in BACKLOG §Officina. Qt-free throughout: the UI turns the rendered bytes into `QImage`s
-and reaches everything through `ui/contracts.OfficinaApi`.
+tolerances, "segna fatta" verified on regeneration, HTML through its DOM; phase 2.5, release
+1.4.0, spec `fase25/spec.md`: the comparison made trustworthy on real documents — page zones,
+invisible/rotated text, a stricter two-proof rule for variables, an automatic background
+control generation, difference types, and the "Filtri del confronto" panel that replaces
+the noise presets), and the testers' delivery folder. What is still to come (images, tables
+cell by cell, the PDF summary…) is in BACKLOG §Officina. Qt-free throughout: the UI turns
+the rendered bytes into `QImage`s and reaches everything through `ui/contracts.OfficinaApi`.
 
-### Lazy boundary and PDFium (`officina/pdf.py`)
+### Lazy boundary and PDFium (`officina/pdf/`)
 
-- `officina/pdf.py` is the **only** module that imports `pypdfium2`; `officina/__init__.py`
-  is empty; `compare/extract_pdf.extract()` and the viewer's render job import
-  `officina.pdf` inside the function. So `import qtrequestory.cli` (the hourly `--sync`),
-  `import qtrequestory.officina`, `officina.service`, `ui.contracts`, `officina_viewer` and
-  `officina_page` never load pypdfium2 (`tests/test_officina_boundary.py` and subprocess
-  tests in the officina/UI test files). `CoreServices.officina` is built on first access
-  (`officina_factory`), and the UI reaches `officina_page` only through the page factory.
+- `officina/pdf/` is the **only** package that imports `pypdfium2` (ruling F9, phase 2.5:
+  `officina/pdf.py` became a package — a public API in `__init__.py`, private submodules
+  `_ink.py`, `_geometry.py`, `_chars.py`, `_objects.py`); `officina/__init__.py` is empty;
+  `compare/extract_pdf.extract()` and the viewer's render job import `officina.pdf` inside
+  the function. So `import qtrequestory.cli` (the hourly `--sync`), `import
+  qtrequestory.officina`, `officina.service`, `ui.contracts`, `officina_viewer` and
+  `officina_page` never load pypdfium2 (`tests/test_officina_boundary.py`, updated for the
+  package, and subprocess tests in the officina/UI test files). `CoreServices.officina` is
+  built on first access (`officina_factory`), and the UI reaches `officina_page` only
+  through the page factory.
 - Functions: `read_chars(path) -> list[PageChars]` (per page: displayed size, image count,
   characters with a `text_box` in the text's own unrotated space — used to group words and
   lines — and a `display_box` in the displayed page, top-left origin, CropBox and /Rotate
@@ -890,6 +927,25 @@ and reaches everything through `ui/contracts.OfficinaApi`.
   `pypdfium2.raw`; a weight of −1 is guessed from the font name; bold = weight ≥ 600 or a
   bold font name) and `TextSearch`, a text search over a PDF used to box HTML blocks on
   Edge's print.
+- **Ink test (phase 2.5, `_ink.py`, spec §3.1)**: before the text page is even built, every
+  *suspect* text object (marked as an optional-content layer, a light fill ≥ 235, alpha 0,
+  or off the page) is rendered, then put into render mode 3 (invisible fill) **in memory**
+  and rendered again; identical pixels mean nobody could ever see it. Characters whose
+  `GetTextRenderMode() == 3` go into their own `invisible` channel (`PageChars`): never
+  compared, but visible as a "Testo invisibile" row of the Filtri panel — white text on a
+  coloured background stays visible, since only the two renders' *pixels* decide. Angle,
+  origin and a **tight** character box (`GetCharAngle`, `GetCharOrigin`, `GetCharBox`) are
+  read for every character too — the wide box is kept only for highlighting, and only when
+  it is not empty — and a page's graphics (`read_graphics`: path bounds/thickness/colour,
+  images) are read for the zones stage to find dividers, logos and drawn watermarks
+  (`graphics.py`, in `compare/`, not in `pdf/`, so the zones stage and the cache never load
+  pypdfium2). Measured cost: ≤ +0.5 s per document versus phase 2 (research: +0.41 s on the
+  worst real document, 3.1 s over a 39-PDF sample).
+- **Render-mode-3 text over a full-page image is kept as text** (ruling F10): when a page's
+  visible content is essentially one image covering most of the page (the OCR layer of a
+  scan), mode-3 text there is the only reading of the page and is never dropped; mode-3 text
+  elsewhere stays invisible. A cost accepted deliberately: a genuine hidden text layer over
+  a full-page image would be compared (rare).
 - **One process-wide `RLock` around every PDFium call** (render, extraction, sizes): PDFium
   is not thread-safe, and the viewer's render threads could otherwise meet an extraction
   running in a worker. Rendering is therefore never parallel; the pools only keep the UI
@@ -901,7 +957,7 @@ and reaches everything through `ui/contracts.OfficinaApi`.
 <Officina root>\
   <Iniziativa>\                      folder-safe name; the display name is in iniziativa.json
     iniziativa.json                  name, created, header_defaults, delivery {last_destination, last_at}, notes,
-                                     profilo, regole_rumore, preset_rumore
+                                     profilo, regole_rumore, filtri (1.3.x preset_rumore: read once)
     casi\<case-id>\                  case-id = <KEY> or <KEY>__<variant-slug>
       caso.json                      key, variant, env, headers, drop_postman_token, correlation(+value),
                                      status, notes, source_fdi, history [{at, note}],
@@ -959,7 +1015,7 @@ and reaches everything through `ui/contracts.OfficinaApi`.
   UI yet.
 
 **Review state** (`officina/model_review.py`, phase 2). `Case.review` is a `Review` read from
-the `caso.json` keys below; `Initiative.profile`, `.noise_rules`, `.noise_presets` from
+the `caso.json` keys below; `Initiative.profile`, `.noise_rules`, `.filters` from
 `iniziativa.json`. Everything is backward compatible: a missing key is the empty value, so a
 1.2.0 file loads as `Review()`; a value that cannot be used (hand-edited junk, an unknown
 profile, an anchor of the wrong shape) is dropped with an Italian line in `load_notes`,
@@ -970,18 +1026,30 @@ caso.json
   "profilo":       null | "tollerante" | "stretto" | "solo_testo"      null = as the initiative
   "tolleranze":    [{"anchor", "generato", "nota", "quando"}]
   "non_variabili": [{"anchor", "quando"}]
-  "segnate":       [{"anchor", "generato", "versione", "quando"}]      versione = TO-BE the mark was made in
+  "segnate":       [{"anchor", "generato", "versione", "quando", "motore"}]  versione = TO-BE the mark was made in;
+                   motore = 2 since 1.4.0 (missing = 1: a 1.3.x anchor that matches nothing stays dormant, never "risolta")
   "non_risolte":   [{"anchor", "versione", "generato"}]                versione = the mark's (R10)
   "regole_rumore": [{"name", "pattern", "enabled"}]                    the case's own; they add up
   "riepilogo":     {"versione", "fatte", "da_fare", "in_corso", "regressioni", "da_verificare",
                     "non_risolte", "tollerate", "variabili", "rumore", "avanzamento", "quando", "due_vie"}
+  "filtri":        {id: bool}                        phase 2.5 (§3.8): the case's own panel choices
+  "controllo":     {"sha", "stato", "quando"} | null  phase 2.5 (§3.4): the last control generation's record
 iniziativa.json
-  "profilo" (default "tollerante"), "regole_rumore", "preset_rumore" (names of the presets on)
+  "profilo" (default "tollerante"), "regole_rumore" (the initiative's own rules), "filtri"
+  (the initiative's default panel choices, same shape as the case's)
+  "preset_rumore" (legacy, phase 1.3.x: names of the presets that were on — read once, see below)
 ```
-The legacy `noise_rules` of an `iniziativa.json` (unused in phase 1) is read once as the
-initiative's own rules when `regole_rumore` is absent, and disappears at the next
-`save_initiative_settings`. Nothing is ever inherited by a case from another case or
-initiative: a new case starts with an empty review.
+`filtri` (`model_review.filters_from_json`) holds `compare.filter_model` row ids (never an
+informational-only id) mapped to a bool; a stale id (a renamed or removed rule) is kept on
+disk but ignored and pruned by the service (ruling F4) — the case's choice wins over the
+initiative's, which wins over the row's built-in default. A choice stored under a preset's
+old name (`filter_model.RENAMED_RULES`) is read as the new name. `controllo.stato` read as
+`"in_corso"` from disk becomes `"assente"` (ruling F7): a control generation is never
+resumed across a restart, only started again. The legacy `preset_rumore` and `noise_rules`
+of an `iniziativa.json` (`preset_rumore` written up to 1.3.x, `noise_rules` unused since 1.3.0) are read once — into
+`filtri` and `regole_rumore` — and disappear at the next `save_initiative_settings`. Nothing
+is ever inherited by a case from another case or initiative: a new case starts with an
+empty review.
 
 - **One writer per part of `caso.json`** (R8): `save_case` merges the case's own fields and
   keeps the review keys; `Workspace.save_review(case)` merges ONLY the review keys. Both
@@ -1154,27 +1222,53 @@ verdict, goes through `pipeline.compare_docs`. Every stage is a small module (�
 **pure** (input → output, no global state), stdlib only, and **deterministic** (stable
 orders everywhere, no set or dict order reaches a result; tests run it twice).
 
-**Contract** (`compare/model.py`, frozen dataclasses of tuples, shared between threads):
-- `Word(text, page, x0, y0, x1, y1, size, bold)` — PDF points of the displayed page, origin
-  top-left; `size`/`bold` sampled per word (0.0/False for HTML).
+**Contract** (`compare/model.py`, frozen dataclasses of tuples, shared between threads).
+Phase 2.5 adds fields to existing types, all defaulted so every 1.3.x call site and file
+keeps its meaning:
+- `Word(text, page, x0, y0, x1, y1, size, bold, zone="corpo")` — PDF points of the displayed
+  page, origin top-left; `size`/`bold` sampled per word (0.0/False for HTML); `zone` is set
+  by the zone stage.
 - `Block(id, words, page, kind: paragrafo | riga_modulo | html, dom_path, attrs)`.
 - `Diff(id, op, klass, left, right, left_text, right_text, left_spans, right_spans, anchor,
-  detail, context_before, context_after)` — `left` is the TARGET; `op` ∈ mancante, in_piu,
-  cambiato, spostato, sezione_assente, sezione_in_piu, pagine; `klass` ∈ testo,
-  composizione, stile, spaziatura, variabile, rumore, link; spans = changed character
-  ranges; `context_*` = up to 5 target words around the change, display only (R33).
+  detail, context_before, context_after, zone="corpo", tipo="altro", prova="", nome="",
+  empty_at=None)` —
+  `left` is the TARGET; `op` ∈ mancante, in_piu, cambiato, spostato, sezione_assente,
+  sezione_in_piu, pagine; `klass` ∈ testo, composizione, stile, spaziatura, variabile,
+  rumore, link, **zona**, **arredo** (phase 2.5: a text change confined to a zone other than
+  the body is `zona` — it counts; a difference in a zone set aside, page number and
+  watermark by default, is `arredo` — it never counts and has no verdict, like `variabile`
+  and `rumore`; style/spacing changes in a zone keep their own class, `tipo` stays separate
+  from `zone`); spans = changed character ranges; `context_*` = up to 5 target words around
+  the change, display only (R33); `zone` is the difference's first target word's zone (else
+  the first generated word's; `corpo` for `pagine`); `tipo` (`Tipo`, spec §3.5, D8) ∈
+  maiuscole, punteggiatura, spazi, numeri, parola, frase, sezione, spostamento, zona, link,
+  altro — orthogonal to the verdict and to the zone, and **every type counts** (D9), only
+  the class decides what counts; `prova` (`Prova`, spec §3.3) ∈ segnaposto, buco, cella,
+  sezione, esecuzione, listino, "" — the variable's position proof; `nome` is the variable's
+  display name (a payload leaf, a dictionary entry, or the placeholder itself); `empty_at`
+  (task A3) is, for a one-sided difference (`mancante`, `in_piu`, a section), where it sits
+  on the OTHER side — `(page, x0, y0, x1, y1)` of the word right before the insertion point
+  there (else right after it) — for the viewer to align that side's empty space instead of
+  leaving it where it was (spec §4.5); `None` when both sides have words or the other side
+  has none.
 - `Anchor(op, klass, context, target_text)` — the stable key of a difference across
   regenerations, taken on the **target** side, never a page or block index.
+- `ZoneBox(page, zone, x0, y0, x1, y1)` (phase 2.5) — one zone's box on one page of one side.
 - `Comparison(diffs, left_has_text, right_has_text, left_pages, right_pages, note,
-  slots_found, noise_hits)`; `.counting(profile)` = the diffs whose class the profile counts
+  slots_found, noise_hits, left_zones=(), right_zones=())`; `left_zones`/`right_zones`
+  (phase 2.5) are each side's `ZoneBox`es, for the viewer's zone rails.
+  `.counting(profile)` = the diffs whose class the profile counts
   (what the verdict-less AS-IS view lists), `.equal_for(profile)` = both sides have text and
   nothing counted differs, `.equal` = `equal_for("tollerante")`.
 - `Judged(diff, verdict, marked, unresolved, tolerated_note, previous_text)`,
-  `CaseSummary` (the `riepilogo`), `Verification(checked, resolved, unresolved, changed,
+  `CaseSummary` (the `riepilogo`, phase 2.5 adds its own `arredo` counter, ruling F3),
+  `Verification(checked, resolved, unresolved, changed,
   version)`, `CaseComparison(version, judged, summary, tobe, asis, verification, profile,
-  inactive)`.
-- `COUNTING[profile]`: tollerante = testo, composizione, link; stretto = + stile,
-  spaziatura; solo_testo = testo. `variabile` and `rumore` never count.
+  inactive)`, plus, when the service has it, a `FilterPanel` for "Filtri del confronto"
+  (`filter_model.py`, §Filtri below).
+- `COUNTING[profile]`: tollerante = testo, composizione, link, **zona**; stretto = + stile,
+  spaziatura; solo_testo = testo, **zona**. `variabile`, `rumore` and `arredo` never count
+  and have no verdict (`NO_VERDICT`).
 
 **Stages** (`pipeline.compare_docs(left, right, *, rules, custom_hits, disabled_slots,
 left_label, right_label, link_drop) -> Comparison` = `pipeline.finish(sides.prepare(...))`:
@@ -1252,6 +1346,59 @@ stages up to slots in `prepare`, noise onwards in `finish`; left = TARGET, each 
     `spaziatura` (keys differ only by where spaces and line breaks fall); `testo`. `link`
     comes from the HTML stage.
 
+**Phase 2.5 additions to the pipeline** (spec §3.2, §3.5, §3.6; task A3; `pipeline.py`):
+- **Zones first** (`sides.prepare`, `zones.zone_pair`, task A2): the two PDFs are zoned
+  together before stage 1; only the **body** (with the title) flows through stages 1–10 as
+  before — the reflow stays free of charge. Every other zone's text (`zonesides.zone_side`,
+  ruling F13: the SAME slots and noise stage as the body, presets and the user's spans
+  included) is compared **page by page, zone by zone** by `zonediff.py`: a text change is
+  class `zona` (it counts), one in a zone set aside is `arredo` (`aside`: page number and
+  watermark by default), and the SAME change repeated identically on several pages of one
+  zone becomes ONE difference "uguale su N pagine" rather than one per page. Zone
+  differences are listed on their page, the header's before the body's and the rest after.
+  A zone slot's anchor carries the zone in its `context` (`"<zone>: …"`, fix round 2 of
+  task A3), so "Non è una variabile" and undo key to the right zone rather than colliding
+  with a body anchor of the same text; two occurrences of the same slot in the SAME zone
+  (a footer repeated on several pages) share one anchor by design ("uguale su N pagine",
+  above) — two slots in one zone whose surrounding context happens to read identically word
+  for word still share `disambiguate`'s generic "#n" numbering, the same accepted cost as
+  any other repeated body anchor (see BACKLOG).
+- **Columns** (`columns.py`, spec §3.6, used by `blocks`): page-wide corridors (an interval
+  of the page's text width that at most `CROSSING` lines' words cross) on top of the
+  per-block gap detection, so a genuinely two-column page reads as two columns even when one
+  block spans the gap.
+- **Never a distant span** (`spread.py`): every change of the word diff is cut where two
+  consecutive words are far apart on the page (another page, the next column, a blank
+  block), so one highlight never covers three unrelated spots (the research finding that
+  motivated phase 2.5).
+- **The variables' second pass** (`compare/values.py`, `holes.py`, `placeholders.py`,
+  `proofs.py`, `variables.py`; spec §3.3, task A4, ruling F16) runs LAST, in page order, on
+  the differences already produced by the word diff (not inside `slots`, which only handles
+  the target's OWN sure/probable slots before noise): a part of a text difference becomes
+  `variabile` only when it has BOTH
+  - a **position** proof — a target segnaposto (`[xx]`, `XXXX`, `gg/mm/aaaa`, a leader of
+    dots/underscores, HTML `{{…}}`, an explicit placeholder that also takes the whole
+    one-line fill as its value, ruling F17); a **buco** (a value inserted between two target
+    words on the same line with a gap ≥ `max(0.35 × value width, 2.5 characters)` — measured
+    against the line's typical space and never an indentation, ruling F4's fix round — after
+    an end-of-line label, or before an indented word); an empty or unit-only **cella**; or a
+    **sezione** (a heading followed by vertical empty space > 2 line heights); and
+  - a **value** proof — the value's own shape, a matching payload leaf (`values.py`,
+    Italian number/date formats), a matching entry of the initiative's price-list
+    **dictionary** (`nome` = the dictionary's own name for it, ruling F7's "listino"), or
+    **esecuzione**: a word the automatic control generation proved changed at that exact
+    place (ruling F18, below) — plumbing/flag/structural leaves are never perturbed, so
+    esecuzione never lands on a template word.
+  A free word is never inside a variable and stays a counting difference with its words
+  shown (never `..........→ value`, except through "Non è una variabile", which still shows
+  that form as a known engine limit, see BACKLOG). Never a variable: punctuation only, a
+  case-only difference, or text present identically as fixed text elsewhere in the target;
+  the payload alone is never enough on its own (it once hid genuine brand changes).
+- `Diff.zone` = the difference's first target word's zone (else the first generated word's;
+  `corpo` for `pagine`); a body/title difference whose zone is set aside is `arredo` too.
+  `Diff.tipo` = `tipi.tipo_of` (below). `Comparison.left_zones`/`right_zones` = the zone
+  boxes of each side.
+
 **Anchors** (`anchor_keys.py`, `anchors.py`): `context` = the 3 target keys before and after
 the difference (for an insertion, the one key before and the one after; keys without a
 letter or digit are never context), `target_text` = the target keys of the difference (a
@@ -1320,7 +1467,8 @@ application; `--selftest-noise-guard` checks exactly that (§Packaging).
 
 **Disk cache** (`cache.py`, spec §4.3; closes a phase-1 limit):
 `<case>\cache\extract-<sha256>.json` per extracted PDF — words with boxes, size and bold,
-page sizes, `has_text`, the sha and `FORMAT` (1). A missing file, another format, another sha, or anything not exactly
+page sizes, `has_text`, the angles of the rotated words, the invisible words, each page's graphics, the
+words drawn in a light colour, the sha and `FORMAT` (3; a 1.3.x cache, format 1, is a miss). A missing file, another format, another sha, or anything not exactly
 the expected shape is a miss (never an error): the caller extracts again and `store`
 overwrites it atomically. Writing is best-effort (logged at debug, path and error only).
 
@@ -1328,7 +1476,116 @@ overwrites it atomically. Writing is best-effort (logged at debug, path and erro
 words each) 1.8–1.9 s end to end (extraction 1.6 s, `compare_docs` 0.25 s; spec budget
 3 s); two 60-page PDFs (~40,500 words each) ~12 s the first time (extraction ~10 s, the
 comparison ~2 s), then ~2 s from the disk cache; a synthetic 60-page pair with 1,030
-differences compares in ~1.3 s (the patience cuts, R23). Everything runs in workers.
+differences compares in ~1.3 s (the patience cuts, R23). Everything runs in workers. The
+ink test (§Lazy boundary) adds ≤ 0.5 s per document; the zone/variables stages of phase 2.5
+stay inside the same budgets (measured: the 10-page budget test still passes at ~2.6 s under
+load; it has occasionally exceeded it only when the development machine was under heavy
+external load, never on an idle run — see BACKLOG).
+
+### Difference types (`compare/tipi.py`, spec §3.5, decision D8/D9)
+
+`Diff.tipo` says WHAT changed, orthogonal to both the verdict and the zone (a footer brand
+change is `tipo="parola"` in `zone="footer"`). **Every type counts** (D9: even a
+capitalisation or a punctuation change) — only the `klass` decides what counts at all
+(`variabile`, `rumore`, `arredo` never do). `tipi.tipo_of` applies the first rule that fits:
+`link` (an HTML critical-attribute change); `spostamento` (a move); `sezione` (a whole
+section or the page count); `zona` (a zone difference whose zone has text on only one side
+of that page — header text against a logo); `spazi` (the same text once whitespace is
+ignored); `maiuscole` (the same text once case is ignored); `numeri` (only digits and their
+separators `.,/:-` changed, with a digit among or next to every change — `1.000` → `1,000`,
+`-10,00` → `10,00`: a sign or decimal mark is part of a number, never punctuation alone); `punteggiatura` (only punctuation changed away from
+digits, or a punctuation-only text missing/added); `parola` (at most `tipi.WORDS` = 3 words
+on the longer side); `frase` (more words); `altro` (the rest: a style-only change, noise
+over equal placeholders). The side panel groups the list by `tipo` and shows it as a chip
+with icon, short name and the count in the current tab (DESIGN-ui §Officina); a difference
+whose `klass` is `arredo` is never counted or filtered by type — it only appears in "Tutte",
+in its own group.
+
+### "Filtri del confronto" (`compare/filter_model.py`, `filter_rows.py`, `officina/service_filters.py`; spec §3.8, rulings F3–F7, F13, F14, F15)
+
+Replaces the phase-2 noise presets: every row is computed from the case's own comparison,
+with a real count, not a fixed list to flip blindly.
+- **Rows and ids** — each row is a `FilterGroup` with a stable id: the fixed rows of
+  `FILTER_IDS` (`zona.<zone>`, `variabile.<prova>`, `decidere.maiuscole`/`punteggiatura`)
+  plus one `avanzate.<rule name>` row per regex rule (the presets and the initiative's/case's
+  own rules — "Regole avanzate"). `zona.invisibile` is **informational only** (ruling F7): it
+  has no switch (invisible text is never compared, whatever the row says) — it only reports
+  how much invisible text there is.
+- **The switch** — `attivo=True` SETS ASIDE the row's occurrences: `zona.<zone>` differences
+  there stop counting (the engine emits them as `arredo` instead of `zona`);
+  `variabile.<prova>` makes what that proof recognises a variable; `decidere.*` is "Tollera
+  tutte" for that type; `avanzate.<name>` applies the regex rule (noise). Defaults
+  (`FILTER_DEFAULTS`, D4/D9): page number and watermark set aside, every other zone counts,
+  recognised variables are variables, case-only/punctuation-only differences count.
+- **Ownership of the switch state is the `filtri` map, always** (ruling F4): `NoiseRule.enabled`
+  is only the built-in default of an `avanzate.<name>` row that has no stored choice at all
+  (a preset defaults to off). `filter_switch` resolves case choice → initiative choice →
+  built-in default; `set_filters` ("Usa per tutta l'iniziativa" writes the initiative's
+  default too and clears the case's own choice for that row, ruling F15) merges a request and
+  drops choices for rules that no longer exist at every save (`prune_choices`); the legacy
+  `preset_rumore` of an initiative is mapped once into `filtri` and never written again; a
+  preset renamed since a choice was stored (`RENAMED_RULES`) keeps that choice under its new
+  name. On the board, "Regole di rumore…" now edits **only** the initiative's own regex
+  rules (ruling F14) — every switch, including the presets, is decided from the Filtri
+  dialog of a case, or as its initiative default.
+- **Occurrences** carry the differences' stable `Anchor`s and their pages (ruling F5). A
+  row's `n` counts what was found **whatever its switch** — turning a switch on or off never
+  changes `n` (F7). `CaseComparison.filters` is the one place `diff_ids` (ids into that same
+  `judged` list) are filled; `OfficinaApi.filters` always returns `()` there.
+- **Control generation's state** lives in the same panel (`ControlState`): its cache key is
+  `filter_model.control_sha` = sha256 of the generated document's bytes followed by the
+  canonical JSON of the payload (a new document or a replaced call is a new key, F7).
+
+### Automatic control generation (`officina/control.py`, `control_proof.py`, `service_control.py`; spec §3.4, decision D14, ruling F18)
+
+After the first successful generation of a case (AS-IS or a TO-BE) whose payload has no
+usable control yet — and again after every "Sostituisci la chiamata" — the service sends,
+**in the background, without the user asking**, a copy of the payload with values changed
+to the configured, enabled generator named "svil" (D11, whatever the case's own generator;
+none configured → skipped) with the case's own headers (Postman-Token included). It never
+becomes a version: the answer is cached at `<case>\cache\controllo-<sha>.pdf` (+ a sidecar
+`.json` of the changed words), never under `asis\`/`tobe\`.
+- **Safe perturbation** (`control.py`) touches only scalar leaves whose value is printed in
+  the generated document (`visible_leaves`), never a structural one (`structural`:
+  identifiers, keys, codes, types, states, flags, templates, roles, versions and the like, by
+  the last/first word of the key or any key above it; never a URL, boolean, null, an
+  enum-like all-caps code, or a 1–2 digit number unless its key names a printed
+  amount/duration/rate; never the template, the document's own attributes — the upload link
+  is sent unchanged, so on the generator's side the control document becomes the last writer
+  of that blob, and the app never reads it — its roles or form labels). The new value keeps
+  the format: digits → digits of the same length (leading digit stays non-zero), letters →
+  letters of the same case, a date stays a valid date in the same format, shifted by some
+  days; the choice is deterministic for a seed. If the answer's page/section structure
+  changed (`structure_changed`) the job retries with half the leaves, then each half of
+  that (`subsets`, at most `MAX_CALLS` calls); a 4xx answer (a validation the perturbation
+  tripped) is retried the same way, a 5xx/timeout/network error stops at once.
+- **What it proves** (`control_proof.py`, ruling F18) — `proven_words`: only a CONTIGUOUS
+  run of words that prints a perturbed value WHOLE, at the place the control prints it, is
+  the `esecuzione` proof; nothing else that happens to change (a label, a nearby sentence, a
+  template word) ever gets it. `map_executed` carries a reference control's proven words onto
+  a later generation of the SAME payload by matching runs at the same offset/prefix on both
+  sides (BACKLOG: a `SequenceMatcher`-based alignment can in principle misplace a one-word
+  block; low risk, accepted — see BACKLOG).
+- **Silence** (D14): a generation in progress cancels its case's own control run (the call
+  already on the wire finishes but its answer is dropped); at most one control per case at a
+  time. Every error — HTTP, timeout, network, a non-PDF answer, structure that never settles
+  — is one log line and the `controllo` record set to `non_disponibile`: never an exception,
+  never a message shown to the user as a case failure. The panel shows, at most, one
+  discreet note ("Riconoscimento esteso non disponibile per questo caso.") — it is retried at
+  the next generation. `controllo.stato` read back as `"in_corso"` from a `caso.json` written
+  before a restart is treated as `"assente"` (F7): a run is never "resumed", only started
+  again.
+- **A deleted initiative** (final review I1): `delete_initiative` first cancels every control
+  run of its cases (`ControlMixin.cancel_controls`) and forgets what their comparisons found
+  for the Filtri panel; a run writes nothing once its case's `caso.json` is gone — the
+  outcome is saved under the case's write lock after checking both — and never creates a
+  folder (`cache` only inside an existing case folder, files with `make_parents=False`), so
+  no folder without `iniziativa.json` is ever left behind.
+- **Ready** (final review M2): the UI polls the state of the case on screen while it is
+  `in_corso` and, at `pronta`, judges the version on screen again (the review job with no
+  step: no generation). An email (HTML) case has no control: the Filtri line says so.
+- `compare_case` gives the variables' second pass the reference's own proven words, carried
+  onto whichever version is on screen by `control.map_executed` (`ControlMixin._executed`).
 
 ### HTML through the DOM (`compare/extract_html.py`, `html_boxes.py`, `linkdiff.py`, `urls.py`)
 
@@ -1426,6 +1683,27 @@ killed (`taskkill /T`); on failure no output file is left. A fresh profile costs
   written through a temp file like the documents, and only when every document was
   delivered: a zip of an incomplete delivery would travel on its own.
 
+### Deleting an initiative for good (`officina/remove.py`; phase 2.5, D6)
+
+The UI never deletes at once (DESIGN-ui §Officina, "Eliminare un'iniziativa"): the
+initiative disappears from the list, a bar offers "Annulla" for 5 s, and only THEN
+`delete_initiative_folder` (`OfficinaApi.delete_initiative`) runs. It is the one place in
+the Officina that removes a whole tree, so it refuses anything it cannot prove is an
+initiative folder directly inside the configured Officina folder: the folder is set,
+absolute and exists; `folder` is one plain, non-reserved name directly under it (never the
+root itself, never deeper, never `..`), checked both as given and resolved (a link pointing
+elsewhere is refused); it is a real directory, never a symlink or junction; it holds an
+`iniziativa.json`. Anything else is `RefusedDeletion` and nothing is touched.
+
+**All or nothing, as far as Windows allows.** The folder is first RENAMED to a hidden
+sibling (`.eliminazione-<name>-<random>`, same volume) — a folder with a file open inside it
+(a PDF in Acrobat, a shell window) cannot be renamed on Windows, so that alone fails the
+whole deletion and the initiative stays intact. Only the renamed copy is then removed: every
+entry but `iniziativa.json` first (read-only files made writable; a link inside is removed,
+never followed), `iniziativa.json` LAST, then the empty folder. A failure part-way renames
+the copy back — it still holds `iniziativa.json`, so the initiative reappears in the list
+(with whatever survived) and can be retried once the file is free.
+
 ## Packaging (`qtRequestory.spec`, `scripts/build.ps1`)
 
 One windowed onefile exe, no installer: the colleagues receive it over chat and run
@@ -1449,7 +1727,7 @@ It is also **bundled** as data (`qtrequestory/ui/icons/app.ico`): at runtime
 `icons.app_icon()` loads every size from it, so the window icon carries the large sizes the
 taskbar needs (see DESIGN-ui §Visual style for the AppUserModelID).
 
-**Hidden import — the one that matters.** `ui/main_window.py` reaches the four pages
+**Hidden import — the one that matters.** `ui/page_registry.py` reaches the four pages
 through `importlib.import_module(f"{PAGES_PACKAGE}.{module}")`. A computed module name is
 invisible to PyInstaller, so the whole `qtrequestory.ui.pages` package was left out of the
 first build; because `MainWindow._build_page` swallows the `ModuleNotFoundError` by
@@ -1603,3 +1881,22 @@ synthetic only (`MOD_TEST_*` keys, `example.invalid` URLs, made-up signatures):
   the outcome strip reads "v2: verificate 2 modifiche segnate — 1 risolta, 1 non risolta"
   and `caso.json` holds the non risolta and the v2 summary; the HTML variant (real Edge,
   skipped without it) checks the DOM tab.
+
+**Phase 2.5** adds one synthetic fixture per phenomenon (spec §9): a rotated shoulder with an
+edition mark, invisible white text under an optional-content layer off, a header/footer with
+text and a divider, a page number, a drawn watermark, target "rooms" (a leader line, an
+end-of-line label, an empty cell), HTML `{{…}}`, a reflow across pages with a footer in the
+way; a fake HTTP server answers a different PDF per perturbed payload for the control
+generation, and simulated errors are checked to show no error to the user. **The local
+oracle** — the 386 real case and the 17-pair corpus of the research (`fase25-zone-variabili`,
+`fase25-analisi-caso-reale`) with their expected counts — is **never in the repository**;
+the controller and reviewers run it as an optional local test (`pytest --run-oracle` or
+similar, skipped when the files are absent). Measured at integration (I1c, on the merged
+`officina-f25` branch): the 386 case went from 60 counting differences on the 1.3.1 base to
+31 (7 noise, 24 real: 14 brand + 4 real changes + 3 case-only + 3 residues where a variable
+also hid a real change); across the whole corpus, counting differences comparable to the
+research baseline went from 573 to 333 (a −42% reduction counting zone differences as real,
+matching the research's own prediction once zones are counted; body-only counting differences
+are down −54%, meeting the spec's "≥50%" criterion for text differences and falling short of
+it only when zone differences — a deliberate scope addition of phase 2.5 — are added back in).
+No real difference was lost on any oracle pair (I1c: identical word-loss to A4's own count).

@@ -201,7 +201,7 @@ def test_a_bold_word_is_stile_counting_only_in_stretto(pdfs: Path):
     assert len(_counting(result, "stretto")) == 1
 
 
-ON = [replace(p, enabled=True) for p in PRESETS if p.name in ("Data", "Numero di pagina", "Importo")]
+ON = [replace(p, enabled=True) for p in PRESETS if p.name in ("Data", "Numero di pagina nel testo", "Importo")]
 
 
 def test_deterministic(pdfs: Path):
@@ -236,7 +236,12 @@ def test_two_ten_page_pdfs_under_budget(pdfs: Path):
     print(message)
     assert len(a.page_sizes) >= 10
     assert elapsed < 5, f"extract + compare of two 10-page PDFs took {elapsed:.2f} s (spec: < 3 s)"
-    assert sorted(d.op for d in result.diffs) == ["cambiato", "in_piu", "sezione_assente"]
+    # phase 2.5: the deleted paragraph straddles a page break, and a difference
+    # never spans two places (spread): one section per page, together the paragraph
+    assert sorted(d.op for d in result.diffs) == ["cambiato", "in_piu", "sezione_assente", "sezione_assente"]
+    sections = [d for d in result.diffs if d.op == "sezione_assente"]
+    assert [len({w.page for w in d.left}) for d in sections] == [1, 1]
+    assert " ".join(d.left_text for d in sections) == paragraphs[30]
 
 
 # ----------------------------------------------------- synthetic words ---
@@ -257,7 +262,9 @@ def _doc(*paragraphs: str, pages: int = 1, lines_per_page: int = 48, size: float
             line += 1
         line += 1
     pages = max(pages, (words[-1].page + 1) if words else 1)
-    return DocText(words, [(595.0, 842.0)] * pages, bool(words))
+    # the page holds its lines (phase 2.5: text past the page's bottom would read as its footer)
+    height = max(842.0, 50.0 + 14.0 * lines_per_page + 50.0)
+    return DocText(words, [(595.0, height)] * pages, bool(words))
 
 
 def test_a_side_without_text_is_noted_not_diffed():
@@ -361,6 +368,14 @@ def test_sixty_pages_under_budget():
     log.warning("sixty pages: compare_docs in %.2f s", elapsed)
     print(f"\nsixty pages: compare_docs in {elapsed:.2f} s ({len(result.diffs)} differences)")
     assert elapsed < 10, f"60 pages took {elapsed:.2f} s"
+    # Phase 2.5 (review A3 I2, ruling F13): with the zones on (the budget
+    # above) the rules and slots behave as on the body alone: no body line of
+    # this long document becomes furniture by chance, nothing extra counts.
+    body_only = compare_docs(target, other, rules=ON, zones=False)
+    assert len(result.counting()) <= len(body_only.counting()) + 5, "zones must not add header/footer noise"
+    assert not [d for d in result.diffs if d.klass == "zona"]
+    edits = sum(t.split().count("cambiata") for t in generated)
+    assert sum(d.right_text.split().count("cambiata") for d in result.counting()) == edits, "no real edit lost"
     klasses = {d.klass for d in result.diffs}
     assert {"variabile", "testo", "rumore"} <= klasses
     assert not [d for d in result.diffs if d.op == "spostato"]
@@ -576,10 +591,13 @@ def _boxed(html: str) -> tuple[Block, ...]:
 def test_a_label_alone_in_its_block_is_a_probable_slot_without_boxes_too(boxes: bool):
     make = _boxed if boxes else _html_blocks
     target = make("<p>Riferimento:</p><p>Gentile cliente, la informiamo</p>")
-    tobe = make("<p>Riferimento: il contratto scade</p><p>Gentile cliente, la informiamo</p>")
+    tobe = make("<p>Riferimento: AB-2026-001</p><p>Gentile cliente, la informiamo</p>")
     result = compare_docs(target, tobe)
     assert _summary(result) == [("cambiato", "variabile")] and result.slots_found == 1
-    assert result.diffs[0].right_text == "il contratto scade"
+    assert result.diffs[0].right_text == "AB-2026-001"
+    # phase 2.5 (ruling F16): free words after a label are no value, they count
+    words = compare_docs(target, make("<p>Riferimento: il contratto scade</p><p>Gentile cliente, la informiamo</p>"))
+    assert [(d.op, d.klass, d.right_text) for d in words.diffs] == [("in_piu", "testo", "il contratto scade")]
 
 
 @pytest.mark.parametrize("boxes", [False, True], ids=["no boxes", "boxes"])

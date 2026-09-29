@@ -17,7 +17,17 @@ T on a hand-tolerated ``untolerate``      ``tolerate`` (with its old note)
 V on a variable       ``not_variable``    ``variable_again``
 V on a not-variable   ``variable_again``  ``not_variable``
 "Annulla i segni"     ``unmark_all``      ``mark_done`` of every removed mark
+a Filtri switch       ``set_filters``     ``set_filters`` of the choices before
 ====================  ==================  ==========================================
+
+A Filtri switch (phase 2.5, U4) is a step with the INITIATIVE too:
+``set_filters`` writes the case's ``filtri`` and ``set_filters_initiative``
+the initiative's (``officina_judge.act`` passes ``ini``); its undo puts back
+the choices each level had (``None``: it had none). "Usa per tutta
+l'iniziativa" (ruling F15) writes the initiative's default and CLEARS the
+case's own choice for those rows, so the case follows the default. Filter
+choices belong to the case, not to a version: their entries are
+``filtri`` and undoable on any version, the AS-IS included.
 
 The API finds a difference by its ``anchor`` (and saves its generated text),
 so a step keeps the :class:`Judged` it was planned on: after the refresh the
@@ -27,12 +37,12 @@ Qt-free: the page submits the steps to a worker (``officina_judge.act``).
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from qtrequestory.ui.contracts import Anchor, Diff, Judged, Mark, Review
 
-__all__ = ["DEPTH", "Entry", "Intent", "Step", "UndoStack", "mark_steps", "stand_in",
+__all__ = ["DEPTH", "Entry", "Intent", "Step", "UndoStack", "filter_steps", "mark_steps", "stand_in",
            "tolerate_steps", "unmark_all_steps", "variable_steps"]
 
 #: ``(OfficinaApi method, arguments after the case)``.
@@ -55,6 +65,8 @@ class Entry:
     text: str
     version: int
     undo: tuple[Step, ...]
+    #: a Filtri switch: case-level, undoable whatever version is on screen
+    filtri: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -67,7 +79,9 @@ class Intent:
     ``kind``: "fatta" | "tollera" | "non_variabile" (a toggle each, on
     ``anchor``) | "tollera_nota" ("Tollera…": tolerate with ``note``, never
     a toggle: an earlier queued T on the same difference does not turn it
-    into an untolerate, the note replaces) | "unmark_all" | "undo"
+    into an untolerate, the note replaces) | "unmark_all" | "filtri"
+    (``choices``; with ``initiative`` the initiative's default instead) |
+    "filtri_reset" (every own choice of the case removed) | "undo"
     (``entry``: that toast's action; None: the last one, Ctrl+Z). ``what``:
     the text the status line names if the difference is gone by then.
     ``version``: the TO-BE version on screen when the key was pressed; a
@@ -80,6 +94,8 @@ class Intent:
     entry: Entry | None = None
     what: str = ""
     version: int | None = None
+    choices: Mapping[str, bool] | None = None
+    initiative: bool = False
 
 
 def mark_steps(j: Judged, review: Review, version: int) -> Plan:
@@ -117,6 +133,20 @@ def unmark_all_steps(review: Review, judged: Sequence[Judged]) -> Plan:
     return [("unmark_all", ())], undo
 
 
+def filter_steps(case_filters: Mapping[str, bool], ini_filters: Mapping[str, bool],
+                 choices: Mapping[str, bool], initiative: bool) -> Plan:
+    """A Filtri switch: ``choices`` into the case's ``filtri``; with
+    ``initiative`` into the initiative's instead, the case's own choice for
+    those rows removed (F15). Undone by the choices each level had before."""
+    choices = dict(choices)
+    case_before = ("set_filters", ({k: case_filters.get(k) for k in choices},))
+    if not initiative:
+        return [("set_filters", (choices,))], [case_before]
+    forward: list[Step] = [("set_filters_initiative", (choices,)), ("set_filters", (dict.fromkeys(choices),))]
+    undo: list[Step] = [("set_filters_initiative", ({k: ini_filters.get(k) for k in choices},)), case_before]
+    return forward, undo
+
+
 def stand_in(mark: Mark) -> Judged:
     """A :class:`Judged` carrying what the API reads of a marked difference:
     its anchor and its generated text."""
@@ -140,11 +170,12 @@ class UndoStack:
 
     def top(self, key: CaseKey, version: int) -> Entry | None:
         """The last action of the case, if it was made on ``version`` (the
-        version on screen): undoing a v2 mark while v3 is compared would undo
-        something the verification already used. Nothing is dropped: back on
-        that version, Ctrl+Z works again."""
+        version on screen; None: no TO-BE judged): undoing a v2 mark while v3
+        is compared would undo something the verification already used.
+        Nothing is dropped: back on that version, Ctrl+Z works again. A
+        ``filtri`` entry is undoable on any version."""
         entry = self.peek(key)
-        return entry if entry is not None and entry.version == version else None
+        return entry if entry is not None and (entry.filtri or entry.version == version) else None
 
     def peek(self, key: CaseKey) -> Entry | None:
         stack = self._stacks.get(key)

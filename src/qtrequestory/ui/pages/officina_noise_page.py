@@ -1,12 +1,15 @@
 """The noise rules and the DOM tab, from the page (a mixin of ``OfficinaPage``).
 
-"Regole di rumore…" on the board edits the initiative's rules and presets
-(counts on the selected case, if any); on the case header it edits the case's
-own rules (the initiative's listed read-only: they add up) and the presets.
-OK saves with ``set_noise_rules`` (on the UI thread, like the profile: a
-small file write) and compares again. Rule names are unique across the
-initiative AND every case (the engine refuses a clash): the dialog knows the
-names in use elsewhere and says where on the row.
+"Regole di rumore…" on the board edits the initiative's own regex rules —
+names and patterns only (ruling F14: presets and every switch, including
+the initiative's defaults, are set from "Filtri del confronto") — with
+counts on the selected case, if any. OK saves with ``set_noise_rules`` (on
+the UI thread, like the profile: a small file write). Rule names are unique
+across the initiative AND every case (the engine refuses a clash): the
+dialog knows the names in use elsewhere and says where on the row. The
+case's own rules are edited in "Filtri del confronto" → "Regole avanzate"
+(phase 2.5, U4: ``officina_filters_page``), with the helpers here
+(``_counter``, ``_case_busy``).
 
 The DOM tab asks for its two sources (``dom_view``) in the ``officina-dom``
 worker; the dialog's live counts run in ``officina-noise``.
@@ -40,14 +43,13 @@ def dom_sources(services: CoreServices, case: Case, version: Version) -> tuple[s
 
 
 class NoiseRulesMixin:
-    """``edit_initiative_noise``, ``edit_case_noise`` and the DOM sources."""
+    """``edit_initiative_noise`` and the DOM sources."""
 
     #: The dialog class (a test swaps in one that answers by itself).
     noise_dialog = NoiseDialog
 
     def _connect_noise(self) -> None:
         self.board.noise_rules_requested.connect(self.edit_initiative_noise)
-        self.case_view.noise_rules_requested.connect(self.edit_case_noise)
         self.case_view.dom_requested.connect(self._load_dom)
 
     def _counter(self, case: Case | None):
@@ -57,12 +59,12 @@ class NoiseRulesMixin:
 
     @staticmethod
     def _answer(dialog) -> tuple[list[NoiseRule], list[str]] | None:
-        """``(rules, presets)`` when the user saved, else None; the dialog is
-        deleted either way (its timers and theme connection go with it)."""
+        """The rules when the user saved, else None; the dialog is deleted
+        either way (its timers and theme connection go with it)."""
         try:
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return None
-            return dialog.rules(), dialog.active_presets()
+            return dialog.rules()
         finally:
             dialog.deleteLater()
 
@@ -92,62 +94,22 @@ class NoiseRulesMixin:
         reserved = {r.name: strings.RUMORE_WHERE_CASE.format(case=case_title(c))
                     for c in ini.cases for r in c.review.noise_rules}
         dialog = self.noise_dialog(
-            strings.RUMORE_TITLE_INITIATIVE.format(name=ini.name), self.api.noise_presets(),
-            set(ini.noise_presets), list(ini.noise_rules), own_title=strings.RUMORE_OWN_INITIATIVE,
+            strings.RUMORE_TITLE_INITIATIVE.format(name=ini.name), list(ini.noise_rules),
+            own_title=strings.RUMORE_OWN_INITIATIVE, presets=self.api.noise_presets(),
             reserved=reserved, counter=self._counter(case),
             counts_note=(strings.RUMORE_COUNTS_ON.format(case=case_title(case)) if case is not None
                          else strings.RUMORE_COUNTS_NONE), parent=self)
-        answer = self._answer(dialog)
-        if answer is None or self._generating():
+        rules = self._answer(dialog)
+        if rules is None or self._generating():
             return
-        try:
-            self.api.set_noise_rules(ini, None, *answer)
+        try:  # the rules only: presets and switches are the Filtri's (F14)
+            self.api.set_noise_rules(ini, None, rules)
         except (OSError, ValueError) as exc:
             self._notify(strings.RUMORE_FAILED.format(reason=exc))
             return
         self._toast(strings.RUMORE_SAVED_INITIATIVE, "ok")
         if self._reload_initiative():  # the board re-reads the saved summaries (U5)
             self.show_board()
-
-    def edit_case_noise(self) -> None:
-        case = self._case(self.case_id)
-        ini = self.ini
-        if case is None or ini is None:
-            return
-        if self._case_busy():
-            return
-        dialog = self.noise_dialog(
-            strings.RUMORE_TITLE_CASE.format(name=case_title(case)), self.api.noise_presets(),
-            set(ini.noise_presets), list(case.review.noise_rules), own_title=strings.RUMORE_OWN_CASE,
-            inherited=list(ini.noise_rules), counter=self._counter(case),
-            counts_note=strings.RUMORE_COUNTS_ON.format(case=case_title(case)), parent=self)
-        answer = self._answer(dialog)
-        if answer is None:
-            return
-        if self._case_busy():  # a compare or an action started meanwhile
-            return
-        rules, presets = answer
-        presets_changed = presets != list(ini.noise_presets)
-        # the case first: if it is refused nothing changed; if the presets are
-        # refused after it, the message says the case's rules are in
-        try:
-            self.api.set_noise_rules(ini, case, rules)
-        except (OSError, ValueError) as exc:
-            self._notify(strings.RUMORE_FAILED.format(reason=exc))
-            self._reload_initiative()
-            return
-        message = strings.RUMORE_SAVED
-        if presets_changed:
-            try:
-                self.api.set_noise_rules(ini, None, list(ini.noise_rules), presets)
-                message = strings.RUMORE_SAVED_WITH_PRESETS
-            except (OSError, ValueError) as exc:
-                self._notify(strings.RUMORE_PRESETS_FAILED.format(reason=exc))
-                message = ""
-        if message:
-            self._toast(message, "ok")
-        if self._reload_initiative():
-            self.open_case(case.id)  # the same version, compared again
 
     # -- the DOM tab ------------------------------------------------------------------
 

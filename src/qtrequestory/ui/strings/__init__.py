@@ -24,6 +24,9 @@ others. One module per page means each task owns a file:
 ``officina_rumore.py``       Officina phase 2: noise rules dialog, DOM tab
 ``officina_chiamata.py``     Officina 1.3.2: "Aggiungi chiamata…", "Cambia chiamata…"
 ``officina_configura.py``    Officina setup: the tab's inline card, the wizard's step
+``eliminazioni.py``          Phase 2.5: undoable deletions (bar, "Elimina iniziativa", quit)
+``officina_pannello.py``     Officina 2.5: the side panel (types, zones, legend, rail)
+``officina_filtri.py``       Officina 2.5: the "Filtri del confronto" dialog
 ===========================  ===================================================
 
 Usage — always through the package, never the submodule::
@@ -51,6 +54,9 @@ from .officina_azioni import *  # noqa: F401,F403
 from .officina_rumore import *  # noqa: F401,F403
 from .officina_chiamata import *  # noqa: F401,F403
 from .officina_configura import *  # noqa: F401,F403
+from .eliminazioni import *  # noqa: F401,F403
+from .officina_pannello import *  # noqa: F401,F403
+from .officina_filtri import *  # noqa: F401,F403
 
 
 def lower_first(sentence: str) -> str:

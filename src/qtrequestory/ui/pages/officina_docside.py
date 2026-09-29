@@ -2,7 +2,8 @@
 
 * :class:`VersionSwitch` — AS-IS, v1 … vn as a segmented control (the newest
   versions; older ones in a "…" menu), like the approved mockup.
-* :class:`DocSide` — a header (slot pill, name, info) over a ``DocView``, or a
+* :class:`DocSide` — a thin caption (slot pill — TARGET, AS-IS, v2 — name,
+  info) over a ``DocView``, or a
   sentence when there is nothing to show (no target yet, a file gone, a
   document still being prepared).
 """
@@ -26,12 +27,13 @@ from qtrequestory.ui.contracts import Case, Version
 from qtrequestory.ui.pages.officina_viewer import DocView
 from qtrequestory.ui.pages.officina_widgets import pill
 
-__all__ = ["HEADER_HEIGHT", "DocSide", "VersionSwitch", "case_versions", "version_key"]
+__all__ = ["HEADER_HEIGHT", "DocSide", "VersionSwitch", "case_versions", "version_key", "version_label"]
 
 #: How many TO-BE versions get their own segment; older ones go in the menu.
 VISIBLE_VERSIONS = 5
-#: Height of a side's header row (the version switch is the tallest thing in it).
-HEADER_HEIGHT = 36
+#: Height of a side's header row: a caption over the document (the version
+#: switch is in the case bar since phase 2.5, U2).
+HEADER_HEIGHT = 24
 
 
 def version_key(version: Version) -> str:
@@ -45,7 +47,8 @@ def case_versions(case: Case) -> list[Version]:
     return ([asis] if asis is not None else []) + case.tobe_versions()
 
 
-def _label(version: Version) -> str:
+def version_label(version: Version) -> str:
+    """"AS-IS" or "v3": how the switch and the captions name a version."""
     return (strings.OFFICINA_VERSION_ASIS if version.kind == "asis"
             else strings.OFFICINA_VERSION_TOBE.format(n=version.number))
 
@@ -84,10 +87,12 @@ class VersionSwitch(QWidget):
             shown = asis + [v for v in tobe if version_key(v) == current] + tobe[-VISIBLE_VERSIONS:]
         for version in shown:
             key = version_key(version)
-            button = QPushButton(_label(version))
+            button = QPushButton(version_label(version))
             button.setCheckable(True)
+            tips = [strings.BARRA_ASIS_TIP] if version.kind == "asis" else []
             if version.missing:
-                button.setToolTip(strings.OFFICINA_THUMB_MISSING_TIP)
+                tips.append(strings.OFFICINA_THUMB_MISSING_TIP)
+            button.setToolTip("\n".join(tips))
             button.clicked.connect(lambda _c=False, k=key: self.chosen.emit(k))
             self._group.addButton(button)
             self._layout.addWidget(button)
@@ -98,7 +103,7 @@ class VersionSwitch(QWidget):
             menu = QMenu(self.more)
             for version in self._older:
                 key = version_key(version)
-                menu.addAction(_label(version), lambda k=key: self.chosen.emit(k))
+                menu.addAction(version_label(version), lambda k=key: self.chosen.emit(k))
             self.more.setMenu(menu)
             self._layout.addSpacing(theme.SPACE[0])
             self._layout.addWidget(self.more)
@@ -140,14 +145,14 @@ class DocSide(QWidget):
             header.addWidget(switch)
         header.addWidget(self.name, 1)
         header.addWidget(self.info)
-        self.stack = QStackedLayout()
-        self.stack.addWidget(self.view)
-        self.stack.addWidget(self.message)
+        self.stack = QStackedLayout()  # filled once it has a parent, below (D7)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SPACE[0])
         layout.addWidget(head)
         layout.addLayout(self.stack, 1)
+        self.stack.addWidget(self.view)  # addWidget shows the first page: never an orphan
+        self.stack.addWidget(self.message)
         self.show_message(strings.OFFICINA_LOADING)
 
     def show_message(self, text: str) -> None:

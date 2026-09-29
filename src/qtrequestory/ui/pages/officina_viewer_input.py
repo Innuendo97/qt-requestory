@@ -2,10 +2,12 @@
 from ``officina_viewer`` for size).
 
 A click — not a drag: the view pans with the hand — on a highlight emits
-``difference_clicked``, elsewhere ``blank_clicked``; a double click on one
+``difference_clicked`` (the box clicked becomes the difference's anchor box:
+the mini-bar opens under it), elsewhere ``blank_clicked``; a double click on one
 ``difference_double_clicked`` (its release is not a click); a right click on
 one ``difference_menu`` with the global point, elsewhere the default menu;
-F / T / V with no modifier ``key_action`` (``officina_rows.REVIEW_KEYS``). The
+F / T / V with no modifier ``key_action`` (``officina_rows.REVIEW_KEYS``);
+Ctrl+wheel zooms around the point under the cursor (spec §4.3). The
 signals are declared on ``DocView``; the case view turns them into review
 actions (``officina_actions_bar``).
 """
@@ -35,11 +37,12 @@ class ViewerInputMixin:
         press, self._press = self._press, None
         if (event.button() == Qt.MouseButton.LeftButton and press is not None
                 and (pos - press).manhattanLength() < QApplication.startDragDistance()):
-            hit = self.highlight_at(pos)
-            if hit is None:
+            item = self._highlight_item_at(pos)
+            if item is None:
                 self.blank_clicked.emit()
             else:
-                self.difference_clicked.emit(hit)
+                self.remember_click(item)
+                self.difference_clicked.emit(item.diff_id)
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: D102, N802
@@ -66,9 +69,26 @@ class ViewerInputMixin:
             return
         super().keyPressEvent(event)
 
+    def wheelEvent(self, event) -> None:  # noqa: D102, N802 - Ctrl+wheel zooms
+        if not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+            return
+        event.accept()
+        steps = event.angleDelta().y() / 120
+        if steps:
+            at = event.position().toPoint()
+            before = self.mapToScene(at)
+            self.set_zoom(self.zoom() * 1.1 ** steps)
+            # the point under the cursor stays there (the other view follows the scroll)
+            shift = (before - self.mapToScene(at)) * self.transform().m11()
+            for bar, delta in ((self.horizontalScrollBar(), shift.x()),
+                               (self.verticalScrollBar(), shift.y())):
+                bar.setValue(bar.value() + round(delta))
+
     def highlight_at(self, pos: QPoint) -> int | None:
         """The difference drawn at viewport point ``pos``, if any."""
-        for item in self.items(pos):
-            if isinstance(item, HighlightItem):
-                return item.diff_id
-        return None
+        item = self._highlight_item_at(pos)
+        return None if item is None else item.diff_id
+
+    def _highlight_item_at(self, pos: QPoint) -> HighlightItem | None:
+        return next((i for i in self.items(pos) if isinstance(i, HighlightItem)), None)

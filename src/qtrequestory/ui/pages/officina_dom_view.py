@@ -59,7 +59,6 @@ class DomViewMixin:
         self.dom_button.clicked.connect(lambda: self.set_dom_mode(True))
         self.diffs.difference_chosen.connect(self.dom.select)
         self.dom.difference_chosen.connect(self._on_difference_clicked)
-        self.dom.difference_chosen.connect(self._acted)  # R28, like a click in the list
 
     def dom_mode(self) -> bool:
         return self.dom.isVisibleTo(self)

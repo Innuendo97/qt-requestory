@@ -30,7 +30,7 @@ FAKE_IBAN = "IT" + "99" + "Z" + "12345" + "67890" + "ABCDEF123456"
 #: Synthetic codice fiscale shape: 6 letters, 2 digits, month letter, 2 digits, place code, check letter.
 FAKE_CF = "TSTTST" + "80" + "A" + "01" + "Z999" + "X"
 
-PRESET_NAMES = ("Numero di pagina", "Data", "IBAN", "Codice fiscale", "CAP", "Importo",
+PRESET_NAMES = ("Numero di pagina nel testo", "Data", "IBAN", "Codice fiscale", "CAP", "Importo",
                 "Marcatore di firma", "Parametri di tracciamento")
 
 P = placeholder
@@ -75,8 +75,8 @@ def test_preset_rules_are_copies():
 
 
 @pytest.mark.parametrize(("name", "text", "expected"), [
-    ("Numero di pagina", "Fine Pag. 2 di 3", ["Fine", P("Numero di pagina")]),
-    ("Numero di pagina", "Fine sezione 2/3", ["Fine", "sezione", P("Numero di pagina")]),
+    ("Numero di pagina nel testo", "Fine Pag. 2 di 3", ["Fine", P("Numero di pagina nel testo")]),
+    ("Numero di pagina nel testo", "Fine sezione 2/3", ["Fine", "sezione", P("Numero di pagina nel testo")]),
     ("Data", "Roma, 01/02/2026 firma", ["Roma,", P("Data"), "firma"]),
     ("Data", "il 1 febbraio 2026.", ["il", P("Data") + "."]),
     ("IBAN", f"IBAN {FAKE_IBAN} intestato", ["IBAN", P("IBAN"), "intestato"]),
@@ -101,13 +101,13 @@ def test_a_numeric_and_a_textual_date_compare_equal():
 
 
 def test_page_fraction_only_at_a_line_end():
-    assert _masked("Numero di pagina", "da 2/3 a 4") == ["da", "2/3", "a", "4"]
-    keys = _masked("Numero di pagina", "da 2/3 a 4", line_ends={1})
-    assert keys == ["da", P("Numero di pagina"), "a", "4"]
+    assert _masked("Numero di pagina nel testo", "da 2/3 a 4") == ["da", "2/3", "a", "4"]
+    keys = _masked("Numero di pagina nel testo", "da 2/3 a 4", line_ends={1})
+    assert keys == ["da", P("Numero di pagina nel testo"), "a", "4"]
 
 
 def test_date_numbers_are_not_page_numbers_and_not_caps():
-    assert _masked("Numero di pagina", "il 01/02/2026") == ["il", "01/02/2026"]
+    assert _masked("Numero di pagina nel testo", "il 01/02/2026") == ["il", "01/02/2026"]
     assert _masked("CAP", f"{FAKE_IBAN} 01/02/2026") == [FAKE_IBAN, "01/02/2026"]
 
 

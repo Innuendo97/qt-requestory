@@ -137,6 +137,18 @@ def main(argv: list[str] | None = None) -> int:
         pump(300)
         return search.form.period.popup
 
+    def splash_scene():
+        """The startup splash (D2), grabbed on its own at its second phase."""
+        from PySide6.QtGui import QGuiApplication
+
+        from qtrequestory.ui import strings
+        from qtrequestory.ui.splash import Splash
+
+        shown = Splash("0.0-shoot", QGuiApplication.primaryScreen())
+        shown.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        shown.showMessage(strings.SPLASH_PAGES)
+        return shown
+
     def context_menu():
         """The row menu, grabbed on its own (a popup is not in window.grab)."""
         search_results()
@@ -208,6 +220,60 @@ def main(argv: list[str] | None = None) -> int:
         window.page("sync").start_sync()
         pump(4000)
 
+    def header_sync(pending: bool = False, lost: bool = False, panel: bool = False,
+                    running: bool = False):
+        """D3: the sync chip in the header — all fine, amber (a day still on
+        the server), red (a day purged) — optionally with its panel open."""
+        from datetime import date, datetime, timedelta
+
+        page = window.page("sync")
+        for _ in range(100):  # the previous mode's running scene: let it end
+            if not runner.is_running("sync"):
+                break
+            pump(200)
+        today = date.today()
+        days = [today - timedelta(days=i) for i in range(1, 61)]
+        weekdays = {d for d in days if d.weekday() < 5}
+        weekends = {d for d in days if d.weekday() >= 5}
+        newest = sorted(weekdays, reverse=True)
+        missing_p, missing_l = newest[1], newest[7]
+        at_nine = datetime.combine(today, datetime.min.time()).replace(hour=9)
+        for env in ("coll", "svil"):
+            services.sync.set_ok(env)
+            services.sync.set_env_status(env, fresh=True, last_success=at_nine,
+                                         n_local_files=len(weekdays), local_bytes=2_254_857_830)
+            services.index.set_local_days(env, weekdays, empty=weekends)
+            services.index.set_server_days(env)
+        page.presenter.reachable.clear()
+        page.presenter.outcomes.clear()
+        page.presenter.failures.clear()
+        if pending or lost:
+            services.index.set_local_days(
+                "coll", weekdays - ({missing_p} if pending else set()) - ({missing_l} if lost else set()),
+                empty=weekends)
+            services.index.set_server_days("coll", listed={missing_p} if pending else (),
+                                           seen={missing_l} if lost else ())
+        window.show_page("search")
+        for key in window.pages():  # the Ricerca gap banner reads the same days
+            refresh = getattr(window.page(key), "on_data_changed", None)
+            if callable(refresh):
+                refresh()
+        page.presenter.emit_summary()
+        if running:
+            services.sync.step_delay = 0.8
+            page.start_sync()
+            pump(1200)
+        pump(300)
+        if not panel:
+            return window
+        if window.sync_panel is None:
+            window.toggle_sync_panel()
+            window.sync_panel.close()
+        window.sync_panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        window.toggle_sync_panel()
+        pump(300)
+        return _WithMenu(window.sync_panel)
+
     def toast() -> None:
         window.show_page("search")
         window.show_toast("JSON copiato · 157 KB", tone="ok", ms=60_000)
@@ -221,11 +287,18 @@ def main(argv: list[str] | None = None) -> int:
         ("ricerca-periodo", search_period),
     ]
     scenes: list[tuple[str, Callable[[], None]]] = [
+        ("splash", splash_scene),
         *search_scenes,
         ("toast", toast),
         ("menu", context_menu),
         ("sync-riposo", sync_idle),
         ("ricerca-giorni-mancanti", search_gap),
+        ("testata-sync-tutto-ok", lambda: header_sync()),
+        ("testata-sync-ambra", lambda: header_sync(pending=True)),
+        ("testata-sync-rosso", lambda: header_sync(lost=True)),
+        ("testata-sync-pannello", lambda: header_sync(pending=True, lost=True, panel=True)),
+        ("testata-sync-pannello-ok", lambda: header_sync(panel=True)),
+        ("testata-sync-in-corso", lambda: header_sync(panel=True, running=True)),
         ("sync-in-corso", sync_running),
         ("sync", sync_run),
         ("sync-registro", sync_log_open),
@@ -605,12 +678,25 @@ def main(argv: list[str] | None = None) -> int:
         officina_html_case()  # U6: in the second initiative, the same in every mode
         return officina_state
 
+    def officina_zone_boxes(docs):
+        """U3: the zone boxes of page 1-2 of the synthetic PDFs, as the zone
+        stage would give them (header, title, left shoulder, footer, page
+        number), for the margin rails and the zones summary."""
+        from qtrequestory.ui.contracts import ZoneBox
+
+        out = []
+        for page, (w, h) in enumerate(docs["left"][1].page_sizes[:2]):
+            out += [ZoneBox(page, "header", 40, 20, w - 40, 60), ZoneBox(page, "titolo", 40, 64, w - 40, 84),
+                    ZoneBox(page, "spalla_sx", 8, 120, 30, h - 160), ZoneBox(page, "footer", 40, h - 70, w - 40, h - 36),
+                    ZoneBox(page, "numero_pagina", w - 90, h - 30, w - 40, h - 18)]
+        return tuple(out)
+
     def officina_verdicts(ini, case_id: str) -> None:
         """Phase 2 (U1): script the fake's ``compare_case`` for case B so that
         its TO-BE v2 holds every verdict and state — regressione, da fare, non
         risolta (marked in v1, unchanged in v2), in corso, da verificare
         (marked in v2), fatta, tollerata (by profile and by hand), rumore,
-        variabile — on word boxes of page 1 of the synthetic PDFs."""
+        variabile, arredo (D1) — on word boxes of page 1 of the synthetic PDFs."""
         from tests.fakes.fake_core import fake_diff
 
         api = services.officina
@@ -644,40 +730,49 @@ def main(argv: list[str] | None = None) -> int:
                                        right_text=lw[i].text + tail, left_spans=((n, n),),
                                        right_spans=((n, n + len(tail)),))
 
-        da_fare = last_letter(20)
-        stuck = one_more(34, "e")
+        def typed(d, tipo, zone="corpo", klass=None):  # U3: every type and zone, scripted
+            return dataclasses.replace(d, tipo=tipo, zone=zone, **({"klass": klass} if klass else {}))
+
+        da_fare = typed(last_letter(20), "parola")
+        stuck = typed(one_more(34, "e"), "parola")
         before = diff("cambiato", "testo", 48, generated="prima")
-        now = one_more(48, "i", before)
-        promised = diff("cambiato", "testo", 62, generated=rw[62].text.upper())
-        done = diff("mancante", "testo", 76, 2, right=False)
-        by_hand = diff("cambiato", "testo", 104, generated=rw[104].text + "!")
+        now = typed(one_more(48, "i", before), "parola")
+        promised = typed(diff("cambiato", "testo", 62, generated=rw[62].text.upper()), "maiuscole")
+        done = typed(diff("mancante", "testo", 76, 2, right=False), "frase")
+        by_hand = typed(diff("cambiato", "testo", 104, generated=rw[104].text + "!"), "punteggiatura")
         link = fake_diff("cambiato", "link", "Scopri le condizioni", "Scopri le condizioni",
-                         before="Per i dettagli", after="del servizio.",
+                         before="Per i dettagli", after="del servizio.", tipo="link",
                          detail="href: https://example.invalid/condizioni → "
                                 "https://example.invalid/condizioni-2025")
+        # U3: the zones (as the engine's zone stage names them) and the other types
+        header = typed(diff("cambiato", "zona", 0, 2, generated="Sezione iniziale"), "zona", "header")
+        shoulder = typed(diff("cambiato", "zona", 146, generated="Ed. 01/2026"), "zona", "spalla_sx")
+        footer = typed(diff("cambiato", "zona", 180, 2, generated="Acme-Servizi S.p.A."), "zona", "footer")
+        number = typed(diff("cambiato", "testo", 160, generated="11,50"), "numeri")
+        spaces = typed(diff("cambiato", "testo", 166, generated=f"{rw[166].text}  {rw[167].text}"), "spazi")
+        moved = typed(diff("spostato", "testo", 172), "spostamento")
+        section = typed(diff("sezione_in_piu", "testo", 196, 6, left=False), "sezione")
+        page_no = typed(diff("cambiato", "arredo", 210, generated="2 di 12"), "numeri", "numero_pagina")
         tobe = [
-            diff("in_piu", "testo", 6, 2, left=False),               # regressione
+            typed(diff("in_piu", "testo", 6, 2, left=False), "frase"),  # regressione
             da_fare, stuck, now, promised,
-            diff("cambiato", "stile", 90),                            # tollerata (profilo)
+            typed(diff("cambiato", "stile", 90), "altro"),               # tollerata (profilo)
             by_hand,                                                  # tollerata a mano
-            diff("cambiato", "rumore", 118),
-            diff("cambiato", "variabile", 132, 2),
+            typed(diff("cambiato", "rumore", 118), "numeri"),
+            typed(diff("cambiato", "variabile", 132, 2), "numeri"),
             link,                                                     # solo nell'elenco
+            header, shoulder, footer, number, spaces, moved, section, page_no,
         ]
         # U2: a v1-only difference, so that a mark made in v1 is "risolta" in v2
-        extra = fake_diff("cambiato", "testo", "Titolo di esempio", "Titolo")
-        api.set_canned(case_id, 0, [da_fare, stuck, before, promised, done, by_hand, link])
-        api.set_canned(case_id, 1, [*tobe, extra])
-        api.set_canned(case_id, 2, tobe)
-        case = next(c for c in ini.cases if c.id == case_id)
-        v1, v2 = case.tobe_versions()[:2]
-        first = api.compare_case(ini, case, v1)
-        api.mark_done(case, next(j for j in first.judged if j.diff.anchor == stuck.anchor), 1)
-        second = api.compare_case(ini, case, v2)  # verifies the v1 mark: still there
-        by_anchor = {j.diff.anchor: j for j in second.judged}
-        api.mark_done(case, by_anchor[promised.anchor], 2)
-        api.tolerate(case, by_anchor[by_hand.anchor], "scelta di esempio")
-        officina_state.update(stuck=stuck, extra=extra, one_letter=da_fare, in_corso=now, link=link)
+        extra = fake_diff("cambiato", "testo", "Titolo di esempio", "Titolo", tipo="parola")
+        zones = officina_zone_boxes(docs)
+        api.set_canned(case_id, 0, [da_fare, stuck, before, promised, done, by_hand, link, header, shoulder,
+                                    footer, number, spaces, moved, section], left_zones=zones, right_zones=zones)
+        api.set_canned(case_id, 1, [*tobe, extra], left_zones=zones, right_zones=zones)
+        api.set_canned(case_id, 2, tobe, left_zones=zones, right_zones=zones)
+        officina_state.update(stuck=stuck, extra=extra, one_letter=da_fare, in_corso=now, link=link,
+                              filters=dict(footer=footer, header=header, shoulder=shoulder, page_no=page_no,
+                                           caps=promised, punct=by_hand, variable=tobe[8], noise=tobe[7]))
 
     def officina_list() -> None:
         officina_setup()
@@ -685,6 +780,34 @@ def main(argv: list[str] | None = None) -> int:
         window.show_page("officina")
         page.show_list()
         pump(300)
+
+    def officina_deletions(count: int, expanded: bool = False):
+        """D6: 1, 2 or 3 initiatives deleted a moment apart, the bar counting
+        down on a frozen clock (the loop undoes them after the shot: a scene
+        never deletes anything)."""
+        def prepare() -> None:
+            officina_setup()
+            api = services.officina
+            names = ["Banco prove", "Campagna estate", "Moduli 2025"][:count]
+            for name in names:
+                try:
+                    api.load(name)
+                except FileNotFoundError:
+                    api.create_initiative(name)
+            page = window.page("officina")
+            window.show_page("officina")
+            page.ini = None
+            page.show_list()
+            now = [time.monotonic() * 1000]
+            window.deletions.clock = lambda: now[0]
+            for name in names:
+                page.delete_initiative(name)
+                now[0] += 800
+            now[0] += 900
+            window.deletions.tick()
+            window.deletion_bar.set_expanded(expanded)
+            pump(200)
+        return prepare
 
     def officina_board() -> None:
         state = officina_setup()
@@ -712,6 +835,7 @@ def main(argv: list[str] | None = None) -> int:
         """Phase 2 (U1): case B's v2 judged by the scripted fake — every verdict
         and state drawn by verdict, the fatte shown, the regression focused."""
         officina_case()
+        officina_measure("case")
         view = window.page("officina").case_view
         for side in (view.left, view.right):
             side.view.set_show_done(True)
@@ -728,13 +852,14 @@ def main(argv: list[str] | None = None) -> int:
             self._undo()
 
     def officina_measure(what: str) -> None:
-        """Where the documents start (R28: well above 45% of the window height)."""
+        """Where the documents start (U2: <= 80 px under the case view's top)."""
         from PySide6.QtCore import QPoint
 
         view = window.page("officina").case_view
         top = view.left.view.mapTo(window, QPoint(0, 0)).y()
+        inside = view.left.view.mapTo(view, QPoint(0, 0)).y()
         print(f"{what}: documents start at y={top} of {window.height()} "
-              f"({100 * top / window.height():.1f}%)")
+              f"({100 * top / window.height():.1f}%), {inside} px under the case view's top")
 
     def officina_open_case_version(number: int):
         from qtrequestory.ui.pages.officina_docside import version_key
@@ -963,10 +1088,89 @@ def main(argv: list[str] | None = None) -> int:
             side.view.set_show_done(True)
         pump(900)
 
-    def officina_case_profile():
-        """Phase 2 (U2): the header's profile menu open on case B."""
+    viewer_state: dict[str, object] = {}
+
+    def officina_viewer_u1_setup():
+        """Phase 2.5 (U1): a case of its own ("Visore") on the synthetic
+        12-page PDFs: a difference over three separate lines of page 2 (one
+        ring per box), a «mancante» on page 3 (no words on the TO-BE side) and
+        a plain one on page 1."""
+        if viewer_state:
+            return viewer_state
+        from tests.fakes.fake_core import fake_diff
+
+        officina_setup()
+        api = services.officina
+        docs = officina_pdfs()
+        lw, rw = docs["left"][1].words, docs["right"][1].words
+        path = tmp / "officina-visore.json"
+        path.write_text('{"documents": [{"template": {"templateKey": "MOD_TEST_VISORE"}}]}',
+                        encoding="utf-8")
+        ini = api.create_initiative("Visore")
+        api.case_from_file(ini, path, "MOD_TEST_VISORE")
+        ini = api.load(ini.id)
+        case = ini.cases[0]
+        api.set_target(case, docs["left"][0])
+        api.set_response(docs["right"][0].read_bytes())
+        api.generate(ini, case, "tobe")
+
+        def pick(words, page, *indexes):
+            on = [w for w in words if w.page == page]
+            return tuple(on[i] for i in indexes)
+
+        spread = pick(lw, 1, 30, 31, 32, 95, 96, 170)
+        section = dataclasses.replace(
+            fake_diff("cambiato", "testo", " ".join(w.text for w in spread), "altro testo",
+                      context="sezione"), left=spread, right=pick(rw, 1, 30, 31))
+        gone = pick(lw, 2, 150, 151, 152)
+        missing = dataclasses.replace(
+            fake_diff("mancante", "testo", " ".join(w.text for w in gone), "", context="mancante"),
+            left=gone, right=())
+        plain = pick(lw, 0, 20, 21)
+        simple = dataclasses.replace(
+            fake_diff("cambiato", "testo", " ".join(w.text for w in plain), "MOD_TEST",
+                      context="semplice"), left=plain, right=pick(rw, 0, 20, 21))
+        api.set_canned(case.id, 1, [simple, section, missing])
+        viewer_state.update(ini=ini.id, case=case.id, section=section, missing=missing)
+        return viewer_state
+
+    def officina_viewer_u1(key: str, zoom: float | None = None, shift: float = 0.0):
+        def prepare():
+            state = officina_viewer_u1_setup()
+            page = window.page("officina")
+            window.show_page("officina")
+            page.open_initiative(state["ini"])
+            page.open_case(state["case"], "v1")
+            pump(2500)
+            view = page.case_view
+            if zoom is not None:
+                view.left.view.set_zoom(zoom)
+                pump(300)
+            anchor = state[key].anchor
+            target = next(j for j in view.docs.judged.judged if j.diff.anchor == anchor)
+            for other in view.docs.judged.judged:  # several selections first: one ring stays
+                view.diffs.select(other.diff.id)
+                view.sync.focus_difference(other.diff.id)
+                pump(150)
+            view.diffs.select(target.diff.id)
+            view.sync.focus_difference(target.diff.id)
+            pump(300)
+            if shift:
+                bar = view.left.view.horizontalScrollBar()
+                bar.setValue(round(bar.maximum() * shift))
+            pump(900)
+            doc_l, doc_r = view.left.view, view.right.view
+            print(f"u1 {key}: left v{doc_l.verticalScrollBar().value()} h{doc_l.horizontalScrollBar().value()}"
+                  f" | right v{doc_r.verticalScrollBar().value()} h{doc_r.horizontalScrollBar().value()}"
+                  f" | rings {[i for i in doc_l.scene().items() if i.zValue() == 3].__len__()}")
+        return prepare
+
+    def officina_case_menu():
+        """Phase 2.5 (U2): the case bar's "⋯" menu open on case B (every
+        command that left the bar: AS-IS, target, payload, call, profile,
+        noise, tolerances, marks, acceptance)."""
         page, _case = officina_open_case_version(2)
-        button = page.case_view.profile_button
+        button = page.case_view.more_button
         menu = button.menu()
         menu.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         corner = button.mapToGlobal(button.rect().bottomRight())
@@ -974,6 +1178,72 @@ def main(argv: list[str] | None = None) -> int:
         menu.popup(corner)
         pump(300)
         return _WithMenu(menu)
+
+    def officina_case_same_as_asis():
+        """Phase 2.5 (U2): case B's v1 given the AS-IS's differences (the
+        canned v1 put aside for this picture): the "= AS-IS" chip."""
+        state = officina_setup()
+        canned = services.officina.canned[state["case"]]
+        v1 = canned[1]
+        canned[1] = canned[0]
+        officina_open_case_version(1)
+        officina_measure("= AS-IS")
+
+        def undo() -> None:
+            canned[1] = v1
+
+        return _Restoring(window, undo)
+
+    def officina_case_asis():
+        """Phase 2.5 (U2): case B's AS-IS, drawn in the same visual language
+        (its differences from the target as "da fare": the whole work)."""
+        state = officina_setup()
+        api = services.officina
+        api.scripted_comparison = api.canned[state["case"]][0]  # the fake PDFs of B read alike
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["ini"])
+        page.open_case(state["case"], "asis")
+        pump(2500)
+        officina_measure("AS-IS")
+
+        def undo() -> None:
+            api.scripted_comparison = None
+
+        return _Restoring(window, undo)
+
+    def officina_panel(tab: str = "guardare", *, types=(), fold=(), collapsed: bool = False,
+                       legend: bool = False):
+        """Phase 2.5 (U3): case B's v2 with the side panel on ``tab``, the type
+        chips ``types`` on, the groups ``fold`` folded, collapsed to the rail,
+        or with the legend open (the zone rails on every page margin)."""
+        def prepare():
+            officina_open_case_version(2)
+            view = window.page("officina").case_view
+            diffs = view.diffs
+            diffs.set_collapsed(collapsed)
+            diffs.set_tab(tab)
+            diffs.set_types(set(types))
+            for key in fold:
+                diffs.toggle_group(key)
+            if diffs.row_ids():
+                diffs.select(diffs.row_ids()[0])
+                view.sync.focus_difference(diffs.row_ids()[0])
+            pump(900)
+
+            def undo() -> None:
+                diffs.set_types(set())
+                diffs._folded.clear()
+                diffs.set_collapsed(False)
+
+            if legend:
+                diffs.footer.legend_button.click()
+                pump(300)
+                shot = _WithMenu(diffs.popover)
+                shot.close = lambda: (diffs.popover.hide(), undo())
+                return shot
+            return _Restoring(window, undo)
+        return prepare
 
     def officina_list_select(tab: str, key: str | None = None, *, verification: bool = False):
         """Phase 2 (U3): case B's v2, the list on ``tab`` with the row of the
@@ -1361,8 +1631,9 @@ def main(argv: list[str] | None = None) -> int:
         officina_state.update(html_ini=ini.id, html_case=case.id, html_link=link)
 
     def officina_noise_dialog():
-        """U6: "Regole di rumore…" of the HTML case: the presets all off, two
-        rules of the case — one counted, one whose regex does not compile."""
+        """U6: "Regole di rumore…" of the board (the initiative's own rules,
+        counted on the HTML case): two rules — one counted, one whose regex
+        does not compile. No presets, no switches (F14: the Filtri's)."""
         from qtrequestory.ui import strings as s
         from qtrequestory.ui.contracts import NoiseRule
         from qtrequestory.ui.pages.officina_format import case_title
@@ -1373,9 +1644,9 @@ def main(argv: list[str] | None = None) -> int:
         page.open_initiative(state["html_ini"])
         case = page._case(state["html_case"])
         rules = [NoiseRule("Codice pratica", r"PR-\d{6}"), NoiseRule("Saluti", r"(Cordiali saluti")]
-        dialog = NoiseDialog(s.RUMORE_TITLE_CASE.format(name=case_title(case)),
-                             services.officina.noise_presets(), set(), rules,
-                             own_title=s.RUMORE_OWN_CASE, counter=page._counter(case),
+        dialog = NoiseDialog(s.RUMORE_TITLE_INITIATIVE.format(name=page.ini.name), rules,
+                             own_title=s.RUMORE_OWN_INITIATIVE, presets=services.officina.noise_presets(),
+                             counter=page._counter(case),
                              counts_note=s.RUMORE_COUNTS_ON.format(case=case_title(case)), parent=window)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
         dialog.resize(820, 600)
@@ -1384,8 +1655,104 @@ def main(argv: list[str] | None = None) -> int:
         while dialog.is_counting() and time.monotonic() < end:
             pump(100)
         pump(300)
-        print("noise counts:", [dialog.hits_shown(dialog.own, r) for r in range(dialog.own.rowCount())])
+        print("noise counts:", [dialog.hits_shown(r) for r in range(dialog.own.rowCount())])
         return dialog
+
+    class _WithDialog(_WithMenu):
+        """The window with a modeless dialog painted where it stands."""
+
+    def officina_filters(*, expand=(), advanced: bool = False, control: str | None = None,
+                         unavailable: bool = False, dirty: bool = False):
+        """Phase 2.5 (U4): "Filtri del confronto" of case B's v2, over the case
+        view: zones, variables and "da decidere" with scripted counts and
+        occurrences (anchors of the scripted differences), the rows ``expand``
+        expanded, "Regole avanzate" open, the control generation ``control``."""
+        def prepare():
+            from PySide6.QtCore import QPoint
+
+            from qtrequestory.ui.contracts import ControlState, NoiseRule
+            from qtrequestory.ui.pages.officina_filters import FiltersDialog
+            from tests.fakes.fake_filters import fake_group, fake_occurrence
+
+            state = officina_setup()
+            api = services.officina
+            d = state["filters"]
+
+            def occ(diff, page=0, pages=None, detail=""):
+                return fake_occurrence(diff.left_text or diff.right_text, pagine=pages or (page,),
+                                       anchors=(diff.anchor,), zona=diff.zone, dettaglio=detail)
+
+            api.set_filter_groups(state["case"], [
+                fake_group("zona.header", n=1, occorrenze=[occ(d["header"], pages=(0, 1))]),
+                fake_group("zona.titolo"),
+                fake_group("zona.footer", n=1, occorrenze=[occ(d["footer"], pages=(0, 1))]),
+                fake_group("zona.spalla_sx", n=1, occorrenze=[occ(d["shoulder"], pages=(0, 1))]),
+                fake_group("zona.spalla_dx"),
+                fake_group("zona.numero_pagina", n=2, occorrenze=[occ(d["page_no"]), occ(d["page_no"], 1)]),
+                fake_group("zona.filigrana"),
+                fake_group("zona.invisibile", n=3, occorrenze=[
+                    fake_occurrence("MOD_TEST_CODICE_0001", pagine=(0,)),
+                    fake_occurrence("MOD_TEST_CODICE_0001", pagine=(1,)),
+                    fake_occurrence("Acme-Servizi", pagine=(1,))]),
+                fake_group("variabile.segnaposto"),
+                fake_group("variabile.buco", n=1, occorrenze=[occ(d["variable"], detail="importoMensile")]),
+                fake_group("variabile.cella"),
+                fake_group("variabile.sezione"),
+                fake_group("variabile.esecuzione"),
+                fake_group("variabile.listino"),
+                fake_group("decidere.maiuscole", n=1, occorrenze=[occ(d["caps"])]),
+                fake_group("decidere.punteggiatura", n=1, occorrenze=[occ(d["punct"])]),
+                fake_group("avanzate.Numero di pagina"),
+                fake_group("avanzate.Data", n=1, occorrenze=[occ(d["noise"])]),
+                fake_group("avanzate.IBAN"),
+                fake_group("avanzate.Codice fiscale"),
+                fake_group("avanzate.Codice pratica", n=0),
+            ])
+            api.set_control_state(state["case"], ControlState(control, (
+                "riconoscimento esteso non disponibile per questo caso" if control == "non_disponibile" else ""))
+                if control else ControlState("pronta"))
+            page, case = officina_open_case_version(2)
+            ini = page.ini
+            if not case.review.noise_rules:
+                api.set_noise_rules(ini, case, [NoiseRule("Codice pratica", r"PR-\d{6}")])
+                page._reload_initiative()
+
+            class _Offscreen(FiltersDialog):
+                def __init__(self, *a, **k) -> None:
+                    super().__init__(*a, **k)
+                    self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+
+            page.filters_dialog_class = _Offscreen
+            if unavailable:  # the real service before A5
+                def not_yet(*_a):
+                    raise NotImplementedError
+
+                api.filters = not_yet
+            try:
+                page.open_filters()
+            finally:
+                api.__dict__.pop("filters", None)
+            dialog = page.filters_dialog
+            dialog.resize(700, 660)
+            dialog.move(window.mapToGlobal(QPoint(window.width() - 700 - 330, 70)))
+            for fid in expand:
+                dialog.row(fid).set_expanded(True)
+            dialog.set_advanced(advanced or unavailable)
+            if dirty:
+                dialog.editor.add_rule("Rotta", "(a+")
+            pump(600)
+            shot = _WithDialog(dialog)
+
+            def close() -> None:
+                dialog.ask_unsaved = lambda **_k: "discard"
+                dialog.close()
+                page.filters_dialog_class = FiltersDialog
+                api.set_control_state(state["case"], None)
+                api.set_filter_groups(state["case"], None)
+
+            shot.close = close
+            return shot
+        return prepare
 
     def officina_case_dom():
         """U6: the DOM tab of the HTML case, the link difference selected in the list."""
@@ -1614,6 +1981,41 @@ def main(argv: list[str] | None = None) -> int:
         pump(400)
         return restoring
 
+    def officina_filters_email():
+        """Final review M3: "Filtri del confronto" of the HTML case: the control
+        line says an email has no control generation."""
+        from PySide6.QtCore import QPoint
+
+        from qtrequestory.ui.pages.officina_filters import FiltersDialog
+
+        state = officina_setup()
+        page = window.page("officina")
+        window.show_page("officina")
+        page.open_initiative(state["html_ini"])
+        page.open_case(state["html_case"])
+        pump(1500)
+
+        class _Offscreen(FiltersDialog):
+            def __init__(self, *a, **k) -> None:
+                super().__init__(*a, **k)
+                self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+
+        page.filters_dialog_class = _Offscreen
+        page.open_filters()
+        dialog = page.filters_dialog
+        dialog.resize(700, 560)
+        dialog.move(window.mapToGlobal(QPoint(window.width() - 700 - 330, 70)))
+        pump(600)
+        print("email control line:", ascii(dialog.control.text()))
+        shot = _WithDialog(dialog)
+
+        def close() -> None:
+            dialog.close()
+            page.filters_dialog_class = FiltersDialog
+
+        shot.close = close
+        return shot
+
     def officina_engine_board():
         state = officina_engine_setup()
         page = window.page("officina")
@@ -1646,6 +2048,185 @@ def main(argv: list[str] | None = None) -> int:
             return box
         return prepare
 
+    real_state: dict[str, object] = {}
+    real_body = ["Condizioni del servizio di prova per il cliente, modulo di adesione.",
+                 "La carta sarà abilitata agli acquisti online e nei negozi convenzionati.",
+                 "Il prezzo resta fisso per dodici mesi dalla data di attivazione.",
+                 "Importo mensile: 12,50 euro",
+                 "Il pagamento avviene con addebito sul conto indicato, ogni mese.",
+                 "Lorem ipsum resta il testo di riempimento del modulo di prova.",
+                 "Le comunicazioni arrivano all'indirizzo indicato nella richiesta.",
+                 "Il recesso è gratuito entro quattordici giorni dalla firma.",
+                 "Questa riga manca nel documento generato dal generatore.",
+                 "Data di sottoscrizione: 01/02/2026",
+                 "Il servizio clienti risponde entro tre giorni lavorativi."]
+
+    def officina_real_setup():
+        """I1b: a fourth initiative ("Motore 2.5") whose case comparison,
+        "Filtri del confronto" panel, switches and control state come from the
+        REAL ``OfficinaService`` (the fake's own ``_service``), on a synthetic
+        two-page pair with a header, a footer, page numbers and body changes
+        of every kind; the AS-IS view (``compare``) is the real one anyway."""
+        if real_state:
+            return real_state
+        from qtrequestory.ui.contracts import NoiseRule
+        from tests.officina import pdfgen
+
+        officina_setup()
+        api = services.officina
+        real = api._service
+        folder = tmp / "officina-reale"
+        folder.mkdir(exist_ok=True)
+
+        def doc(name: str, head: str, edition: str, changes=(), drop: str = "", add: str = "") -> Path:
+            lines = [line for line in real_body if line != drop]
+            for old, new in changes:
+                lines = [line.replace(old, new) for line in lines]
+            if add:
+                lines.insert(6, add)
+
+            def paint(painter, page: int) -> None:
+                pdfgen.draw_text(painter, 56, 40, head)
+                pdfgen.draw_text(painter, 56, 800, f"Documento di prova · edizione {edition}")
+                pdfgen.draw_text(painter, 480, 800, f"Pagina {page + 1} di 2")
+                body = lines if page == 0 else [line + " (seconda pagina)" for line in lines[:5]]
+                for k, line in enumerate(body):
+                    pdfgen.draw_text(painter, 56, 110 + 26 * k, line)
+            return pdfgen.painted_pdf(folder / f"{name}.pdf", paint, pages=2, font_pt=10.5)
+
+        target = doc("atteso", "Acme-Servizi S.p.A. · Modulo di adesione", "04/2026")
+        tobe = doc("generato", "Acme S.p.A. · Modulo di adesione", "05/2026",
+                   (("abilitata", "abilitato"), ("dodici", "ventiquattro"), ("12,50", "18,40"),
+                    ("Lorem ipsum", "LOREM IPSUM"), ("ogni mese.", "ogni mese"), ("01/02/2026", "03/04/2026")),
+                   drop="Questa riga manca nel documento generato dal generatore.",
+                   add="Una riga aggiunta soltanto nel documento generato.")
+        asis = doc("asis", "Acme-Servizi S.p.A. · Modulo di adesione", "04/2026",
+                   (("dodici", "diciotto"), ("01/02/2026", "05/06/2026")))
+        payloads = tmp / "officina-payloads"
+        key = "MOD_TEST_MOTORE_25"
+        path = payloads / f"{key}.json"
+        path.write_text('{"documents": [{"template": {"templateKey": "%s"}}], '
+                        '"offerta": {"importoMensile": "18,40"}}' % key, encoding="utf-8")
+        ini = api.create_initiative("Motore 2.5")
+        api.case_from_file(ini, path, key, "")
+        ini = api.load(ini.id)
+        case = ini.cases[0]
+        api.set_target(case, target)
+        api.set_response(asis.read_bytes())
+        api.generate(ini, case, "asis")
+        api.set_response(tobe.read_bytes())
+        api.generate(ini, case, "tobe")
+        from tests.fakes.fake_core import canned_pdf
+
+        api.set_response(canned_pdf("x"))
+        ini = api.load(ini.id)
+        case = ini.cases[0]
+        real.set_noise_rules(ini, case, [NoiseRule("Date del modulo", r"\d{2}/\d{2}/2026")])
+        mine = ini.id
+
+        def ours(ini_or_case) -> bool:
+            folder_ = getattr(ini_or_case, "folder", None)
+            return getattr(ini_or_case, "id", None) == mine or (
+                folder_ is not None and folder_.parent.parent.name == mine)
+
+        def install() -> None:
+            """The real service for this initiative, the fake's own methods for
+            the others; again at every scene (the fake Filtri scenes drop the
+            fake's instance attributes)."""
+            def route(name: str, *args):
+                if ours(args[0]):
+                    return getattr(real, name)(*args)
+                return getattr(type(api), name)(api, *args)
+
+            for name in ("compare_case", "filters", "set_filters", "control_state"):
+                setattr(api, name, lambda *args, _n=name: route(_n, *args))
+
+        real_state.update(ini=ini.id, case=case.id, install=install)
+        install()
+        return real_state
+
+    def officina_real(version: str = "tobe", *, tab: str = "tutte", select: str | None = None,
+                      filters: bool = False, expand=(), side_types=(), zoom: float | None = None):
+        """I1b: the "Motore 2.5" case driven by the real engine: ``version``
+        ("tobe" or "asis"), the side panel on ``tab`` with ``select`` (text of
+        the target side, or "+" for the first one-sided difference) selected,
+        or the real "Filtri del confronto" panel with rows ``expand`` open."""
+        def prepare():
+            from PySide6.QtCore import QPoint
+
+            from qtrequestory.ui.pages.officina_docside import version_key
+            from qtrequestory.ui.pages.officina_filters import FiltersDialog
+
+            state = officina_real_setup()
+            state["install"]()
+            page = window.page("officina")
+            window.show_page("officina")
+            page.open_initiative(state["ini"])
+            case = page._case(state["case"])
+            page.open_case(case.id, "asis" if version == "asis" else version_key(case.tobe_versions()[0]))
+            pump(4000)
+            view = page.case_view
+            view.diffs.set_tab(tab)
+            view.diffs.set_types(set(side_types))
+            ids = view.diffs.row_ids()
+            rows = (view.docs.judged.judged if view.docs.judged is not None
+                    else [type("J", (), {"diff": d})() for d in view.docs.comparison.diffs])
+            chosen = None
+            for j in rows:
+                d = j.diff
+                if d.id not in ids:
+                    continue
+                if (select == "+" and bool(d.left) != bool(d.right)) or (select and select in d.left_text):
+                    chosen = d.id
+                    break
+            chosen = chosen if chosen is not None else (ids[0] if ids else None)
+            if zoom is not None:  # zoomed in: the empty side has to scroll to its place
+                view.left.view.set_zoom(zoom)
+                pump(600)
+            if chosen is not None:
+                view.diffs.select(chosen)
+                view.sync.focus_difference(chosen, reveal=True)
+            print("real engine:", version, ascii([(d.op, d.klass, d.zone, d.tipo, d.prova, d.left_text[:20],
+                                                   d.right_text[:20], d.empty_at is not None)
+                                                  for d in (j.diff for j in rows)]))
+            print("  tabs:", ascii(view.diffs.tab_texts()), "chosen", chosen)
+            pump(900)
+
+            def undo() -> None:
+                view.diffs.set_types(set())
+                if zoom is not None:
+                    view.left.view.set_zoom("fit_width")
+
+            if not filters:
+                return _Restoring(window, undo)
+
+            class _Offscreen(FiltersDialog):
+                def __init__(self, *a, **k) -> None:
+                    super().__init__(*a, **k)
+                    self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+
+            page.filters_dialog_class = _Offscreen
+            page.open_filters()
+            dialog = page.filters_dialog
+            dialog.resize(700, 660)
+            dialog.move(window.mapToGlobal(QPoint(window.width() - 700 - 330, 70)))
+            for fid in expand:
+                dialog.row(fid).set_expanded(True)
+            print("  panel:", ascii([(g.id, g.n, g.attivo) for g in
+                                     services.officina.filters(page.ini, page._case(state["case"])).groups if g.n]))
+            pump(600)
+            shot = _WithDialog(dialog)
+
+            def close() -> None:
+                dialog.ask_unsaved = lambda **_k: "discard"
+                dialog.close()
+                page.filters_dialog_class = FiltersDialog
+                undo()
+
+            shot.close = close
+            return shot
+        return prepare
+
     scenes += [
         ("officina-consegna", officina_delivery_dialog),
         ("officina-consegna-riepilogo", officina_delivery_summary),
@@ -1658,12 +2239,22 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-bacheca", officina_board),
         ("officina-bacheca-pillole", officina_board_pills),
         ("officina-caso-minimappa", officina_case_minimap),
+        ("officina-visore-anelli", officina_viewer_u1("section", 1.0)),
+        ("officina-visore-mancante", officina_viewer_u1("missing", 1.0)),
+        ("officina-visore-zoom-orizzontale", officina_viewer_u1("section", 2.2, 0.8)),
         ("officina-caso", officina_case),
         ("officina-caso-verdetti", officina_case_verdicts),
         ("officina-caso-verifica", officina_case_verification),
         ("officina-caso-due-vie", officina_case_two_way),
         ("officina-caso-senza-testo", officina_case_no_text),
-        ("officina-caso-profilo", officina_case_profile),
+        ("officina-caso-menu", officina_case_menu),
+        ("officina-caso-uguale-asis", officina_case_same_as_asis),
+        ("officina-caso-asis", officina_case_asis),
+        ("officina-pannello-tipi", officina_panel()),
+        ("officina-pannello-filtro-tipo", officina_panel(types=("parola", "zona"))),
+        ("officina-pannello-tutte", officina_panel("tutte", fold=("parola", "zona", "numeri", "maiuscole"))),
+        ("officina-pannello-chiuso", officina_panel(collapsed=True)),
+        ("officina-pannello-legenda", officina_panel(legend=True)),
         ("officina-elenco-una-lettera", officina_list_select("guardare", "one_letter")),
         ("officina-elenco-da-verificare", officina_list_select("verificare")),
         ("officina-elenco-non-risolta", officina_list_select("guardare", "stuck", verification=True)),
@@ -1682,6 +2273,16 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-aggiungi-chiamata-domanda", officina_pick_question),
         ("officina-caso-chiamata-cambiata", officina_call_strip),
         ("officina-rumore", officina_noise_dialog),
+        ("officina-filtri", officina_filters()),
+        ("officina-filtri-occorrenze", officina_filters(expand=("zona.footer", "zona.invisibile",
+                                                                "variabile.buco"))),
+        ("officina-filtri-avanzate", officina_filters(advanced=True)),
+        ("officina-filtri-controllo-in-corso", officina_filters(control="in_corso")),
+        ("officina-filtri-controllo-non-disponibile", officina_filters(control="non_disponibile")),
+        ("officina-filtri-controllo-assente", officina_filters(control="assente")),
+        ("officina-filtri-non-disponibile", officina_filters(unavailable=True)),
+        ("officina-filtri-email", officina_filters_email),
+        ("officina-filtri-regole-non-salvate", officina_filters(advanced=True, dirty=True)),
         ("officina-caso-dom", officina_case_dom),
         # I1: the real engine's comparisons behind the case view
         ("officina-motore-caso", officina_engine_case(verify=True)),
@@ -1697,6 +2298,19 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-motore-menu-azzera", officina_engine_more_menu),
         ("officina-html-senza-edge", officina_html_without_edge),
         ("officina-html-senza-edge-documenti", officina_html_without_edge_documents),
+        # I1b: the real engine drives the case view, the side panel and the Filtri panel
+        ("officina-reale-caso", officina_real(tab="guardare")),
+        ("officina-reale-pannello-tipi", officina_real(tab="tutte", select="abilitata")),
+        ("officina-reale-pannello-zone", officina_real(tab="tutte", select="Acme-Servizi")),
+        ("officina-reale-mancante", officina_real(tab="tutte", select="+", zoom=2.4)),
+        ("officina-reale-filtri", officina_real(filters=True, expand=("zona.header", "zona.footer"))),
+        ("officina-reale-filtri-avanzate", officina_real(filters=True, expand=("avanzate.Date del modulo",
+                                                                               "variabile.buco"))),
+        ("officina-reale-asis", officina_real("asis", tab="tutte")),
+        # D6: undoable deletion (last: its initiatives appear in no other scene)
+        ("officina-eliminazione-una", officina_deletions(1)),
+        ("officina-eliminazione-gruppo", officina_deletions(3)),
+        ("officina-eliminazione-elenco", officina_deletions(3, expanded=True)),
     ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]
@@ -1725,6 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
                     target.close()
                     target.deleteLater()
                 window.toast.hide()  # one scene only
+                window.deletions.undo_all()  # a scene never deletes anything (D6)
                 if settings.is_dirty():
                     # Discard what a "-modifiche" scene typed: left dirty, the
                     # next show_page() asks Salva / Scarta / Annulla in a modal

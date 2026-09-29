@@ -18,7 +18,10 @@ Every colour the UI shows comes from a :class:`Tokens` instance — ``LIGHT`` or
   highlighter), which re-derive on :data:`signals` ``.changed``.
 
 The accent is fixed (``#0F6CBD``, the app icon's blue) and does not follow the
-Windows accent colour. The *mode* — Sistema / Chiaro / Scuro — is the user's,
+Windows accent colour. Palette B (D13): the app bar is the icon's blue
+gradient (``header_*``, :func:`header_stops`) with white ink at >= 4.5:1 on
+every point, and the icon's amber (``identity``) is an accent there — the
+active tab, the sync attention dot — never text on a light surface. The *mode* — Sistema / Chiaro / Scuro — is the user's,
 stored under :data:`MODE_SETTING`. In ``SYSTEM`` mode the theme follows the
 desktop and re-applies itself when Windows switches between light and dark.
 """
@@ -36,8 +39,8 @@ from PySide6.QtWidgets import QAbstractButton, QApplication, QStyleFactory, QTab
 from qtrequestory.ui import icons, theme_qss
 
 __all__ = [
-    "DARK", "LIGHT", "MODE_SETTING", "SPACE", "Mode", "ThemeSignals", "Tokens", "apply",
-    "build_palette", "build_qss", "mono_font", "repolish", "reset", "resolved_scheme", "save_mode",
+    "DARK", "HEADER_STOPS", "LIGHT", "MODE_SETTING", "SPACE", "Mode", "ThemeSignals", "Tokens",
+    "apply", "build_palette", "build_qss", "header_stops", "mono_font", "repolish", "reset", "resolved_scheme", "save_mode",
     "saved_mode", "set_role", "set_segmented", "set_table_look", "signals", "tokens",
 ]
 
@@ -63,6 +66,9 @@ MONO_FAMILIES = ("Cascadia Mono", "Consolas")
 
 #: Horizontal padding of a segmented button, per side (also in the QSS).
 SEGMENT_PADDING = 12
+
+#: Positions of ``header_start`` / ``header_mid`` / ``header_end`` on the app bar.
+HEADER_STOPS = (0.0, 0.55, 1.0)
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,28 @@ class Tokens:
     code_string: str
     code_number: str
     code_literal: str
+    #: Palette B: "non risolta" (vermilion) and "da verificare" (cyan), strong / soft.
+    flag: str
+    flag_bg: str
+    verify: str
+    verify_bg: str
+    #: Action roles (QSS ``role="danger"`` / ``"positive"``): the red and green of the
+    #: states, named for what the button does (elimina / aggiungi).
+    danger: str
+    danger_bg: str
+    positive: str
+    positive_bg: str
+    #: The app bar: the icon's blue gradient, a raised chip on it, white ink.
+    header_start: str
+    header_mid: str
+    header_end: str
+    header_raise: str
+    on_header: str
+    on_header_muted: str
+    #: The icon's amber: identity accents on the header only, never text on light.
+    identity: str
+    header_ok: str
+    header_bad: str
 
 
 LIGHT = Tokens(
@@ -112,6 +140,11 @@ LIGHT = Tokens(
     progress="#0F6CBD", progress_bg="#E6F0FB", variable="#6B5BB5", variable_bg="#EEEBFA",
     mark_yellow="#FFD24D", shadow="#000000",
     code_key="#0B5CAD", code_string="#A31515", code_number="#0E7A0D", code_literal="#8250DF",
+    flag="#B3400C", flag_bg="#FBE4D3", verify="#0B7285", verify_bg="#DDF3F6",
+    danger="#B42318", danger_bg="#FDE7E4", positive="#0E7A0D", positive_bg="#DFF6DD",
+    header_start="#1766B8", header_mid="#115AA6", header_end="#0B4F94", header_raise="#2A6AAD",
+    on_header="#FFFFFF", on_header_muted="#E3EEFA",
+    identity="#FFC857", header_ok="#A8F0A0", header_bad="#FFC2B8",
 )
 
 DARK = Tokens(
@@ -124,6 +157,11 @@ DARK = Tokens(
     progress="#6BB3E8", progress_bg="#1B3A5C", variable="#B8A9F5", variable_bg="#2F2A4D",
     mark_yellow="#E8C04A", shadow="#000000",
     code_key="#8CC4F2", code_string="#E9A27A", code_number="#9BD48F", code_literal="#C4A7F5",
+    flag="#F0975A", flag_bg="#4A2A14", verify="#4FD1DE", verify_bg="#123138",
+    danger="#FF8A7A", danger_bg="#4A1F1A", positive="#6CCB5F", positive_bg="#1F3A1D",
+    header_start="#1B5FA3", header_mid="#124A86", header_end="#0A3A6E", header_raise="#23609E",
+    on_header="#FFFFFF", on_header_muted="#E3EEFA",
+    identity="#FFC857", header_ok="#A8F0A0", header_bad="#FFC2B8",
 )
 
 
@@ -289,6 +327,14 @@ def set_role(widget: QWidget, role: str) -> None:
     repolish(widget)
 
 
+def bold_min_width(widget: QWidget, label: str, chrome_px: int) -> int:
+    """``label``'s width at DemiBold plus ``chrome_px``: a checked tab or
+    segment turns bold via QSS, but Qt sizes it for the regular weight."""
+    bold = QFont(widget.font())
+    bold.setWeight(QFont.Weight.DemiBold)
+    return QFontMetrics(bold).horizontalAdvance(label) + chrome_px
+
+
 def set_segmented(buttons: Sequence[QAbstractButton]) -> None:
     """Turn a row of checkable buttons into one segmented control.
 
@@ -301,9 +347,7 @@ def set_segmented(buttons: Sequence[QAbstractButton]) -> None:
     for index, button in enumerate(buttons):
         button.setProperty("segment", True)
         button.setProperty("segpos", "first" if index == 0 else "last" if index == last else "mid")
-        bold = QFont(button.font())
-        bold.setWeight(QFont.Weight.DemiBold)
-        needed = QFontMetrics(bold).horizontalAdvance(button.text()) + 2 * SEGMENT_PADDING + 2
+        needed = bold_min_width(button, button.text(), 2 * SEGMENT_PADDING + 2)
         button.setMinimumWidth(max(button.minimumWidth(), needed))
         repolish(button)
 
@@ -348,10 +392,16 @@ def repolish(widget: QWidget) -> None:
 
 # -- stylesheet ---------------------------------------------------------------
 
+def header_stops(t: Tokens) -> tuple[tuple[float, str], ...]:
+    """``((position, colour), ...)`` of the app bar gradient (left to right)."""
+    return tuple(zip(HEADER_STOPS, (t.header_start, t.header_mid, t.header_end)))
+
+
 def build_qss(t: Tokens) -> str:
     """The application stylesheet for ``t``: every role the pages may set."""
     return theme_qss.QSS.format(
         seg_pad=SEGMENT_PADDING,
+        header_gradient=", ".join(f"stop:{x} {c}" for x, c in header_stops(t)),
         arrow_down=theme_qss.glyph("chevron-down", t.muted),
         arrow_up=theme_qss.glyph("chevron-up", t.muted),
         check=theme_qss.glyph("check", t.on_accent),

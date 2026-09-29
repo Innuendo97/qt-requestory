@@ -569,7 +569,8 @@ def test_review_json_keys(ws: Workspace):
     from qtrequestory.officina.model_review import review_to_json
 
     assert list(review_to_json(_full_review())) == [
-        "profilo", "tolleranze", "non_variabili", "segnate", "non_risolte", "regole_rumore", "riepilogo"]
+        "profilo", "tolleranze", "non_variabili", "segnate", "non_risolte", "regole_rumore", "riepilogo",
+        "filtri", "controllo"]
     assert review_to_json(Review())["riepilogo"] is None
 
 
@@ -603,7 +604,7 @@ def test_initiative_profile_defaults_to_tollerante(ws: Workspace):
     ini = ws.load("Vecchia")
 
     assert ini.profile == "tollerante"
-    assert ini.noise_rules == [] and ini.noise_presets == []
+    assert ini.noise_rules == [] and ini.filters == {}
     assert ini.load_notes == []
     assert ws.create_initiative("Nuova").profile == "tollerante"
 
@@ -631,7 +632,7 @@ def test_initiative_junk_profile_is_a_load_note(ws: Workspace):
     ini = ws.load("Junk")
 
     assert ini.profile == "tollerante"
-    assert ini.noise_rules == [] and ini.noise_presets == ["data"]
+    assert ini.noise_rules == [] and ini.filters == {"avanzate.data": True}
     assert len(ini.load_notes) == 3
 
 
@@ -639,15 +640,17 @@ def test_initiative_settings_round_trip(ws: Workspace):
     ini = ws.create_initiative("Alpha")
     ini.profile = "solo_testo"
     ini.noise_rules = [NoiseRule("iban", r"IT\d{2}")]
-    ini.noise_presets = ["data", "IBAN"]
+    # F4: the presets turned on are filtri entries (A5: no noise_presets view any more)
+    ini.filters = {"avanzate.data": True, "avanzate.IBAN": True, "avanzate.CAP": False, "avanzate.iban": True}
 
     ws.save_initiative_settings(ini)
 
     loaded = ws.load("Alpha")
-    assert (loaded.profile, loaded.noise_rules, loaded.noise_presets) == (
-        "solo_testo", [NoiseRule("iban", r"IT\d{2}")], ["data", "IBAN"])
+    assert (loaded.profile, loaded.noise_rules, loaded.filters) == (
+        "solo_testo", [NoiseRule("iban", r"IT\d{2}")], ini.filters)
+    assert not hasattr(loaded, "noise_presets")
     raw = json.loads((ini.folder / "iniziativa.json").read_text(encoding="utf-8"))
-    assert raw["name"] == "Alpha" and "noise_rules" not in raw
+    assert raw["name"] == "Alpha" and "noise_rules" not in raw and "preset_rumore" not in raw
 
 
 def test_initiative_settings_refuse_an_unreadable_file(ws: Workspace):

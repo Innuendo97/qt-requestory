@@ -9,6 +9,11 @@ already open instead of starting a second process that would fight over the
 sync lock and the index. The guard is a ``QLocalServer`` named after the user
 (one instance *per user*, so a shared machine still works); the second process
 connects to it, which makes the first one raise its window, and exits.
+
+Splash (D7): right after the guard, before the main window module and its pages
+are imported and built, ``ui.splash`` shows the one window the user sees until
+``finish(window)``. It hides behind the first-run wizard and is closed on every
+way out of ``run_gui``.
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ import os
 import re
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -26,8 +31,11 @@ from PySide6.QtWidgets import QApplication
 
 from qtrequestory.ui import icons, strings, theme
 from qtrequestory.ui.contracts import CoreServices
-from qtrequestory.ui.main_window import MainWindow
+from qtrequestory.ui.splash import Splash, start_splash
 from qtrequestory.ui.workers import JobRunner
+
+if TYPE_CHECKING:  # imported in run_gui, behind the splash: it pulls in the whole shell
+    from qtrequestory.ui.main_window import MainWindow
 
 __all__ = ["APP_USER_MODEL_ID", "INSTANCE_KEY_ENV_VAR", "SingleInstance", "instance_key",
            "run_gui", "set_app_user_model_id", "show_first_run_wizard", "wizard_available"]
@@ -182,23 +190,34 @@ def run_gui(services: CoreServices, argv: list[str] | None = None, *,
         log.info("qtRequestory è già in esecuzione: porto in primo piano quella finestra")
         return 0
 
+    # After the guard: a second launch must not flash a splash before it quits.
+    splash = start_splash(app, services.version())
     runner = JobRunner()
     try:
         start_sync = False
         import_sources: tuple = ()
         if services.config.is_first_run():
             if wizard_available():
+                if splash is not None:  # never on top of the wizard
+                    splash.hide()
                 result = show_first_run_wizard(services, runner)
                 if result is None:  # the user cancelled: nothing is configured
                     return 0
                 start_sync = bool(getattr(result, "start_sync", False))
                 import_sources = tuple(getattr(result, "import_sources", ()))
+                if splash is not None:
+                    splash.show()
             else:
                 log.warning("%s", strings.WIZARD_UNAVAILABLE)
+
+        _phase(splash, strings.SPLASH_PAGES)
+        from qtrequestory.ui.main_window import MainWindow
 
         window = MainWindow(services, runner)
         guard.activated.connect(lambda: _raise(window))
         window.show()
+        if splash is not None:
+            splash.finish(window)
         then = (window.start_sync if start_sync
                 else window.startup_tasks if run_startup_tasks else None)
         if import_sources:
@@ -213,8 +232,15 @@ def run_gui(services: CoreServices, argv: list[str] | None = None, *,
             QTimer.singleShot(0, window, window.startup_tasks)
         return app.exec()
     finally:
+        if splash is not None:  # a cancelled wizard or a failed build: never left behind
+            splash.close()
         runner.shutdown()
         guard.close()
+
+
+def _phase(splash: Splash | None, text: str) -> None:
+    if splash is not None:
+        splash.phase(text)
 
 
 def _raise(window: MainWindow) -> None:

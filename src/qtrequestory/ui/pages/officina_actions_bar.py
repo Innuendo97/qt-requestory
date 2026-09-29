@@ -10,6 +10,11 @@ draft "caso-fase2" v2):
 * **clic destro** (or ``⋯``): the menu Fatta · Tollera… · Non è una
   variabile · Copia testo del target · Copia testo generato;
 * **F / T / V** in the viewer act on the selected difference like in the list;
+
+none of these moves the view or the selection (spec §4.2): the user is
+looking at that spot. The list's "move on" (R40) is for F / T / V pressed in
+the list; the refresh keeps the same difference selected in its new state
+(``DiffPanel.follow_current``) and only moves the rings (``hold_view``);
 * "Tollera…" asks an optional note (:class:`TolerateDialog`); T and the
   bar's "Tollera" tolerate without one.
 
@@ -273,6 +278,8 @@ class ReviewInputMixin:
     def _init_review_input(self) -> None:
         #: A review action of this case is being saved: the others wait.
         self.acting = False
+        #: The last action came from the page: its refresh rings, never scrolls.
+        self.hold_view = False
         self.menu: ReviewMenu | None = None
         self.bars = {"left": ActionsBar(self.left.view), "right": ActionsBar(self.right.view)}
         self.undo_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
@@ -288,6 +295,7 @@ class ReviewInputMixin:
             bar.action_chosen.connect(self._on_bar_action)
             bar.more_requested.connect(self.open_review_menu)
         self.diffs.action_unavailable.connect(self.action_unavailable)
+        self.diffs.difference_chosen.connect(self._release_view)  # the list moved: follow it
         self.diffs.refuses = lambda j, action: (
             action == "tollera" and tolerated_by_profile(j, self._by_hand(j)))
 
@@ -327,28 +335,39 @@ class ReviewInputMixin:
         self.bars[side].show_for(j, tolerated_by_hand=self._by_hand(j))
 
     def _on_viewer_key(self, action: str) -> None:
-        """F / T / V in a viewer: like the list's (the selection moves on, R40)."""
+        """F / T / V in a viewer: like the list's, but the selection stays (§4.2)."""
         self.hide_bars()
-        self.diffs.trigger(action)
+        self.hold_view = True
+        self.diffs.trigger(action, advance=False)
+
+    def _from_page(self, diff_id: int, kind: str) -> None:
+        """An action taken on the page: no move on, the view stays (§4.2)."""
+        self.hold_view = True
+        if self.diffs.current_id() != diff_id:  # e.g. a right click without a click first
+            self.diffs.select(diff_id)
+        if self.diffs.current_id() == diff_id:
+            self.diffs.follow_current()
+        self.review_action_requested.emit(diff_id, kind)
+
+    def _release_view(self, *_args) -> None:
+        self.hold_view = False
 
     def _on_bar_action(self, diff_id: int, kind: str) -> None:
-        """The bar's Fatta / Tollera act like F / T: then the next row (R40)."""
+        """The bar's Fatta / Tollera (and "Togli il segno")."""
         self.hide_bars()
-        self.review_action_requested.emit(diff_id, kind)
-        if self.diffs.current_id() == diff_id:
-            self.diffs.advance()
+        self._from_page(diff_id, kind)
 
     def _on_double_click(self, diff_id: int) -> None:
         """Segna fatta / toglie il segno; silent on a difference that does not count."""
         j = self.judged_by_id(diff_id)
         if j is not None and "fatta" in actions_for(j):
-            self.review_action_requested.emit(diff_id, "fatta")
+            self._from_page(diff_id, "fatta")
 
     def _on_menu_choice(self, diff_id: int, kind: str) -> None:
         if kind in ("copia_target", "copia_generato"):
             self.copy_requested.emit(diff_id, "left" if kind == "copia_target" else "right")
         else:
-            self.review_action_requested.emit(diff_id, kind)
+            self._from_page(diff_id, kind)
 
     def _by_hand(self, j: Judged) -> bool:
         review = self.case.review if self.case is not None else None

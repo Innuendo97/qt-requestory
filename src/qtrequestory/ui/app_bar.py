@@ -2,20 +2,27 @@
 
 Navigation option A of the redesign::
 
-    [icon] qtRequestory   Ricerca  Sincronizzazione      (● coll oggi 11:24 · ● svil mai)  ⚙  ⓘ
+    [icon] qtRequestory   Ricerca  Officina      (⟳• svil oggi 09:00 · coll 2 da scaricare)  ⚙  ⓘ
+
+Since Officina 2.5 (D5) the Sincronizzazione page has no tab: the sync chip
+(:mod:`~.sync_chip`) carries its state and asks for its dropdown panel
+(:attr:`AppBar.sync_requested`); the chip reads as "current" while the full
+page is on screen.
 
 The bar knows nothing about pages: the window adds a tab or an icon button per
 ``PAGES`` entry, listens to :attr:`AppBar.page_requested` and calls
 :meth:`AppBar.set_current` when the page changes for any other reason (a
 shortcut, a page asking for another). Every colour comes from the theme's QSS
 (``QWidget#appBar``, ``QPushButton[tab="true"]``, ``QPushButton#statusChip``,
-``QLabel[dot=…]``); the glyphs are re-tinted on ``theme.signals.changed``.
+``QLabel[dot=…]``). Palette B: the bar is the icon's blue gradient in both
+modes, so its text and glyphs are ``on_header`` (white), the active tab is
+underlined in the icon's amber; the glyphs are re-tinted on
+``theme.signals.changed``.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -25,105 +32,29 @@ from PySide6.QtWidgets import (
 )
 
 from qtrequestory.ui import icons, strings, theme
+from qtrequestory.ui.sync_chip import StatusChip
 
-__all__ = ["AppBar", "StatusChip", "TONES"]
+__all__ = ["AppBar", "StatusChip", "SYNC_PAGE_KEY", "TONES"]
 
 #: Height of the bar (the mockup's 46 px).
 BAR_HEIGHT = 46
 BRAND_ICON_PX = 22
 TAB_ICON_PX = 16
 ICON_BUTTON_PX = 18
+#: Padding (12 + 12), icon-text gap and a little slack of a tab, around icon and label.
+TAB_CHROME_PX = 34
 #: The dot colours the theme knows; anything else is drawn neutral.
 TONES = ("ok", "warn", "bad", "neutral")
-DOT = "●"
-
-
-class StatusChip(QPushButton):
-    """"● coll oggi 11:24 · ● svil ieri 18:40": one toned dot + text per environment.
-
-    A button, so it is focusable and clickable; the dots and texts are child
-    labels laid out inside it (a ``QPushButton`` cannot colour part of its own
-    text) and let the clicks through to the button.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("statusChip")
-        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)  # a click must not steal the focus
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(strings.STATUS_SYNC_SUMMARY_TOOLTIP)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(10, 0, 10, 0)
-        self._layout.setSpacing(5)
-        self._dots: list[QLabel] = []
-        self._summary = ""
-        self.hide()
-
-    def set_envs(self, items: Sequence[tuple]) -> None:
-        """``(env, tone, text)`` or ``(env, tone, text, note)`` per environment;
-        an empty list hides the chip. A note goes into the chip's tooltip as
-        "env: note" (the labels let the mouse through, so they cannot carry
-        one themselves).
-
-        ``env`` may be empty: :meth:`MainWindow.set_sync_summary` passes one
-        plain line that way.
-        """
-        while self._layout.count():
-            widget = self._layout.takeAt(0).widget()
-            if widget is not None:
-                widget.hide()  # deleteLater waits for the event loop; do not paint meanwhile
-                widget.deleteLater()
-        self._dots = []
-        parts: list[str] = []
-        notes: list[str] = []
-        for index, (env, tone, text, *note) in enumerate(items):
-            if index:
-                self._add_label(strings.CHIP_SEPARATOR.strip(), role="muted")
-            dot = self._add_label(DOT)
-            dot.setProperty("dot", tone if tone in TONES else "neutral")
-            theme.repolish(dot)
-            self._dots.append(dot)
-            line = f"{env} {text}".strip()
-            self._add_label(line)
-            parts.append(line)
-            if note and note[0]:
-                notes.append(f"{env}: {note[0]}" if env else note[0])
-        self.setToolTip("\n".join([strings.STATUS_SYNC_SUMMARY_TOOLTIP, *notes]))
-        self._summary = strings.CHIP_SEPARATOR.join(parts)
-        self.setAccessibleName(self._summary)
-        self.setVisible(bool(parts))
-        self.updateGeometry()
-
-    def summary(self) -> str:
-        """The chip as plain text ("coll oggi 11:24 · svil ieri 18:40")."""
-        return self._summary
-
-    def dots(self) -> list[QLabel]:
-        return list(self._dots)
-
-    def sizeHint(self) -> QSize:  # noqa: N802 - Qt naming
-        """The children's size: ``QPushButton`` only measures its own text."""
-        hint = self._layout.sizeHint()
-        return QSize(hint.width(), max(hint.height(), 24))
-
-    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt naming
-        return self.sizeHint()
-
-    def _add_label(self, text: str, role: str | None = None) -> QLabel:
-        label = QLabel(text, self)
-        label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        if role:
-            theme.set_role(label, role)
-        self._layout.addWidget(label)
-        label.show()  # a child created under an already visible parent starts hidden
-        return label
+#: The page the chip stands for (hidden from the tabs, reached from the panel).
+SYNC_PAGE_KEY = "sync"
 
 
 class AppBar(QWidget):
     """Brand + tabs on the left, status chip and icon buttons on the right."""
 
     page_requested = Signal(str)
+    #: The sync chip was pressed: open (or close) its dropdown panel.
+    sync_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -151,7 +82,7 @@ class AppBar(QWidget):
         layout.addLayout(self._tabs_layout)
         layout.addStretch(1)
         self.status_chip = StatusChip()
-        self.status_chip.clicked.connect(lambda: self.page_requested.emit("sync"))
+        self.status_chip.clicked.connect(self.sync_requested)
         layout.addWidget(self.status_chip)
         layout.addSpacing(8)
         self._icons_layout = QHBoxLayout()
@@ -169,6 +100,7 @@ class AppBar(QWidget):
         button.setIconSize(QSize(TAB_ICON_PX, TAB_ICON_PX))
         if tooltip:
             button.setToolTip(tooltip)
+        button.setMinimumWidth(theme.bold_min_width(button, label, TAB_ICON_PX + TAB_CHROME_PX))
         self._register(button, icon_name, key)
         self.tabs[key] = button
         self._tabs_layout.addWidget(button)
@@ -192,9 +124,13 @@ class AppBar(QWidget):
         return [*self.tabs.values(), self.status_chip, *self.icon_buttons.values()]
 
     def set_current(self, key: str) -> None:
-        """Check the entry of ``key`` and uncheck every other one."""
+        """Check the entry of ``key`` and uncheck every other one; the chip
+        reads as current while its full page is on screen."""
         for name, button in (*self.tabs.items(), *self.icon_buttons.items()):
             button.setChecked(name == key)
+        if self.status_chip.property("current") != (key == SYNC_PAGE_KEY):
+            self.status_chip.setProperty("current", key == SYNC_PAGE_KEY)
+            theme.repolish(self.status_chip)
 
     # -- internals ---------------------------------------------------------
 
@@ -202,7 +138,7 @@ class AppBar(QWidget):
         # Reachable with Tab, but a click leaves the focus where the user was typing.
         button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._icon_names[button] = icon_name
-        button.setIcon(icons.icon(icon_name))
+        button.setIcon(_header_icon(icon_name))
         # clicked, not toggled: a click on the current tab would uncheck it,
         # and the window's set_current puts the check back.
         button.clicked.connect(lambda _checked=False, k=key: self.page_requested.emit(k))
@@ -210,4 +146,9 @@ class AppBar(QWidget):
     def _retint(self) -> None:
         """The theme switched: the glyphs were tinted for the old one."""
         for button, name in self._icon_names.items():
-            button.setIcon(icons.icon(name))
+            button.setIcon(_header_icon(name))
+
+
+def _header_icon(name: str) -> QIcon:
+    """``name`` tinted for the blue header (``on_header``, white in both modes)."""
+    return icons.icon(name, theme.tokens().on_header)

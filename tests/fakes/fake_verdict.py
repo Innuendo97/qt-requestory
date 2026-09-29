@@ -11,7 +11,7 @@ Rules, in order, for each TO-BE↔target difference:
 1. an anchor in ``review.not_variables`` turns a ``variabile`` diff into
    ``testo`` (anchor unchanged, so ``variable_again`` finds it), with the
    character spans of its two texts (R36);
-2. ``variabile`` / ``rumore`` → no verdict;
+2. ``variabile`` / ``rumore`` / ``arredo`` → no verdict (F3);
 3. a class the profile does not count (``COUNTING``) → ``tollerata``;
 4. a tolerance with the same anchor AND the same normalised generated text →
    ``tollerata`` (with its note);
@@ -26,7 +26,7 @@ keeps its verdict + ``unresolved`` (R31), remembered in ``review.unresolved``
 as ``(anchor, mark.version, text)`` (R10: the version the mark was MADE in);
 different text → ``in_corso`` with ``previous_text`` = the marked text. A
 mark whose difference does not count now (tollerata / no verdict) is dormant
-(R32): not verified, kept. The other marks stay: their difference is
+(R32): not verified, kept; so is a 1.3.x mark (``engine`` 1) matching nothing. The other marks stay: their difference is
 ``marked=True`` and keeps its verdict. A remembered "non risolta" lasts while
 the difference is there with the same text (flagged while it counts).
 Finally every ``Diff.id`` in ``judged`` is renumbered 1..n in judged order
@@ -50,6 +50,7 @@ import difflib
 
 from qtrequestory.officina.compare.model import (
     COUNTING,
+    NO_VERDICT,
     Anchor,
     CaseSummary,
     Comparison,
@@ -60,7 +61,7 @@ from qtrequestory.officina.compare.model import (
     Profile,
     Verification,
 )
-from qtrequestory.officina.model_review import NoiseRule, Review
+from qtrequestory.officina.model_review import MARK_ENGINE, NoiseRule, Review
 
 __all__ = ["FAKE_PRESETS", "fake_comparison", "fake_diff", "fake_inactive", "fake_judge", "norm"]
 
@@ -68,7 +69,7 @@ _OPEN = ("da_fare", "in_corso", "regressione")
 
 #: The fake's built-in noise presets (names as the spec lists them; all off).
 FAKE_PRESETS: tuple[NoiseRule, ...] = (
-    NoiseRule("Numero di pagina", r"Pag\. \d+ di \d+", False),
+    NoiseRule("Numero di pagina nel testo", r"Pag\. \d+ di \d+", False),
     NoiseRule("Data", r"\b\d{2}/\d{2}/\d{4}\b", False),
     NoiseRule("IBAN", r"\bIT\d{2}[A-Z]\d{10}[0-9A-Z]{12}\b", False),
     NoiseRule("Codice fiscale", r"\b[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]\b", False),
@@ -88,20 +89,23 @@ def norm(text: str) -> str:
 
 def fake_diff(op: Op, klass: Klass, target_text: str, generated: str, *, context: str = "",
               detail: str = "", diff_id: int | None = None, before: str = "",
-              after: str = "") -> Diff:
+              after: str = "", zone: str = "corpo", tipo: str = "altro", prova: str = "",
+              nome: str = "") -> Diff:
     """A canned difference without word boxes. The anchor is
     ``(op, klass, context, norm(target_text))``: two diffs with the same
     target text are the "same" difference across versions — give them a
     ``context`` to tell them apart. Spans cover the whole text. ``before`` /
     ``after`` are the display context (R33: ``Diff.context_before`` /
-    ``context_after``, the target words around the change; never in the anchor)."""
+    ``context_after``, the target words around the change; never in the anchor).
+    ``zone`` / ``tipo`` / ``prova`` / ``nome`` are the phase-2.5 fields
+    (``ZONES``, ``TIPI``, ``PROVE``; never in the anchor either)."""
     return Diff(
         id=diff_id if diff_id is not None else next(_ids), op=op, klass=klass, left=(), right=(),
         left_text=target_text, right_text=generated,
         left_spans=((0, len(target_text)),) if target_text else (),
         right_spans=((0, len(generated)),) if generated else (),
         anchor=Anchor(op, klass, context, norm(target_text)), detail=detail,
-        context_before=before, context_after=after,
+        context_before=before, context_after=after, zone=zone, tipo=tipo, prova=prova, nome=nome,
     )
 
 
@@ -119,8 +123,10 @@ def fake_comparison(diffs, **fields) -> Comparison:
 
 
 def fake_judge(tobe: Comparison, asis: Comparison | None, review: Review, profile: Profile,
-               version: int, when: str) -> tuple[tuple[Judged, ...], CaseSummary, Verification | None, Review]:
-    """``(judged, summary, verification, updated review)`` — pure, no I/O."""
+               version: int, when: str, tolerated_tipi=()
+               ) -> tuple[tuple[Judged, ...], CaseSummary, Verification | None, Review]:
+    """``(judged, summary, verification, updated review)`` — pure, no I/O.
+    ``tolerated_tipi``: the tipi «Tollera tutte» tolerates (like ``verdict.judge``)."""
     if not (tobe.left_has_text and tobe.right_has_text):  # R49: nothing judged, the review as it is
         empty = CaseSummary(version, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0,
                             asis is None or not (asis.left_has_text and asis.right_has_text), when)
@@ -142,10 +148,10 @@ def fake_judge(tobe: Comparison, asis: Comparison | None, review: Review, profil
     asis_by = {d.anchor: d for d in (effective(d) for d in asis.diffs)} if asis is not None else {}
     judged: list[Judged] = []
     for d in tobe_diffs:
-        judged.append(_judge_one(d, asis, asis_by, review, counted))
+        judged.append(_judge_one(d, asis, asis_by, review, counted, frozenset(tolerated_tipi)))
     present = {d.anchor for d in tobe_diffs}
     for d in asis_by.values():
-        if d.anchor not in present and d.klass in counted:
+        if d.anchor not in present and d.klass in counted and d.tipo not in tolerated_tipi:
             judged.append(Judged(d, "fatta"))
 
     unresolved = list(review.unresolved)
@@ -199,11 +205,14 @@ def fake_inactive(review: Review, judged) -> int:
             + sum(m.anchor not in marked for m in review.marks))
 
 
-def _judge_one(d: Diff, asis: Comparison | None, asis_by: dict, review: Review, counted) -> Judged:
-    if d.klass in ("variabile", "rumore"):
+def _judge_one(d: Diff, asis: Comparison | None, asis_by: dict, review: Review, counted,
+               tolerated: frozenset = frozenset()) -> Judged:
+    if d.klass in NO_VERDICT:
         return Judged(d, None)
     if d.klass not in counted:
         return Judged(d, "tollerata")
+    if d.tipo in tolerated:
+        return Judged(d, "tollerata", tolerated_note=f"Tollera tutte: solo {d.tipo}")
     for t in review.tolerances:
         if t.anchor == d.anchor and t.generated == norm(d.right_text):
             return Judged(d, "tollerata", tolerated_note=t.note)
@@ -224,6 +233,9 @@ def _verify(judged: list[Judged], n_tobe: int, marks, unresolved, version: int):
     judged = list(judged)
     for mark in marks:
         i = by_anchor.get(mark.anchor)
+        if i is None and mark.engine < MARK_ENGINE:   # M4: a 1.3.x anchor matching nothing: dormant
+            dormant.append(mark)
+            continue
         if i is None:
             resolved += 1
             continue
@@ -254,4 +266,5 @@ def _summary(judged: list[Judged], version: int, two_way: bool, when: str) -> Ca
         variabili=sum(j.diff.klass == "variabile" for j in judged),
         rumore=sum(j.diff.klass == "rumore" for j in judged),
         avanzamento=fatte / total if total else 1.0, two_way=two_way, when=when,
+        arredo=sum(j.diff.klass == "arredo" for j in judged),
     )

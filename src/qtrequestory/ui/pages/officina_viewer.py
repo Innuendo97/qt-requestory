@@ -13,7 +13,7 @@ boxes), pages stacked top to bottom:
 * the image is rendered at the view's zoom × the screen's device-pixel ratio
   (HiDPI), snapped to a scale bucket, then scaled back into page points;
 * differences are :class:`~qtrequestory.ui.pages.officina_overlays.HighlightItem`
-  boxes (managed by ``HighlightsMixin`` there); a click — not a drag — on one
+  boxes (managed by ``officina_highlights``); a click — not a drag — on one
   emits :attr:`DocView.difference_clicked` (elsewhere: ``blank_clicked``), a
   double click ``difference_double_clicked``, a right click
   ``difference_menu``, and F / T / V ``key_action`` (U4: the case view turns
@@ -24,9 +24,9 @@ boxes), pages stacked top to bottom:
   highlight at its height in the document; a click on one goes there and
   emits :attr:`DocView.minimap_chosen`, elsewhere it centres that point.
 
-:class:`SyncController` keeps two views in step — scroll by *relative page
-position* (page index + fraction of that page), and zoom — and can be switched
-off. All colours come from ``theme.tokens()`` and follow ``theme.signals``.
+:class:`SyncController` keeps two views in step — vertical scroll by
+*relative page position* (page index + fraction of that page), horizontal by
+the column's centre, and zoom — and can be switched off. All colours come from ``theme.tokens()`` and follow ``theme.signals``.
 """
 from __future__ import annotations
 
@@ -41,9 +41,11 @@ from PySide6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView, QWidget
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.pages.officina_minimap import MINIMAP_W, MiniMap, document_segments
-from qtrequestory.ui.pages.officina_overlays import HighlightsMixin, PageSlot
+from qtrequestory.ui.pages.officina_highlights import HighlightsMixin
+from qtrequestory.ui.pages.officina_overlays import PageSlot
 from qtrequestory.ui.pages.officina_viewer_input import ViewerInputMixin
 from qtrequestory.ui.pages.officina_render import PageRenderer, bucket
+from qtrequestory.ui.pages.officina_zone_rails import ZoneRails
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QImage
@@ -96,6 +98,9 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        # a few hundred items over page pixmaps: repainting it all is cheap, and a
+        # blit-scroll can never copy a ring that has moved (spec §4.4)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         # Always on: a scroll bar appearing would change the width fit_width fits.
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
@@ -110,6 +115,7 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         self.minimap.diff_chosen.connect(self._on_minimap_diff)
         self.minimap.position_chosen.connect(self._on_minimap_position)
         self._init_highlights()
+        self.zone_rails = ZoneRails(self.scene())  # phase 2.5: zones on the page margin
         self._mode: str | None = "fit_width"
         self._zoom = 1.0
         self._timer = QTimer(self)
@@ -141,6 +147,7 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         for page in self._pages:
             page.remove()
         self._clear_highlights()
+        self.zone_rails.clear()
         self._doc_id, self._path = doc_id, Path(path)
         self._pages, self._tops, self._asked = [], [], set()
         widest = max((w for w, _ in page_sizes), default=0.0)
@@ -159,6 +166,10 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         self.verticalScrollBar().setValue(self.verticalScrollBar().minimum())
         self._refresh_minimap()
         self._schedule()
+
+    def set_zones(self, zones) -> None:
+        """The zone rails of this document (``ZoneBox`` es; () = none)."""
+        self.zone_rails.show(zones, [page.rect for page in self._pages])
 
     def page_count(self) -> int:
         return len(self._pages)
@@ -264,15 +275,6 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         centre = self.mapToScene(self.viewport().rect().center())
         self.centerOn(centre.x(), fraction * self.sceneRect().height())
 
-    def wheelEvent(self, event) -> None:  # noqa: D102, N802 - Ctrl+wheel zooms
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            steps = event.angleDelta().y() / 120
-            if steps:
-                self.set_zoom(self._zoom * 1.1 ** steps)
-            event.accept()
-            return
-        super().wheelEvent(event)
-
     # -- position ----------------------------------------------------------------
 
     def relative_position(self) -> tuple[int, float]:
@@ -282,7 +284,7 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
             return 0, 0.0
         # half a pixel of slack: scrolling lands on whole pixels
         y = self.mapToScene(0, 0).y() + 0.5 / self.transform().m22()
-        page = self._page_at(y)
+        page = self.page_at(y)
         stride = self._pages[page].rect.height() + GAP
         return page, min(1.0, max(0.0, (y - self._tops[page]) / stride))
 
@@ -303,16 +305,16 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         if not self._pages:
             return range(0)
         area = self._visible_scene_rect()
-        first = self._page_at(area.top())
+        first = self.page_at(area.top())
         if area.top() > self._pages[first].rect.bottom():
             first += 1  # the top of the view is in the gap after `first`
-        last = self._page_at(area.bottom())
+        last = self.page_at(area.bottom())
         return range(first, max(first, last + 1)) if first < len(self._pages) else range(0)
 
     def _visible_scene_rect(self) -> QRectF:
         return self.mapToScene(self.viewport().rect()).boundingRect()
 
-    def _page_at(self, y: float) -> int:
+    def page_at(self, y: float) -> int:
         """The last page starting at or above scene ``y`` (0 above the first)."""
         return max(0, bisect.bisect_right(self._tops, y) - 1)
 
@@ -385,6 +387,7 @@ class DocView(ViewerInputMixin, HighlightsMixin, QGraphicsView):
         for page in self._pages:
             page.recolour(tokens, edge)
         self._recolour_highlights(tokens)
+        self.zone_rails.recolour()
 
 
 # Re-exported: the viewer's public API is DocView + SyncController.

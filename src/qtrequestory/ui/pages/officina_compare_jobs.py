@@ -48,6 +48,7 @@ class CompareJobsMixin:
         self._keep_summary(docs)
         if self.view() == "case" and docs.case_id == self.case_id:
             self.case_view.show_docs(docs)
+            self._sync_filters()  # the counts of the new comparison
 
     def _keep_summary(self, docs) -> None:
         """The board reads ``case.review.summary``: the one ``compare_case``

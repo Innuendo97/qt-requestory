@@ -50,6 +50,7 @@ STATES = {
     "tollerata": Judged(_diff(klass="stile"), "tollerata"),
     "rumore": Judged(_diff(klass="rumore"), None),
     "variabile": Judged(_diff(klass="variabile"), None),
+    "arredo": Judged(_diff(klass="arredo"), None),
 }
 
 
@@ -74,6 +75,10 @@ def test_the_spec_table():
     assert look["variabile"].icon == "{x}"
     for name in ("tollerata", "rumore"):
         assert (look[name].fill, look[name].edge, look[name].dash, look[name].width) == (None, "muted", True, 1.0)
+    assert not look["tollerata"].dotted and look["rumore"].dotted  # palette B: dashed vs dotted
+    assert (look["non_risolta"].fill, look["non_risolta"].edge) == ("flag_bg", "flag")
+    assert (look["da_verificare"].fill, look["da_verificare"].edge, look["da_verificare"].dash) == (
+        None, "verify", True)
     assert (look["variabile"].fill, look["variabile"].edge, look["variabile"].dash,
             look["variabile"].underline) == (None, "variable", True, True)
     assert (look["fatta"].fill, look["fatta"].edge, look["fatta"].dash,
@@ -85,17 +90,44 @@ def test_every_look_has_a_pill_tone_the_stylesheet_knows():
     qss = theme.build_qss(theme.LIGHT)
     pills = {name: vs.look_for(j).pill for name, j in STATES.items()}
     assert pills["regressione"] == "bad" and pills["in_corso"] == "progress"
-    assert pills["da_fare"] == pills["non_risolta"] == "warn"
-    assert pills["variabile"] == "variable" and pills["da_verificare"] == pills["fatta"] == "ok"
+    assert pills["da_fare"] == "warn" and pills["non_risolta"] == "flag"
+    assert pills["variabile"] == "variable" and pills["fatta"] == "ok"
+    assert pills["da_verificare"] == "verify"
+    assert pills["tollerata"] == "neutral" and pills["rumore"] == "noise" and pills["arredo"] == "ignored"
     for look in vs.LOOKS.values():
         assert f'pill="{look.pill}"' in qss, look.pill
 
 
-def test_marked_is_a_dashed_2px_ok_edge_without_fill():
+def test_marked_is_a_dashed_2px_verify_edge_without_fill():
     for verdict in ("da_fare", "in_corso", "regressione"):
         look = vs.look_for(Judged(_diff(), verdict, marked=True))
-        assert (look.fill, look.edge, look.dash, look.width, look.underline) == (None, "ok", True, 2.0, False)
+        assert (look.fill, look.edge, look.dash, look.width, look.underline) == (None, "verify", True, 2.0, False)
         assert look.label == "da verificare"
+
+
+@pytest.mark.parametrize("tokens", [theme.LIGHT, theme.DARK], ids=["light", "dark"])
+def test_every_judged_state_has_its_own_hue(tokens):
+    """Palette B (research §3): no two states that ask for a decision share a
+    colour — non risolta is vermilion (flag), da verificare cyan (verify)."""
+    hued = ("regressione", "non_risolta", "da_fare", "in_corso", "da_verificare", "fatta", "variabile")
+    edges = {getattr(tokens, vs.look_for(STATES[s]).edge) for s in hued}
+    assert len(edges) == len(hued)
+    assert len({vs.look_for(STATES[s]).pill for s in hued}) == len(hued)
+
+
+def test_arredo_has_its_own_ignored_look_not_tollerata():
+    """Ruling F3: arredo (page number, watermark) has no verdict and is never
+    "tollerata": a faint dotted underline, no fill, no changed characters."""
+    j = STATES["arredo"]
+    assert vs.state_of(j) == "arredo"
+    look = vs.look_for(j)
+    assert look != vs.LOOKS["tollerata"] and look != vs.LOOKS["rumore"]
+    assert (look.fill, look.edge, look.underline, look.dotted) == (None, "muted", True, True)
+    assert look.label == strings.VERDETTO_ARREDO and look.pill == "ignored"
+    assert vs.pill_counts([j])["arredo"] == 1
+    assert vs.pill_counts([j])["tollerata"] == 0
+    assert vs.board_counts(_summary(arredo=2))["arredo"] == 2
+    assert vs.worst(_summary(arredo=2)) == ""
 
 
 def test_looks_name_existing_tokens():
@@ -220,13 +252,13 @@ def _pen(item):
     return item.pen()
 
 
-def test_marked_is_drawn_dashed_2px_in_ok(view, themed):
+def test_marked_is_drawn_dashed_2px_in_verify(view, themed):
     theme.apply(themed, theme.Mode.LIGHT)
     view.set_highlights([(_placed("da_verificare", 1), "right")])
     (item,) = view.highlight_items(1)
     pen = item.pen()
     assert pen.style() == Qt.PenStyle.DashLine and pen.widthF() == 2.0
-    assert pen.color().name() == theme.LIGHT.ok.lower()
+    assert pen.color().name() == theme.LIGHT.verify.lower()
     assert item.brush().style() == Qt.BrushStyle.NoBrush
 
 
@@ -247,13 +279,27 @@ def test_on_page_colours_are_the_paper_values_in_both_themes(view, themed):
     assert view.highlight_items(1)[0].brush().color().alpha() == 255
 
 
-def test_tolerated_and_noise_are_grey_dashed_1px(view, themed):
+def test_tolerated_is_grey_dashed_and_noise_grey_dotted_1px(view, themed):
     theme.apply(themed, theme.Mode.LIGHT)
     view.set_highlights([(_placed("tollerata", 1), "left"), (_placed("rumore", 2), "left")])
+    styles = {}
     for i in (1, 2):
         pen = view.highlight_items(i)[0].pen()
-        assert pen.style() == Qt.PenStyle.DashLine and pen.widthF() == 1.0
-        assert pen.color().name() == theme.LIGHT.muted.lower()
+        assert pen.widthF() == 1.0 and pen.color().name() == theme.LIGHT.muted.lower()
+        styles[i] = pen.style()
+    assert styles == {1: Qt.PenStyle.DashLine, 2: Qt.PenStyle.DotLine}
+
+
+def test_non_risolta_is_drawn_in_flag_and_arredo_as_a_dotted_underline(view, themed):
+    theme.apply(themed, theme.Mode.LIGHT)
+    view.set_highlights([(_placed("non_risolta", 1, left_spans=((1, 3),)), "left"),
+                         (_placed("arredo", 2, left_spans=((1, 3),)), "left")])
+    stuck = view.highlight_items(1)[0]
+    assert stuck.pen().color().name() == theme.LIGHT.flag.lower()
+    assert stuck.brush().color().name() == theme.LIGHT.flag_bg.lower()
+    (arredo,) = view.highlight_items(2)
+    assert arredo.look.underline and arredo.pen().style() == Qt.PenStyle.DotLine
+    assert view.char_marks(2) == [], "nothing to fix in an ignored difference"
 
 
 def test_a_variable_is_a_dashed_violet_underline(view, themed):

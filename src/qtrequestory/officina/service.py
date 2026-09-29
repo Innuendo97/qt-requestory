@@ -25,14 +25,16 @@ The service logs outcomes only: case id, slot, environment, status, duration
 and the (already masked) reason. Never the payload, the document, the headers
 or an unmasked link.
 
+After a successful generation the case's control generation may start in the
+background (``officina.service_control``): never a version, never an error.
+
 **Comparison** (:meth:`OfficinaService.compare`, :meth:`render_path`): in
 ``officina.service_compare`` (the text engine, Edge's HTML print and their
 caches); see its docstring. The phase-2 case comparison and review actions
 (:meth:`OfficinaService.compare_case`, ``tolerate``, ``mark_done``...) are in
 ``officina.service_review``, their inputs in ``officina.service_case``.
 
-Stdlib only at import time: ``compare.extract_pdf`` loads pypdfium2 inside
-``extract()``, so importing this module keeps the lazy boundary.
+Stdlib only at import time (``compare.extract_pdf`` loads pypdfium2 lazily).
 """
 from __future__ import annotations
 
@@ -60,7 +62,10 @@ from qtrequestory.officina.generator import (
 from qtrequestory.officina.links import mask, mask_bytes, mask_text, mask_text_for_log
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version, Workspace
 from qtrequestory.officina.model_call import replace_payload
+from qtrequestory.officina.remove import delete_initiative_folder
 from qtrequestory.officina.service_compare import EDGE_TIMEOUT_S, CompareError, CompareMixin, HtmlToPdf
+from qtrequestory.officina.service_control import ControlMixin, ControlRunner, start_thread
+from qtrequestory.officina.service_filters import FiltersMixin
 from qtrequestory.officina.service_review import ReviewMixin
 
 if TYPE_CHECKING:
@@ -76,9 +81,11 @@ REASON_PDF_FOR_HTML = ("risposta PDF per un caso HTML: il generatore ha prodotto
                        "non il corpo dell'email (controllare template_key e payload)")
 REASON_VANISHED_CALL = "la chiamata non è più nel log locale: ripetere la ricerca"
 
-class OfficinaService(CompareMixin, ReviewMixin):
+class OfficinaService(CompareMixin, ReviewMixin, FiltersMixin, ControlMixin):
     """Satisfies ``ui.contracts.OfficinaApi``. Thread-safe: the UI calls it
-    from JobRunner workers (the caches are guarded by a lock)."""
+    from JobRunner workers (the caches are guarded by a lock). ``control_runner``
+    starts the background control generations (``service_control``; None:
+    none — the tests that count calls to their local server)."""
 
     def __init__(
         self,
@@ -89,6 +96,7 @@ class OfficinaService(CompareMixin, ReviewMixin):
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         new_uuid: Callable[[], str] = lambda: str(uuid.uuid4()),
         html_to_pdf: HtmlToPdf = edge_html_to_pdf,
+        control_runner: ControlRunner | None = start_thread,
     ) -> None:
         self._config_source = config_source
         self._index = index  # an IndexApi: only case_from_hit needs it
@@ -97,6 +105,8 @@ class OfficinaService(CompareMixin, ReviewMixin):
         self._new_uuid = new_uuid
         self._init_compare(html_to_pdf)
         self._init_case()
+        self._init_filters()
+        self._init_control(control_runner)
 
     # --------------------------------------------------------------- workspace ---
 
@@ -125,6 +135,12 @@ class OfficinaService(CompareMixin, ReviewMixin):
         if not name.strip():
             raise ValueError("il nome dell'iniziativa è vuoto")
         return self._workspace().create_initiative(name.strip())
+
+    def delete_initiative(self, ini: Initiative) -> None:
+        """Permanently, with the path checks of ``officina.remove``; its controls cancelled first (I1)."""
+        self.cancel_controls(ini)
+        delete_initiative_folder(self.workspace_root(), ini.folder)
+        self._forget_found(ini)
 
     def load(self, initiative_id: str) -> Initiative:
         """By folder (``Initiative.id``), never by display name."""
@@ -165,6 +181,7 @@ class OfficinaService(CompareMixin, ReviewMixin):
         except (IndexStale, OSError):
             raise ValueError(REASON_VANISHED_CALL) from None
         payload = _json_object(body, what="il corpo della chiamata")
+        self._cancel_control(case)  # its control belongs to the old call (spec §3.4)
         return replace_payload(case, payload, hit.fdi or None, self._clock().astimezone())
 
     def _add_case(self, ini: Initiative, key: str, variant: str, payload: dict, *,
@@ -242,6 +259,7 @@ class OfficinaService(CompareMixin, ReviewMixin):
         if cancel is not None and cancel.is_set():
             return self._refused(case, kind, REASON_CANCELLED)
 
+        self._cancel_control(case)  # a regeneration drops the control in progress (spec §3.4)
         result = send(endpoint.url, to_send, headers, timeout_s=settings.timeout_s, opener=self._opener)
         if result.ok:
             mismatch = _type_mismatch(result.doc_type, *_expected_type(case, kind))
@@ -274,6 +292,7 @@ class OfficinaService(CompareMixin, ReviewMixin):
             return None, dataclasses.replace(result, ok=False, content=b"", reason=reason)
         log.info("Officina: %s %s n.%d generato su %s (%s, %d ms)",
                  case.id, kind, version.number, endpoint.name, version.doc_type, result.duration_ms)
+        self._start_control(ini, case, version, to_send)  # background, on svil, silent (D14)
         return version, result
 
     @staticmethod

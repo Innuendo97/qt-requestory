@@ -28,8 +28,10 @@ from qtrequestory.ui.pages import officina_dialogs as ask
 from qtrequestory.ui.pages.officina_actions import CaseActionsMixin
 from qtrequestory.ui.pages.officina_board import Board
 from qtrequestory.ui.pages.officina_compare_jobs import CompareJobsMixin
+from qtrequestory.ui.pages.officina_delete import InitiativeDeletionMixin
 from qtrequestory.ui.pages.officina_case import CaseView
 from qtrequestory.ui.pages.officina_docside import case_versions, version_key
+from qtrequestory.ui.pages.officina_filters_page import FiltersMixin
 from qtrequestory.ui.pages.officina_generation import GenerationMixin
 from qtrequestory.ui.pages.officina_jobs import GenerationQueue
 from qtrequestory.ui.pages.mirror_banner import open_settings_section
@@ -47,8 +49,8 @@ VIEWS = ("setup", "list", "board", "case")
 SETUP_WIDTH = 760
 
 
-class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, CompareJobsMixin, GenerationMixin,
-                   QWidget):
+class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, FiltersMixin, NoiseRulesMixin, CompareJobsMixin,
+                   GenerationMixin, InitiativeDeletionMixin, QWidget):
     """The Officina tab (``PAGES`` key ``officina``, Ctrl+3)."""
 
     #: The folder chosen here was saved: the shell tells the other pages.
@@ -100,6 +102,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.SPACE[3], theme.SPACE[2], theme.SPACE[3], theme.SPACE[2])
         layout.addWidget(self.stack)
+        self._init_deletions(window)  # officina_delete: "Elimina iniziativa" (D6)
         self._connect()
 
     def _connect(self) -> None:
@@ -124,6 +127,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
             lambda: self._open_folder(self.ini.folder if self.ini else None))
         self._connect_case_view()
         self._connect_noise()  # officina_noise_page: "Regole di rumore…", the DOM sources
+        self._connect_filters()  # officina_filters_page: "Filtri del confronto" (U4)
         self.queue.state_changed.connect(self._on_run_state)
         self.queue.case_finished.connect(self._on_case_finished)
         self.queue.progress.connect(self._show_progress)
@@ -163,13 +167,21 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self.list.root_label.setText(strings.OFFICINA_ROOT_LABEL.format(path=root))
         self.list.onedrive.set_text(strings.OFFICINA_ROOT_ONEDRIVE.format(path=root)
                                     if ask.in_onedrive(root) else "")
-        self.list.show_initiatives(self.api.initiatives(),
+        self.list.show_initiatives(self.listed_initiatives(),
                                    select=self.ini.id if self.ini else None)
+        self._close_filters()  # before the initiative goes: unsaved rules may be saved
         self.ini, self.case_id = None, None
         self.stack.setCurrentWidget(self.list)
 
     def open_initiative(self, initiative_id: str) -> None:
-        """Open the initiative in folder ``initiative_id`` (``Initiative.id``)."""
+        """Open the initiative in folder ``initiative_id`` (``Initiative.id``);
+        never one waiting to be deleted."""
+        pending = self.pending_initiative(initiative_id)
+        if pending is not None:
+            self._notify(strings.ELIMINA_PENDING_OPEN.format(name=pending.name))
+            self.ini = None
+            self.show_list()
+            return
         try:
             self.ini = self.api.load(initiative_id)
         except (FileNotFoundError, OSError, ValueError):
@@ -184,6 +196,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
             self.show_list()
             return
         self.case_id = None
+        self._close_filters()
         self.board.show_initiative(self.ini)
         self.board.refresh_run_states()
         self._show_progress(*self.queue.counts())
@@ -206,6 +219,7 @@ class OfficinaPage(CaseActionsMixin, ReviewActionsMixin, NoiseRulesMixin, Compar
         self.stack.setCurrentWidget(self.case_view)
         if not same:
             self.case_view.focus_default()  # F5 works at once, arrows scroll the document
+        self._sync_filters()  # another case closes the Filtri dialog; the same one refreshes it
         self._load_docs(current)
 
     def current_initiative_id(self) -> str | None:

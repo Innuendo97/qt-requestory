@@ -11,6 +11,9 @@ word — takes them from the block before (after) it instead, so the list
 still says where the change sits. For an insertion the two sides are the
 target words around the insertion point.
 
+:func:`empty_at` gives ``Diff.empty_at``: where a one-sided difference sits
+on its empty side (phase 2.5, for the viewer's alignment).
+
 Pure; stdlib only, no Qt, no pypdfium2.
 """
 from __future__ import annotations
@@ -19,7 +22,7 @@ from collections.abc import Sequence
 
 from qtrequestory.officina.compare.model import Word
 
-__all__ = ["WIDTH", "context"]
+__all__ = ["WIDTH", "context", "empty_at"]
 
 #: Words of context on each side.
 WIDTH = 5
@@ -50,3 +53,12 @@ def _words(members: Sequence[tuple[Word, ...]], block: Sequence[int], keys: rang
             if len(out) == WIDTH:
                 return out[::-1] if reverse else out
     return out[::-1] if reverse else out
+
+
+def empty_at(members: Sequence[tuple[Word, ...]], k: int) -> tuple[int, float, float, float, float] | None:
+    """``Diff.empty_at`` for an insertion point before key ``k`` of a side:
+    its word right before, else right after; None on a side without words."""
+    before = members[k - 1] if 0 < k <= len(members) else ()
+    after = members[k] if 0 <= k < len(members) else ()
+    word = before[-1] if before else (after[0] if after else None)
+    return None if word is None else (word.page, word.x0, word.y0, word.x1, word.y1)

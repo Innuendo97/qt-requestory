@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from qtrequestory.officina.compare import cache
-from qtrequestory.officina.compare.extract_pdf import DocText, Word
+from qtrequestory.officina.compare.extract_pdf import DocText, PageGraphics, PathShape, Word
 
 SHA = "0123456789abcdef" * 4
 WORDS = [
@@ -114,3 +114,74 @@ def test_store_is_best_effort(tmp_path: Path, caplog):
     assert cache.load(tmp_path, SHA) is None
     assert "Acme-Servizi" not in caplog.text, "the log never carries document content"
     assert cache.store(tmp_path / "altro", SHA, WORDS, SIZES, True) is True
+
+
+# ------------------------------------------- phase 2.5: rotation, invisible, graphics ---
+
+ROTATED = {1: 270}
+INVISIBLE = [Word("00000", 0, 500.0, 820.0, 530.0, 828.0, 7.0, False)]
+GRAPHICS = [
+    PageGraphics((PathShape((20.0, 799.0, 575.0, 801.0), 2.0, None, (0, 0, 0, 255), 2),
+                  PathShape((100.0, 300.0, 150.0, 320.0), 0.0, (200, 30, 30, 255), None, 5)),
+                 ((0.0, 0.0, 120.0, 40.0),)),
+    PageGraphics(),
+]
+LIGHT = {0}
+FULL = DocText(WORDS, SIZES, True, ROTATED, INVISIBLE, GRAPHICS, LIGHT)
+
+
+def _store_full(folder: Path) -> None:
+    cache.store(folder, SHA, WORDS, SIZES, True, rotated=ROTATED, invisible=INVISIBLE, graphics=GRAPHICS,
+                light=LIGHT)
+
+
+def test_rotation_invisible_words_and_graphics_round_trip(tmp_path: Path):
+    _store_full(tmp_path)
+    doc = cache.load(tmp_path, SHA)
+    assert doc == FULL
+    assert doc.angle(1) == 270 and doc.angle(0) == 0
+    assert isinstance(doc.graphics[0].paths[0], PathShape)
+    assert doc.light == {0}
+
+
+def test_format_3_carries_the_light_words():
+    """Format 3 (review A2 I1): the words drawn in a light colour; a format 2
+    file (no such channel) is a miss, not "nothing light"."""
+    assert cache.FORMAT >= 3
+
+
+def test_format_2_is_the_first_with_graphics():
+    assert cache.FORMAT >= 2
+
+
+def test_a_phase_2_cache_file_is_a_miss(tmp_path: Path):
+    """A file written by 1.3.x (format 1: no invisible channel, no rotation,
+    no graphics) must be extracted again, not read as 'nothing invisible'."""
+    _file(tmp_path).parent.mkdir(parents=True)
+    old = {"format": 1, "sha": SHA, "has_text": True, "page_sizes": [[595.0, 842.0]],
+           "words": [["Acme-Servizi", 0, 40.0, 50.25, 110.5, 61.0, 11.04, True]]}
+    _file(tmp_path).write_text(json.dumps(old), encoding="utf-8")
+    assert cache.load(tmp_path, SHA) is None
+
+
+@pytest.mark.parametrize("junk", [
+    lambda raw: raw.__setitem__("rotated", {"1": 270}),
+    lambda raw: raw["rotated"].append([1]),
+    lambda raw: raw["rotated"].append([99, 90]),
+    lambda raw: raw["invisible"].append(["solo testo"]),
+    lambda raw: raw["graphics"].pop(),
+    lambda raw: raw["graphics"][0]["paths"][0].__setitem__(5, [0, 0, 0]),
+    lambda raw: raw["graphics"][0]["paths"][0].__setitem__(7, 2.5),
+    lambda raw: raw["graphics"][0]["images"].append([1.0, 2.0]),
+    lambda raw: raw["graphics"][0].pop("paths"),
+    lambda raw: raw.pop("graphics"),
+    lambda raw: raw.pop("light"),
+    lambda raw: raw["light"].append(99),
+    lambda raw: raw["light"].append("0"),
+])
+def test_hand_edited_phase_25_junk_is_a_miss(tmp_path: Path, junk):
+    _store_full(tmp_path)
+    raw = json.loads(_file(tmp_path).read_text(encoding="utf-8"))
+    junk(raw)
+    _file(tmp_path).write_text(json.dumps(raw), encoding="utf-8")
+    assert cache.load(tmp_path, SHA) is None

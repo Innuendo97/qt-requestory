@@ -8,7 +8,7 @@ bundle) and with the wheel.
 ## pypdfium2 and PDFium
 
 Used by the Officina tab to read, compare and draw PDF documents
-(`qtrequestory/officina/pdf.py` is the only module that imports it).
+(the `qtrequestory/officina/pdf/` package is the only place that imports it).
 
 - **pypdfium2** (https://github.com/pypdfium2-team/pypdfium2): the Python
   binding. Licence: `Apache-2.0 OR BSD-3-Clause`, at the user's choice.

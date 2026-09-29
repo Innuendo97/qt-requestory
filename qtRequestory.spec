@@ -44,10 +44,10 @@ from make_version_info import write_version_info  # noqa: E402
 VERSION_FILE = write_version_info()
 
 # The four pages are reached through
-# `importlib.import_module(f"{PAGES_PACKAGE}.{module}")` in ui/main_window.py
+# `importlib.import_module(f"{PAGES_PACKAGE}.{module}")` in ui/page_registry.py
 # (a lazy factory, so the shell can run before a page exists). A computed module
 # name is invisible to PyInstaller's static analysis, so without this the whole
-# `qtrequestory.ui.pages` package is left out — and because MainWindow._build_page
+# `qtrequestory.ui.pages` package is left out — and because page_registry.build_page
 # swallows the ModuleNotFoundError by design, the exe starts, draws the rail, and
 # shows "La pagina «Ricerca» non è disponibile in questa versione." on every page.
 # Observed exactly like that on the first build; app.log said
@@ -55,7 +55,7 @@ VERSION_FILE = write_version_info()
 # collect_submodules (not --collect-all) so a page added later is picked up too.
 PAGE_MODULES = collect_submodules("qtrequestory.ui.pages")
 
-# The five modules ui/main_window.py's PAGES actually asks import_module for. A
+# The five modules ui/page_registry.py's PAGES actually asks import_module for. A
 # collect_submodules that silently returned only the package (a moved directory,
 # a renamed package) would otherwise build the exact broken exe this is here to
 # prevent, and nothing would say so until someone opened the window.

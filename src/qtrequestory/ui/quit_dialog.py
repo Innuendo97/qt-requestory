@@ -2,7 +2,10 @@
 
 ``JobRunner`` job names are identifiers chosen by the pages; :func:`job_label`
 is how they are ever shown. The quit question names whichever long job — a
-sync, an index or an import — closing the window would interrupt.
+sync, an index or an import — closing the window would interrupt — and
+says so when deletions are still in their undo window (they are carried out
+before the window closes, D6); :func:`warn_failed_deletions` lists the ones
+that could not be.
 """
 from __future__ import annotations
 
@@ -20,7 +23,8 @@ from qtrequestory.ui.workers import (
     OFFICINA_REVIEW_JOB,
 )
 
-__all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_job", "job_label"]
+__all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_job", "job_label",
+           "warn_failed_deletions"]
 
 #: What the quit question adds under the main text, per job.
 QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO,
@@ -75,12 +79,13 @@ def job_label(name: str) -> str:
     return JOB_LABELS.get(name, name)
 
 
-def build_quit_dialog(parent: QWidget, name: str,
-                      detail: str = "") -> tuple[QMessageBox, QPushButton]:
+def build_quit_dialog(parent: QWidget, name: str, detail: str = "",
+                      pending: int = 0) -> tuple[QMessageBox, QPushButton]:
     """The "<operazione> in corso" question, without showing it.
 
     ``name`` is the running job ("sync", "index"), ``detail`` what it has done
-    so far ("12 di 48 file"), or empty. Split from
+    so far ("12 di 48 file"), or empty; ``pending`` the deletions still in
+    their undo window (mentioned: they will be carried out). Split from
     :func:`confirm_quit_during_job` so the wording can be tested without a
     modal event loop.
     """
@@ -90,7 +95,9 @@ def build_quit_dialog(parent: QWidget, name: str,
     box.setWindowTitle(strings.QUIT_DURING_JOB_TITLE.format(label=label))
     box.setText(strings.QUIT_DURING_JOB_TEXT.format(
         label=label, progress=f": {detail}" if detail else ""))
-    info = QUIT_INFO.get(name)
+    info = QUIT_INFO.get(name) or ""
+    if pending:
+        info = "\n\n".join(filter(None, (info, strings.QUIT_PENDING_DELETIONS.format(count=pending))))
     if info:
         box.setInformativeText(info)
     stop = box.addButton(strings.QUIT_STOP, QMessageBox.ButtonRole.AcceptRole)
@@ -100,15 +107,28 @@ def build_quit_dialog(parent: QWidget, name: str,
     return box, stop
 
 
-def confirm_quit_during_job(parent: QWidget, name: str, detail: str = "") -> bool:
+def confirm_quit_during_job(parent: QWidget, name: str, detail: str = "", pending: int = 0) -> bool:
     """True when the user chose "Interrompi ed esci".
 
     The box is destroyed afterwards: answering "Continua" keeps the window open,
     and without this every refused close would leave a dialog parented to it.
     """
-    box, stop = build_quit_dialog(parent, name, detail)
+    box, stop = build_quit_dialog(parent, name, detail, pending)
     try:
         box.exec()
         return box.clickedButton() is stop
+    finally:
+        box.deleteLater()
+
+
+def warn_failed_deletions(parent: QWidget, lines: list[str]) -> None:
+    """The window is closing and these deletions failed (a file in use): say
+    so, since the user saw the items disappear. One line per item."""
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(strings.QUIT_DELETIONS_FAILED_TITLE)
+    box.setText(strings.QUIT_DELETIONS_FAILED_TEXT.format(lines="\n".join(lines)))
+    try:
+        box.exec()
     finally:
         box.deleteLater()

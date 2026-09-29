@@ -30,15 +30,23 @@ sovrapposta a quella dei log, i weekend con traffico mai segnalati.
 
 ## Officina
 
-La fase 1 (1.2.0: generazione, confronto del solo testo, visore, consegna) e la fase 2
+La fase 1 (1.2.0: generazione, confronto del solo testo, visore, consegna), la fase 2
 (1.3.0: motore a stadi, variabili, regole di rumore, verdetto a tre vie, tolleranze, segna
 fatta verificata alla rigenerazione, HTML via DOM, vista del caso con avanzamento,
-minimappa e azioni da tastiera) sono descritte in README §Officina, DESIGN-core §Officina e
+minimappa e azioni da tastiera) e la fase 2.5 (1.4.0: zone del documento, testo invisibile e
+ruotato, riflusso fra pagine, variabili con doppia prova e generazione di controllo
+automatica, tipi di differenza, pannello «Filtri del confronto», vista del caso compatta con
+pannello laterale, palette B, splash, sincronizzazione nella testata, eliminazione di
+un'iniziativa annullabile) sono descritte in README §Officina, DESIGN-core §Officina e
 DESIGN-ui §Officina. L'OCR è escluso del tutto: un PDF scansionato resta «senza testo
 estraibile». *Segna accettato* resta un avviso con il riepilogo, mai un blocco (decisione
 della fase 2).
 
 ### Fase 3
+
+La fase 3 è la **1.5.0**: non ha ancora una sua spec — quando si parte, va scritta a partire
+dall'uso reale della 1.4.0 (i punti qui sotto sono candidati, raccolti durante la fase 2.5,
+non un piano già deciso).
 
 - **Immagini**: pHash come filtro veloce, SSIM su ritagli in scala di grigi come criterio
   (tollerante a renderer e antialiasing diversi). Richiede numpy: da pesare contro la
@@ -111,6 +119,52 @@ Interni:
 - `officina/delivery.py` (~460 righe) e `cli.py` (~500)
   sono sopra la soglia delle ~400 righe; `officina_diffs.py` e `officina/model.py` sono a
   400 esatte: dividerli prima di farli crescere.
+
+### Limiti noti della fase 2.5
+
+Visibili all'utente:
+- **Moduli hidden dietro `/OC` non riconosciuti**: un campo di modulo PDF nascosto dal suo
+  proprio dizionario `/OC` (non quello della pagina) non è ancora colto dal test d'inchiostro
+  (§3.1); resta visibile/invisibile a seconda di come PDFium lo legge di norma.
+- **Testo fuori pagina sotto-contato nei Filtri**: i caratteri fuori dai bordi della pagina
+  vengono scartati sia dal canale visibile sia da quello «testo invisibile» (dovrebbero
+  alimentare quest'ultimo, spec §3.1): la riga «Testo invisibile» del pannello Filtri può
+  mostrare un numero più basso del reale. Non nasconde differenze (il testo fuori pagina non
+  è mai confrontato in nessun caso), è solo il conteggio informativo a essere impreciso.
+- **Eliminazione di un'iniziativa sul thread grafico**: `PendingDeletions.commit()` gira
+  sul thread dell'interfaccia; per una cartella con molti file la rimozione blocca la
+  finestra per la sua durata (di norma sotto il secondo). Andrebbe in un worker.
+- **`map_executed` (prova esecuzione) allineato per posizione, non per identità**: la
+  prova «esecuzione» di un valore perturbato viene portata da una generazione di controllo
+  a un'altra con un `SequenceMatcher` su blocchi di una parola; in teoria può allineare un
+  blocco (una data, un importo) con la parola sbagliata se l'occorrenza si è spostata. Il
+  rischio è basso e accettato (review A5: "M8 is accepted as argued") perché la prova di
+  posizione resta comunque richiesta (F16): al peggio la prova si sposta su un'altra
+  occorrenza dello stesso valore stampato.
+- **Dizionario dei prezzi senza schermata**: la convenzione `<iniziativa>\dizionario.xlsx`
+  (README §"Profili e filtri del confronto") non ha un selettore di file nella UI; va creato
+  a mano nella cartella giusta.
+- **Vista AS-IS di un'email HTML senza Edge, con regole attive**: da quando l'AS-IS
+  applica le regole di rumore del caso (come il TO-BE), un caso HTML il cui stampa Edge
+  fallisce, con almeno una regola attiva, passa dal messaggio «confronto non riuscito» alla
+  nota DOM (R45) invece che a un errore — coerente con la vista giudicata, ma un
+  cambiamento di comportamento rispetto a prima non ancora annotato a parte (I1b).
+- **Controlli manuali sull'exe reale**: due controlli restano da fare a mano sull'installato
+  (mai su `%LOCALAPPDATA%\qtRequestory` di sviluppo): eventuali aloni di selezione residui
+  nel visore dopo scorrimento/zoom rapidi (§4.4, il test automatico copre solo l'offscreen),
+  e il comportamento di un clic sul chip di sincronizzazione mentre il suo pannello è già
+  aperto.
+
+Interni:
+- `ui/contracts.py` (~890 righe) e `tests/fakes/fake_officina.py` (~530 righe) sono sopra la
+  soglia delle ~400 righe: da dividere.
+- `ui/theme.py` (409), `ui/pages/search_page.py` (433), `ui/pages/sync_page.py` (435) sono
+  appena sopra la soglia: `theme.py` è cresciuto nella fase 2.5 (da 359, ha passato la
+  soglia allora), `sync_page.py` di 3 righe (da 432), `search_page.py` è invariato. Il
+  taglio resta da fare.
+- `insert_in_group` (pannello laterale, raggruppamento per tipo): il ramo «il gruppo del
+  tipo è svuotato e va ricreato come intestazione nuova» non ha un test dedicato (basso
+  rischio, il percorso di codice è lineare — review U3).
 
 ### Limiti noti della fase 1 ancora aperti
 
@@ -239,8 +293,11 @@ svil e coll contengono solo dati di prova; le firme restano mascherate nei log e
 - `SchedulerService.config_source` ha un default che registrerebbe la schedulazione
   sbagliata se qualcuno dimenticasse di passarlo;
 - `plugins/tls/qopensslbackend.dll` finisce ancora nell'exe pur essendo inerte;
-- file lunghi sopra la soglia (~400 righe): `workers.py`, `main_window.py` (~470),
-  `sync_page.py` (~425), `search_page.py`;
+- file lunghi sopra la soglia (~400 righe): `workers.py`, `sync_page.py` (435),
+  `search_page.py` (433), `theme.py` (409) — vedi anche §Officina "Limiti noti della fase
+  2.5" per `ui/contracts.py` e `fake_officina.py`; `main_window.py` è sceso a 347 righe
+  nella fase 2.5 (pagine e azioni della finestra spostate in `page_registry.py` e
+  `main_window_actions.py`);
 - `tests/ui/test_settings_page.py::test_aggiungi_and_rimuovi_edit_the_table` fallisce se
   eseguito subito dopo `tests/ui/test_preview_pane.py` (passa nell'ordine della suite
   completa; c'era già prima della 1.1.0).

@@ -37,6 +37,31 @@ a :class:`Block` list (HTML, from ``extract_html``, used as it is). In order:
    ``pagine`` difference, first in the list;
 8. **classify** — ``classify.classify``.
 
+Phase 2.5 (spec §3.2, §3.5, §3.6; task A3):
+
+* two PDFs are zoned first (``sides.prepare``, ``zones.zone_pair``): only
+  the body and the title flow through stages 1–8; the other zones' text
+  (``zonesides``) gets the same slots (target) and noise stage — presets and
+  the user's spans, which cover body and zone text alike (ruling F13) — and
+  is compared page by page by ``zonediff`` (class ``zona`` for a text change,
+  ``arredo`` in a zone set aside — ``aside``, page number and watermark by
+  default — and one difference "uguale su N pagine" for the same change on
+  several pages), and their differences are listed on their page: the
+  header's before the body's, the others after;
+* every change of the word diff is cut where two consecutive words are far
+  apart (``spread``: another page, the next column, a blank block) — a
+  difference never spans distant places;
+* a change is also cut where the zone changes (``spread.split``);
+  ``Diff.zone`` is the zone of its first target word (else first generated
+  word; ``corpo`` for ``pagine``); it is ``arredo`` only when EVERY word on
+  both sides lies in a zone set aside, else it counts with the zone of its
+  first word outside them (final review C1);
+* ``Diff.tipo`` is ``tipi.tipo_of``;
+* ``Comparison.left_zones`` / ``right_zones`` are the zone boxes;
+* the variables' second pass (``variables``, task A4) runs last on the
+  differences in page order, with the words around each (``variables.site``)
+  and ``values`` (payload, dictionary, control words, proofs switched on).
+
 Anchors are taken on the TARGET's slotted keys BEFORE noise (so switching a
 noise rule on does not move them): ``context`` = the :data:`CONTEXT_KEYS`
 target keys before and after the difference (for an insertion, the ONE key
@@ -62,19 +87,22 @@ import dataclasses
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 
-from qtrequestory.officina.compare import display, moves, urls
+from qtrequestory.officina.compare import display, moves, spread, urls, variables, zonesides
 from qtrequestory.officina.compare.anchor_keys import CONTEXT_KEYS, TargetKeys
 from qtrequestory.officina.compare.anchors import disambiguate
 from qtrequestory.officina.compare.classify import classify, is_noise
 from qtrequestory.officina.compare.extract_pdf import DocText
 from qtrequestory.officina.compare.linkdiff import link_changes
-from qtrequestory.officina.compare.model import Anchor, Block, Comparison, Diff, Op, Word
+from qtrequestory.officina.compare.model import ARREDO_ZONES, NO_VERDICT, Anchor, Block, Comparison, Diff, Op, Word
 from qtrequestory.officina.compare.noise import Found, compile_rules
 from qtrequestory.officina.compare.normalise import line_end
 from qtrequestory.officina.compare.sides import Pair, Prepared, noise_stage, prepare
 from qtrequestory.officina.compare.sides import Side as _Side
 from qtrequestory.officina.compare.slots import Slot, slot_anchor
+from qtrequestory.officina.compare.tipi import tipo_of
+from qtrequestory.officina.compare.values import Values
 from qtrequestory.officina.compare.worddiff import Change, changes, char_spans
+from qtrequestory.officina.compare.zonediff import zone_diffs
 from qtrequestory.officina.model_review import NoiseRule
 
 __all__ = ["CONTEXT_KEYS", "CustomHits", "compare_docs", "finish"]
@@ -107,19 +135,25 @@ CustomHits = tuple[str, Sequence[tuple[int, int]], Sequence[tuple[int, int]]]
 def compare_docs(left: DocText | Sequence[Block], right: DocText | Sequence[Block], *,
                  rules: Sequence[NoiseRule] = (), custom_hits: Sequence[CustomHits] = (),
                  disabled_slots: Collection[Anchor] = (), left_label: str = "target", right_label: str = "TO-BE",
-                 link_drop: Callable[[str], bool] = urls.keep_all) -> Comparison:
-    """The comparison of ``left`` (the target) with ``right`` (see module doc)."""
+                 link_drop: Callable[[str], bool] = urls.keep_all,
+                 aside: Collection[str] = ARREDO_ZONES, zones: bool = True, values: Values | None = None) -> Comparison:
+    """The comparison of ``left`` (the target) with ``right`` (see module
+    doc). ``zones=False``: the body stages alone, the whole text as the body."""
     return finish(prepare(left, right, disabled_slots=disabled_slots, left_label=left_label,
-                          right_label=right_label),
-                  rules=rules, custom_hits=custom_hits, link_drop=link_drop)
+                          right_label=right_label, zones=zones),
+                  rules=rules, custom_hits=custom_hits, link_drop=link_drop, aside=aside, values=values)
 
 
 def finish(prepared: Prepared, *, rules: Sequence[NoiseRule] = (), custom_hits: Sequence[CustomHits] = (),
-           link_drop: Callable[[str], bool] = urls.keep_all) -> Comparison:
-    """Stages 4–8 on ``prepared`` (``sides.prepare``). ``rules`` are compiled
+           link_drop: Callable[[str], bool] = urls.keep_all, aside: Collection[str] = ARREDO_ZONES,
+           values: Values | None = None) -> Comparison:
+    """Stages 4–8 on ``prepared`` (``sides.prepare``), and the zones. ``rules`` are compiled
     and matched here: only the built-in presets (tested) go there. The user's
     rules come as ``custom_hits``, applied after ``rules`` in their order,
-    matched elsewhere on :meth:`~sides.Prepared.noise_sides` (R46)."""
+    matched elsewhere on :meth:`~sides.Prepared.noise_sides` (R46).
+    ``aside``: the zones whose differences do not count (``arredo``);
+    ``values``: the payload, dictionary, control words and proofs of the
+    variables' second pass (``variables``; None = positions only)."""
     p = prepared
     left, right = p.left, p.right
     left_blocks, right_blocks, left_pages, right_pages = p.left_blocks, p.right_blocks, p.left_pages, p.right_pages
@@ -128,13 +162,24 @@ def finish(prepared: Prepared, *, rules: Sequence[NoiseRule] = (), custom_hits: 
     if not p.has_text:
         notes = [_label(label) for label, has in ((p.left_label, p.left_has), (p.right_label, p.right_has))
                  if not has] + notes
-        return Comparison((), p.left_has, p.right_has, left_pages, right_pages, "; ".join(notes), 0, ())
+        return Comparison((), p.left_has, p.right_has, left_pages, right_pages, "; ".join(notes), 0, (),
+                          p.left_zones, p.right_zones)
 
     pairs, slots = p.pairs, p.slots
-    l_rules = [*usable, *((name, Found(found)) for name, found, _ in custom_hits)]
-    r_rules = [*usable, *((name, Found(found)) for name, _, found in custom_hits)]
+    # the user's spans cover the body AND the zone text (noise_sides, ruling F13): split them
+    l_split = [(name, *zonesides.split_spans(p.left_side, found)) for name, found, _ in custom_hits]
+    r_split = [(name, *zonesides.split_spans(p.right_side, found)) for name, _, found in custom_hits]
+    l_rules = [*usable, *((name, Found(body)) for name, body, _ in l_split)]
+    r_rules = [*usable, *((name, Found(body)) for name, body, _ in r_split)]
     l_final, l_hits, l_ranges = noise_stage(p.left_side, l_rules)
     r_final, r_hits, _ = noise_stage(p.right_side, r_rules)
+    zone_hits: list[tuple[int, int, str]] = []
+    texts: tuple[dict, dict] = ({}, {})
+    for k, (zoned, split_) in enumerate(((p.left_zone, l_split), (p.right_zone, r_split))):
+        if zoned is not None:
+            final, found_hits, ranges = noise_stage(zoned.side, [*usable, *((n, Found(z)) for n, _, z in split_)])
+            zone_hits += found_hits
+            texts[k].update(zonesides.chunks(zoned, final, ranges))
     old_to_new = {old: new for new, (start, end) in enumerate(l_ranges) for old in range(start, end)}
     slot_at = {old_to_new[s.index]: s for s in slots}
 
@@ -144,6 +189,8 @@ def finish(prepared: Prepared, *, rules: Sequence[NoiseRule] = (), custom_hits: 
     found = changes(l_final.keys, l_final.members, r_final.keys, r_final.members, slot_at, fixed=fixed,
                     cuts=cuts, breaks=(l_final.breaks, r_final.breaks), bounds=bounds,
                     line_starts=r_final.breaks if not isinstance(right, DocText) else ())
+    found = [part for c in found
+             for part in spread.split(c, l_final.keys, l_final.members, r_final.keys, r_final.members)]
     raws = _moves(found, p.moved, left_blocks, right_blocks, l_final, r_final)
     raws = [_section(raw, l_final, r_final) for raw in raws]
     if not isinstance(left, DocText) and not isinstance(right, DocText):
@@ -155,12 +202,20 @@ def finish(prepared: Prepared, *, rules: Sequence[NoiseRule] = (), custom_hits: 
         raws.insert(0, _Raw("pagine", 0, 0, 0, 0, (), (), detail=f"{_pages(left_pages)} contro {right_pages}"))
 
     context = TargetKeys(p.left_side.keys, slots, l_ranges)
-    built = [_diff(raw, l_final, r_final, context, left_pages, right_pages) for raw in raws]
+    placed = [(_page(raw, l_final, r_final), 1, _diff(raw, l_final, r_final, context, left_pages, right_pages, aside),
+               variables.site(l_final.members, r_final.members, raw.i1, raw.i2, raw.j1, raw.j2)) for raw in raws]
+    if p.left_zone is not None and p.right_zone is not None:
+        placed += [(page, 0 if d.zone == "header" else 2, d, where)
+                   for page, d, where in zone_diffs(texts[0], texts[1], (left_pages, right_pages), aside)]
+    placed.sort(key=lambda item: (item[0], item[1]))   # stable: the body keeps its order
+    built = variables.recognise([item[2] for item in placed], [item[3] for item in placed],
+                                variables.context_of(p, values, aside))
     anchors = disambiguate([d.anchor for d in built])
     diffs = tuple(_renumber(d, n, anchor) for n, (d, anchor) in enumerate(zip(built, anchors, strict=True), 1))
     names = [*(name for name, _ in usable), *(name for name, _, _ in custom_hits)]
-    hits = tuple((name, sum(1 for h in (*l_hits, *r_hits) if h[2] == name)) for name in names)
-    return Comparison(diffs, True, True, left_pages, right_pages, "; ".join(notes), len(slots), hits)
+    hits = tuple((name, sum(1 for h in (*l_hits, *r_hits, *zone_hits) if h[2] == name)) for name in names)
+    return Comparison(diffs, True, True, left_pages, right_pages, "; ".join(notes), len(slots), hits,
+                      p.left_zones, p.right_zones)
 
 
 # ------------------------------------------------------------- stages ---
@@ -275,7 +330,41 @@ def _flat(groups: Sequence[tuple[Word, ...]]) -> tuple[Word, ...]:
 
 # ------------------------------------------------------------ anchors ---
 
-def _diff(raw: _Raw, lf: _Side, rf: _Side, context: TargetKeys, left_pages: int, right_pages: int) -> Diff:
+def _page(raw: _Raw, lf: _Side, rf: _Side) -> int:
+    """The page a body difference is listed on: its first target word's,
+    else the target word before it (an insertion), else its first generated
+    word's; -1 for ``pagine`` (listed first)."""
+    if raw.op == "pagine":
+        return -1
+    if raw.left:
+        return raw.left[0].page
+    before = [w for group in lf.members[max(0, raw.i1 - 1):raw.i1] for w in group]
+    if before:
+        return before[-1].page
+    return raw.right[0].page if raw.right else 0
+
+
+def _diff(raw: _Raw, lf: _Side, rf: _Side, context: TargetKeys, left_pages: int, right_pages: int,
+          aside: Collection[str]) -> Diff:
+    diff = _made(raw, lf, rf, context, left_pages, right_pages)
+    if raw.op == "pagine":
+        return dataclasses.replace(diff, tipo=tipo_of(diff))
+    words = (*diff.left, *diff.right)
+    zone = words[0].zone if words else "corpo"
+    klass = diff.klass
+    if words and all(w.zone in aside for w in words):
+        if klass not in NO_VERDICT and klass != "link":
+            klass = "arredo"
+    elif zone in aside:     # a zone set aside hides only its own words (final review C1)
+        zone = next(w.zone for w in words if w.zone not in aside)
+    diff = dataclasses.replace(diff, zone=zone, klass=klass)
+    if bool(diff.left) != bool(diff.right):
+        members, k = (rf.members, raw.j1) if diff.left else (lf.members, raw.i1)
+        diff = dataclasses.replace(diff, empty_at=display.empty_at(members, k))
+    return dataclasses.replace(diff, tipo=tipo_of(diff))
+
+
+def _made(raw: _Raw, lf: _Side, rf: _Side, context: TargetKeys, left_pages: int, right_pages: int) -> Diff:
     left_keys, right_keys = lf.keys[raw.i1:raw.i2], rf.keys[raw.j1:raw.j2]
     if raw.op == "pagine":
         anchor = Anchor("pagine", "composizione", "", str(left_pages))
