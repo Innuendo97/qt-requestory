@@ -62,7 +62,7 @@ from qtrequestory.ui.startup import StartupTasks
 from qtrequestory.ui.sync_chip import SYNC_PANEL_SHORTCUT
 from qtrequestory.ui.toast import DEFAULT_MS as TOAST_MS
 from qtrequestory.ui.toast import Toast
-from qtrequestory.ui.workers import OFFICINA_DELIVERY_JOB, OFFICINA_GENERATE_JOBS, JobRunner
+from qtrequestory.ui.workers import GENERA_JOB, OFFICINA_DELIVERY_JOB, OFFICINA_GENERATE_JOBS, JobRunner
 
 log = logging.getLogger(__name__)
 
@@ -73,8 +73,9 @@ SYNC_NOW_SHORTCUT = "Ctrl+Shift+S"
 DATA_JOBS = ("sync", "index", "import", "recycle")
 #: Jobs closing the window would interrupt: the data jobs, and an Officina
 #: generation (a document already on its way would not be saved). The three
-#: generation lanes are asked about once. A delivery too (it stops between files).
-QUIT_JOBS = (*DATA_JOBS, *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB)
+#: generation lanes are asked about once. A delivery too (it stops between files),
+#: and a Genera batch (the calls not yet sent are cancelled).
+QUIT_JOBS = (*DATA_JOBS, *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB, GENERA_JOB)
 #: How often the pages' ``refresh_sync_state`` runs (the app-bar chip would
 #: otherwise stay stale after a scheduled sync until the user opened
 #: Sincronizzazione). Slow on purpose: it only re-reads a state file.

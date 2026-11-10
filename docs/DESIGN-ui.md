@@ -18,7 +18,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 
 ```
 +--------------------------------------------------------------------------------------+
-| [icon] qtRequestory   Ricerca  Officina                 (⟳• svil oggi 09:00 · coll 2 da scaricare) ⚙ ⓘ |
+| [icon] qtRequestory   Ricerca  Officina  Genera         (⟳• svil oggi 09:00 · coll 2 da scaricare) ⚙ ⓘ |
 |                       ‾‾‾‾‾‾‾                                                        |
 +--------------------------------------------------------------------------------------+
 |                                   page                                               |
@@ -32,8 +32,8 @@ user's choice). The width goes to the pages; the sync state sits where it is see
   tab with icon, accent underline when current), `"icon"` (icon button on the right,
   label + shortcut as tooltip: "Impostazioni (Ctrl+,)") or `"hidden"` (phase 2.5, D5: no
   entry in the bar at all, reached another way — Sincronizzazione, from the header chip's
-  panel). Order: Ricerca, Officina (tabs; Sincronizzazione is `"hidden"` between them, kept
-  in `PAGES` so it still builds and its hooks still wire), Impostazioni ⚙, Info ⓘ (icons). A
+  panel). Order: Ricerca, Officina, Genera (tabs, 1.5.0; Sincronizzazione is `"hidden"` between
+  the first two, kept in `PAGES` so it still builds and its hooks still wire), Impostazioni ⚙, Info ⓘ (icons). A
   future page = one tuple + one widget. **No disabled placeholders.** A page module that
   fails to import degrades to a label "La pagina «…» non è disponibile in questa versione."
   — the shell always starts.
@@ -91,7 +91,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 
 | Keys | Where | Action |
 |---|---|---|
-| Ctrl+1 / Ctrl+3 | window | Ricerca / Officina |
+| Ctrl+1 / Ctrl+3 / Ctrl+4 | window | Ricerca / Officina / Genera |
 | Ctrl+2 | window | opens the header's sync panel (phase 2.5, D5: Sincronizzazione has no tab) |
 | Ctrl+, | window | Impostazioni |
 | F1 | window | Info |
@@ -118,6 +118,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 | ↑ / ↓ | Officina differences list | previous / next row (over the "DA VERIFICARE" header) |
 | F / T / V | Officina list or viewer | segna fatta / tollera / non è una variabile (toggles), then the next row |
 | Ctrl+Z | Officina case | undo the last review action of this case |
+| Ctrl+Enter | Genera | Genera (only when the button is enabled and no run is going) |
 | click / double-click / right-click | Officina highlight | select + mini-bar / segna fatta / action menu |
 | Ctrl+wheel | Officina viewer | zoom (the other viewer follows while in sync) |
 
@@ -1017,6 +1018,127 @@ comparisons of synthetic PDFs, canned into the fake: caso, regressione non risol
 corso, tutte inattive, AS-IS, bacheca, the target and accept confirmations;
 `impostazioni-officina*` / `impostazioni-salva-bloccato` for the settings section.
 
+## Genera tab (release 1.5.0)
+
+The bulk generator (README §Genera; engine in DESIGN-core §Genera): one screen, one button,
+documents from typed template keys, the Quadient list or whole FDIs. It is a tab of its own
+(`PAGES` key `genera`, icon `document-multiple`, **Ctrl+4**, after Officina) and not a
+section of the Officina on purpose: the Officina is a workbench with state on disk
+(initiatives, cases, versions), Genera is a one-shot action with a report, and mixing them
+would have put a "just give me the PDF" path behind a case model. The page reaches the
+engine only through `services.officina` (`batch_load_elenco`, `batch_default_headers`,
+`batch_count`, `batch_run`, re-exported on `ui/contracts.py` with the batch dataclasses),
+never through `officina`.
+
+**Lazy.** Building the page touches neither the disk nor the Officina service: the
+destination is kept as text, and the default headers and the remembered list are read by
+`GeneraPresenter.activate()`, on the tab's first `showEvent`. A window that never opens
+Genera pays nothing for it, and a list file gone bad cannot break the start-up: restoring
+it never raises (it is dropped quietly, the preference kept).
+
+**Structure.** A `QScrollArea` with the form, and under it, **outside** the scroll area, the
+pinned action bar (`genera_actions.GeneraActionBar`, a `QFrame#generaActionBar` with a top
+border from `theme_qss`): the button is on screen at any window height and whatever has been
+scrolled. In the scroll area, top to bottom:
+
+1. the title;
+2. **Cosa generare** (`genera_source.py`): segments *Template key · Elenco · FDI*, and only
+   the current source is shown (hidden, not stacked: a `QStackedWidget` is as tall as its
+   tallest page, and the list is tall). Each source keeps its own text while the app runs;
+3. **Dove** (`genera_form.py`): *Genera su* (enabled generators), *Chiamate da* (log
+   environments, follows the generator until the user picks another), *Salva in*;
+4. **Header** (`genera_form.py`, `genera_headers.py`): one collapsed line, "Header · 7 inviati
+   · 1 modificato", opening the full table. It is Impostazioni's `HeaderTable` subclassed
+   to draw "automatico" (muted italic, drawn by a delegate, never stored) in the empty value
+   of an automatic name; Impostazioni's own profile table must keep showing an empty value
+   as empty, hence a subclass and not a change. This is the one place in the tab where
+   header values appear on screen;
+5. the results (`genera_results.py`), scrolled into view (never upwards) when a run starts
+   and when its report arrives.
+
+In the pinned bar: the two options (zip, HTML) and **the** button, with the first problem in
+plain Italian under it while it cannot be pressed; its text says what it will do ("Genera 12
+documenti", "Genera i documenti di 2 FDI"); during a run it is *Interrompi*, next to a
+progress bar ("Cerco le chiamate nei log di coll…" until the total is known, then "n di m").
+A double click on it is swallowed by an event filter (`MouseButtonDblClick` never reaches
+the button), so it starts one run and *Interrompi*, which takes the button's place at once,
+is not pressed by the second half of the double click; a deliberate click on *Interrompi*
+right after the start still works (a time window would have blocked it). The end-of-run
+toast sits in the bar's empty right half, beside the button, not over table rows.
+
+Without an enabled generator the form is replaced by an `EmptyState` pointing to
+Impostazioni › Officina — but never while a run (or its count) goes, nor while a finished
+run's results are on screen: a generator disabled meanwhile becomes the problem line under
+the button, and the engine itself stops sending to it (DESIGN-core §Genera, step 4).
+The code is split: `genera_page.py` builds and renders, `genera_run.py` (`GeneraRun` mixin)
+holds the start/count/confirm/stop flow, `genera_views.py` the presenter's read-only views
+and wording.
+
+**Presenter.** `genera_presenter.py` is a `QObject` with one signal, `changed`: it holds
+every choice, validates, and builds the `BatchRequest`; the page re-renders from it and the
+widgets only forward edits. There are no widgets in it, so the rules (what stops the
+button, the call estimate, the retry targets, the follow-the-generator logic) are tested
+without a window (`tests/ui/test_genera_presenter.py`). `problems()` lists in screen order,
+so the line under the button names the first thing to fix. The estimate before the lookup is
+the number of distinct keys, of the ticked packages' keys, or of FDIs. Above
+`CONFIRM_ABOVE = 20` **calls** the run is confirmed first, naming the count and both
+environments. With FDIs the number of calls is known only from the logs, so the page first
+runs a short job under the same exclusive name, `batch_count` (reads only), with the same
+"Cerco le chiamate…" and the same *Interrompi*; the question then says "Partono 37 chiamate
+(2 FDI)…". A stop or a window closing during the count starts nothing; the run itself is
+submitted on the next event-loop turn, after the count job has left the runner. Typed FDIs
+are lower-cased, as the index has them.
+
+**The job.** The whole batch is ONE exclusive job, `GENERA_JOB = "genera"` (in `JOB_NAMES`,
+`EXCLUSIVE`, `QUIT_JOBS` and `quit_dialog.JOB_LABELS`, so closing the window asks first). Not
+one job per call: the engine already runs three at once, and a per-call job would have put
+hundreds of jobs on the runner and made "stop" and "report" the page's problem. The events
+(`BatchStarted`, `BatchItemDone`) arrive on `signals.progress`, a live preview of rows in
+completion order; the `BatchReport` on `signals.result` is the truth and replaces them in
+call order. A `ValueError` from the job is the core's Italian refusal and is said inline
+under the button, never in a dialog; any other exception is shown as a generic line (`GENERA_CRASHED`: its
+text was not written for the user). While a run goes the
+sources, "Dove", the headers and the options are disabled. At the end a toast gives the
+counts (tone `warn` if something is unfinished); no payload, header value or link reaches a
+status line or toast. Interrompi cancels the job's token: calls already on the wire finish
+and are saved, the rest become "annullato". Ctrl+Enter generates when the button can.
+**Riprova i non riusciti** (`genera_retry.py`) re-submits the `failed`, `no_call` and
+`cancelled` rows as new targets, with the choices of *now* (generator, headers, folder), not
+those of the failed run. Rows from an FDI are grouped into that FDI narrowed to its failed
+keys (`Target("fdi", fdi, keys=…)`): the same FDI's calls, into the FDI's folder, never the
+newest call of the key from some other pratica. An outcome with no key (an FDI with no call
+at all) retries the whole FDI. The button's count is the number of calls sent (a whole FDI
+counts one). *Apri cartella* checks the folder first: a run stopped during the lookup made
+none, and a folder moved away says so inline.
+
+**Results.** Template key (monospace, elided in the middle: both ends of a key matter, full
+text in the tooltip) · Cartella · Esito · Tipo · Durata · Motivo. The outcome is a glyph AND
+a word, colour only a third channel (`ok` green; failed and no-call `warn`, because
+DESIGN-ui's `bad` is kept for loss; skipped and cancelled muted), re-tinted on a theme
+change. The UI's words (*generato*, *saltato: HTML*, *nessuna chiamata*, *non riuscito*,
+*annullato*) are shorter than `esito.csv`'s fixed vocabulary on purpose and live in
+`ui/strings/genera.py`. A summary ("1 generato · 1 non riuscito · in svil_…"), *Apri cartella*
+and the *Solo non riusciti* filter sit above the table.
+
+**Preferences** (`ui/prefs.py`, through `actions.user_settings()`; `genera_prefs.py`):
+`genera/mode`, `genera/generator`, `genera/source_env` (empty = follows the generator),
+`genera/destination`, `genera/elenco` (the path, saved only once it loaded), `genera/zip`,
+`genera/html`. Each is restored only if still valid: an unknown generator is dropped on
+construction; the destination is kept as text, never `stat`ed at start-up (a folder that
+is gone is re-created by the run, or the run is refused inline if it cannot be); the list is loaded on the first show, and one that is gone or no longer a list is
+dropped silently.
+
+**Deliberately not persisted**: the typed keys and FDIs, the ticked packages, the edited header
+table and the results. A run is a one-off action: what was typed is its input, not a setting,
+and restoring last session's list would risk re-running it by habit. The header edits are
+meant for *this* generation (a one-off `IMEL: active`, a removed `Postman-Token`) and a saved
+override would outlive its reason: "Ripristina" always goes back to Impostazioni. A change
+saved in Impostazioni refreshes the header table too, unless the user has edited it (their
+edits win). The remembered list's ticks start empty on every load.
+
+**Screenshots.** `scripts/dev/shoot.py` scenes `genera-vuota`, `genera-elenco` and
+`genera-esiti` (synthetic data: a fake generator, a made-up list, a mixed run).
+
 ## Impostazioni page
 
 Title, a section list on the left (styled like the app's navigation), one section at a time
@@ -1158,7 +1280,7 @@ class JobRunner(QObject): submit(name, fn, ...) -> Job | None; busy(str); job_fi
     # pool size = len(JOB_NAMES) + SUPERSEDED_HEADROOM (4): one thread per job name plus room
     # for superseded jobs still finishing a blocking call (read_body, one SQLite query).
     # "sync"/"index"/"scheduler"/"import"/"recycle", the three "officina-generate*" lanes,
-    # "officina-delivery" and "officina-review" are EXCLUSIVE: a second submit is refused -> busy(name);
+    # "officina-delivery", "officina-review" and "genera" (1.5.0) are EXCLUSIVE: a second submit is refused -> busy(name);
     # every other name supersedes (the older job is cancelled and silenced by _Delivery).
 class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core EventSink -> Qt signal
 ```
@@ -1167,7 +1289,7 @@ class QtEventSink(QObject): event = Signal(object); __call__(ev) emits   # core 
 - `job_finished(name, ok)` drives the refresh: after a `DATA_JOBS` job (`sync`, `index`,
   `import`, `recycle`; even a failed one) the window calls every page's optional
   `on_data_changed()`, and closing the window while one runs asks first. `QUIT_JOBS` =
-  `DATA_JOBS` + the Officina's generation lanes + `officina-delivery`: closing asks **once**
+  `DATA_JOBS` + the Officina's generation lanes + `officina-delivery` + `genera`: closing asks **once**
   for all of them, then calls every page's optional `on_quit()` (the Officina drops its
   waiting cases) and cancels them.
 - Progress coalesced to ~10/s. Widgets never touched from workers.

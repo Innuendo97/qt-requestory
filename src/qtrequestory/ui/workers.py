@@ -43,7 +43,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from qtrequestory.ui.contracts import CancelToken, Cancelled, Event, FileProgress, LogMessage
 
 __all__ = [
-    "DEFAULT_MAX_THREADS", "JOB_NAMES", "OFFICINA_COMPARE_JOB", "OFFICINA_DELIVERY_JOB",
+    "DEFAULT_MAX_THREADS", "GENERA_JOB", "JOB_NAMES", "OFFICINA_COMPARE_JOB", "OFFICINA_DELIVERY_JOB",
     "OFFICINA_ADD_JOB", "OFFICINA_DOM_JOB", "OFFICINA_GENERATE_JOBS", "OFFICINA_NOISE_JOB",
     "OFFICINA_PICK_JOB", "OFFICINA_REVIEW_JOB",
     "SCHEDULER_JOB", "SUPERSEDED_HEADROOM", "CancelToken",
@@ -89,6 +89,10 @@ OFFICINA_PICK_JOB = "officina-pick"
 #: "Aggiungi chiamata…": the chosen calls made cases (or replacing a case's
 #: call). Exclusive: a second run must never silence the first one's outcome.
 OFFICINA_ADD_JOB = "officina-add"
+#: Genera: one whole batch (resolution, three lanes of calls, esito.csv, zips)
+#: as ONE job. Exclusive — a second batch must never silence the first one's
+#: report — and asked about before quitting (the calls not yet sent are cancelled).
+GENERA_JOB = "genera"
 
 
 def officina_writing(runner: JobRunner) -> bool:
@@ -134,6 +138,7 @@ JOB_NAMES = (
     OFFICINA_DOM_JOB,       # Officina: the DOM tab's sources
     OFFICINA_PICK_JOB,      # Officina: "Aggiungi chiamata…", the search as you type
     OFFICINA_ADD_JOB,       # Officina: "Aggiungi chiamata…", the cases made or replaced
+    GENERA_JOB,             # Genera: a whole batch of documents
 )
 
 #: Extra threads for SUPERSEDED jobs. Superseding silences a job and sets its
@@ -389,10 +394,10 @@ class JobRunner(QObject):
     #: calls in flight could land in either order and leave the task in the
     #: state of the *first* one. Everything else supersedes instead.
     #: The Officina generation lanes are exclusive too: superseding one would
-    #: silence a call whose document is written anyway.
+    #: silence a call whose document is written anyway. So is a Genera batch.
     EXCLUSIVE = frozenset({"sync", "index", SCHEDULER_JOB, "import", "recycle",
                            *OFFICINA_GENERATE_JOBS, OFFICINA_DELIVERY_JOB, OFFICINA_REVIEW_JOB,
-                           OFFICINA_ADD_JOB})
+                           OFFICINA_ADD_JOB, GENERA_JOB})
 
     #: Emitted with the job name when an exclusive submit was refused.
     busy = Signal(str)

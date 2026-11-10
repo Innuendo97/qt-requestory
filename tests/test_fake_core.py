@@ -1101,7 +1101,9 @@ def test_new_officina_methods_are_in_the_protocol_with_matching_signatures(fake)
 
     names = ("compare_case", "tolerate", "untolerate", "mark_done", "unmark", "unmark_all", "not_variable",
              "variable_again", "reset_tolerances", "set_profile", "set_noise_rules", "noise_presets",
-             "count_noise_hits", "dom_view")
+             "count_noise_hits", "dom_view",
+             # Genera (1.5.0; batch_count after the review)
+             "batch_load_elenco", "batch_default_headers", "batch_count", "batch_run")
     assert set(names) <= set(OfficinaApi.__protocol_attrs__)
     for name in names:
         expected = inspect.signature(getattr(OfficinaApi, name)).parameters

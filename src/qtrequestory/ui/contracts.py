@@ -99,6 +99,10 @@ from qtrequestory.core.jobs import JobReport
 from qtrequestory.core.paths import AppPaths
 from qtrequestory.core.scheduler import NOT_REGISTERED, SchedulerError, TaskSpec, TaskStatus
 from qtrequestory.core.sync import EnvResult, SyncReport
+from qtrequestory.officina.batch.elenco import NO_PACKAGE, Elenco, ElencoError
+from qtrequestory.officina.batch.headers import AUTOMATIC as AUTOMATIC_HEADERS
+from qtrequestory.officina.batch.model import BatchItemDone, BatchReport, BatchRequest, BatchStarted, Outcome, Target
+from qtrequestory.officina.batch.resolve import parse_keys, targets_from_fdis, targets_from_keys, targets_from_packages
 from qtrequestory.officina.compare.extract_pdf import DocText
 from qtrequestory.officina.compare.filter_model import (
     CONTROL_STATES,
@@ -180,6 +184,10 @@ __all__ = [
     "FILTER_TITLES", "FILTER_DEFAULTS", "INFORMATIONAL_IDS", "is_filter_id", "filter_gruppo",
     "advanced_filter_id", "advanced_rule_name",
     "ControlState", "ControlStatus", "CONTROL_STATES", "CONTROL_UNAVAILABLE_NOTE", "ControlRecord",
+    # Genera (officina.batch: the CSV list, the request, its outcomes and events; the pure target builders)
+    "Elenco", "ElencoError", "NO_PACKAGE", "AUTOMATIC_HEADERS", "Target", "BatchRequest", "Outcome",
+    "BatchReport", "BatchStarted", "BatchItemDone",
+    "parse_keys", "targets_from_keys", "targets_from_packages", "targets_from_fdis",
     # archive import (core/archive.py, core/importer.py)
     "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
@@ -804,6 +812,47 @@ class OfficinaApi(Protocol):
         none. Never raises; never an error."""
         ...
 
+    # -- Genera: documents from template keys, a CSV list or FDIs ----------
+    # (spec "Genera"; the engine is ``officina.batch``, the real service
+    # ``officina.service_batch``). Nothing here touches the Officina folder.
+
+    def batch_load_elenco(self, path: Path) -> Elenco:
+        """The CSV list of template keys and packages at ``path`` (UTF-8 or
+        cp1252, ``;``). ``ElencoError`` (a ``ValueError``, Italian) for a
+        missing, empty or malformed file — any file that is not a CSV list
+        (binary, an unterminated quote, a key cell with a line break or a
+        control character). Quick: a few thousand rows."""
+        ...
+
+    def batch_default_headers(self) -> list[tuple[str, str]]:
+        """The rows the header table starts from: ``AUTOMATIC_HEADERS`` with
+        ``""`` (computed per call), then the configured profile (a profile
+        entry named like an automatic one replaces it in place)."""
+        ...
+
+    def batch_count(self, request: BatchRequest, *, cancel=None) -> int:
+        """How many calls ``batch_run(request)`` would send now (blocking: a
+        worker, job ``GENERA_JOB``): the targets looked up in the logs, minus
+        the calls not found and the keys known to answer HTML. Reads only —
+        no folder, nothing sent. The same ``ValueError`` refusals as
+        ``batch_run`` (bar the run folder); ``Cancelled`` when cancelled."""
+        ...
+
+    def batch_run(self, request: BatchRequest, *, sink=None, cancel=None) -> BatchReport:
+        """Run a Genera batch (blocking: a worker, job ``GENERA_JOB``).
+        ``ValueError`` with an Italian reason — nothing sent — for no index,
+        no enabled generator (never PROD), a destination that is not
+        absolute, a header table that cannot be built, an index that cannot
+        be searched or a run folder that cannot be created. Otherwise
+        ``sink`` gets ``BatchStarted`` then one ``BatchItemDone`` per call;
+        each row checks the generator in the settings of the moment it is
+        sent (disabled meanwhile: ``failed``, not sent); ``cancel`` stops the
+        rows not yet sent (``cancelled``), the report still comes back and
+        ``esito.csv`` is still written — unless the run was stopped before
+        any call: then nothing is created and ``run_dir`` does not exist.
+        Never raises ``Cancelled``."""
+        ...
+
 
 # ----------------------------------------------------------- service bundle ---
 
@@ -865,7 +914,7 @@ class CoreServices:
         def officina() -> OfficinaApi:
             from qtrequestory.officina.service import OfficinaService
 
-            return OfficinaService(config.current, index=index)
+            return OfficinaService(config.current, index=index, html_memory=resolved.genera_html_file)
 
         return cls(
             config=config,

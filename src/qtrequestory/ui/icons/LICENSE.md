@@ -3,7 +3,8 @@
 ## Fluent UI System Icons
 
 `search.svg`, `arrow-sync.svg`, `settings.svg`, `info.svg`,
-`document-arrow-right.svg`, `copy.svg`, `save.svg`, `folder-open.svg` and `delete.svg` are the
+`document-arrow-right.svg`, `copy.svg`, `save.svg`, `folder-open.svg`, `delete.svg` and
+`document-multiple.svg` (the Genera tab) are the
 20 px *regular* variants of the corresponding icons from
 [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons)
 (`assets/<Name>/SVG/ic_fluent_<name>_20_regular.svg`), unmodified. They are

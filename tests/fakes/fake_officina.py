@@ -21,11 +21,15 @@ from typing import TYPE_CHECKING
 
 from qtrequestory.core.config import Config, GeneratorEndpoint
 from qtrequestory.ui.contracts import (
+    AppPaths,
+    BatchReport,
+    BatchRequest,
     Case,
     CaseComparison,
     CompareError,
     Comparison,
     Diff,
+    Elenco,
     Initiative,
     Judged,
     Mark,
@@ -210,8 +214,10 @@ class FakeOfficinaApi(FakeFiltersMixin):
         #: The ids ``delete_initiative`` really deleted, in order.
         self.deleted: list[str] = []
         self._init_filters()
+        # Genera's HTML memory where build_fake_core puts the app dir: under the tmp root, never %LOCALAPPDATA%
         self._service = OfficinaService(config_source, index=index, opener=self._open,
-                                        html_to_pdf=self._html_to_pdf, control_runner=None)  # scripted state
+                                        html_to_pdf=self._html_to_pdf, control_runner=None,  # scripted state
+                                        html_memory=AppPaths(self._root / "apphome").genera_html_file)
 
     # -- knobs -------------------------------------------------------------
 
@@ -370,6 +376,20 @@ class FakeOfficinaApi(FakeFiltersMixin):
 
     def last_delivery_destination(self, ini: Initiative) -> Path | None:
         return self._service.last_delivery_destination(ini)
+
+    # -- Genera: the real service, its calls answered by the fake generator ---
+
+    def batch_load_elenco(self, path: Path) -> Elenco:
+        return self._service.batch_load_elenco(path)
+
+    def batch_default_headers(self) -> list[tuple[str, str]]:
+        return self._service.batch_default_headers()
+
+    def batch_count(self, request: BatchRequest, *, cancel=None) -> int:
+        return self._service.batch_count(request, cancel=cancel)
+
+    def batch_run(self, request: BatchRequest, *, sink=None, cancel=None) -> BatchReport:
+        return self._service.batch_run(request, sink=sink, cancel=cancel)
 
     # -- phase 2: scripted case comparison, real review state ----------------
 

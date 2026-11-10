@@ -107,6 +107,36 @@ def test_events_from_the_fn_arrive_as_progress_on_the_gui_thread(qtbot, runner):
     assert thread == MAIN_THREAD
 
 
+def test_batch_events_reach_progress_signal(qtbot, runner):
+    """Genera's events pass the sink and the relay unchanged and in order
+    (none is throttled like ``FileProgress``), on the GUI thread."""
+    from pathlib import Path
+
+    from qtrequestory.ui.contracts import BatchItemDone, BatchStarted, Outcome
+    from qtrequestory.ui.workers import GENERA_JOB
+
+    outcomes = [Outcome(key=f"MOD_TEST_{n}", folders=("_senza_pacchetto",), fdi=None, status="ok",
+                        doc_type="pdf", files=(Path(f"MOD_TEST_{n}.pdf"),), duration_ms=1,
+                        http_status=200, reason="") for n in range(3)]
+    sent = [BatchStarted(3), *(BatchItemDone(o, i + 1, 3) for i, o in enumerate(outcomes))]
+    gate = threading.Event()
+    seen: list[tuple[object, int]] = []
+
+    def work(*, sink, cancel):
+        gate.wait(3)
+        for ev in sent:
+            sink(ev)
+        return None
+
+    job = runner.submit(GENERA_JOB, work)
+    job.signals.progress.connect(lambda ev: seen.append((ev, threading.get_ident())))
+    gate.set()
+    qtbot.waitUntil(lambda: len(seen) == len(sent), timeout=3000)
+    assert [ev for ev, _ in seen] == sent
+    assert all(isinstance(ev, (BatchStarted, BatchItemDone)) for ev, _ in seen)
+    assert {thread for _, thread in seen} == {MAIN_THREAD}
+
+
 def test_log_messages_are_also_offered_as_plain_text(qtbot, runner):
     lines: list[str] = []
 
@@ -429,9 +459,11 @@ def test_every_name_a_page_submits_is_declared():
     from qtrequestory.ui.pages.sync_page import REACHABILITY_JOB as SYNC_REACHABILITY_JOB
     from qtrequestory.ui.wizard_pages import REACHABILITY_JOB
     from qtrequestory.ui.pages.officina_jobs import COMPARE_JOB, GENERATE_JOBS
-    from qtrequestory.ui.workers import JOB_NAMES, SCHEDULER_JOB
+    from qtrequestory.ui.workers import GENERA_JOB, JOB_NAMES, SCHEDULER_JOB
 
     declared = set(JOB_NAMES)
+    assert GENERA_JOB == "genera" and GENERA_JOB in declared
+    assert GENERA_JOB in JobRunner.EXCLUSIVE, "a Genera batch is never superseded"
     assert {*GENERATE_JOBS, COMPARE_JOB} <= declared
     assert "officina-summary" not in declared, "the board reads riepilogo, it compares nothing (U5)"
     assert GENERATE_JOBS[0] == "officina-generate" and COMPARE_JOB == "officina-compare"

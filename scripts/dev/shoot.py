@@ -2312,6 +2312,78 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-eliminazione-gruppo", officina_deletions(3)),
         ("officina-eliminazione-elenco", officina_deletions(3, expanded=True)),
     ]
+    # -- Genera: first look, a loaded list, a finished run (synthetic data only) --
+    from tests.conftest import KEY_CTE, KEY_EMAIL, KEY_SINT
+    from tests.fakes.fake_core import canned_pdf
+    from tests.officina._server import HTML
+
+    genera_dest = tmp / "Documenti" / "Genera"
+    genera_dest.mkdir(parents=True, exist_ok=True)
+    genera_long = "MOD_TEST_UNA_TEMPLATE_KEY_MOLTO_LUNGA_PER_VEDERE_COME_SI_ELIDE_AL_CENTRO_GAS"
+    genera_csv = tmp / "Elenco_template_key.csv"
+    genera_packages = (["111_LUCE_FIX"] * 7 + ["222_GAS_IND"] * 5 + ["333_DUAL"] * 9
+                       + ["444_EMAIL"] * 3 + ["555_SDS"] * 4 + ["666_SCHEDA_SINT"] * 6)
+    genera_lines = ["Template key;Nome Template ICM;Nome iniziativa;codice iniziativa ;package name"]
+    genera_lines += [f"MOD_TEST_{i:02d};;;;{pkg}" for i, pkg in enumerate(genera_packages)]
+    genera_lines.append(";;;;888_VUOTO")
+    genera_csv.write_bytes(("\r\n".join(genera_lines) + "\r\n").encode("cp1252"))
+
+    def genera_reset():
+        window.show_page("genera")
+        page = window.page("genera")
+        page.presenter.set_mode("keys")
+        page.source.keys_edit.setPlainText("")
+        page.source.fdi_edit.setPlainText("")
+        page.headers_toggle.setChecked(False)
+        page._reset_headers()
+        page.results.clear_for_run()
+        page.results.only_failed.setChecked(False)
+        page.presenter.load_elenco(tmp / "nessun-elenco.csv", quiet=True)  # no list loaded
+        page.source_combo.setCurrentText("coll")  # the scene mirror's calls are the coll ones
+        services.officina.set_responder(None)
+        pump(200)
+        page._scroll.verticalScrollBar().setValue(0)
+        return page
+
+    def genera_empty() -> None:
+        page = genera_reset()
+        page.presenter.set_destination(None)
+        page.initial_focus()
+
+    def genera_list() -> None:
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+        page.presenter.set_mode("elenco")
+        page.presenter.load_elenco(genera_csv)
+        page.presenter.set_packages_checked(["111_LUCE_FIX", "333_DUAL"], True)
+
+    def genera_outcomes() -> None:
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+
+        def route(request):
+            if request.template_key == KEY_EMAIL:
+                return 200, HTML
+            if request.template_key == KEY_CTE:
+                return 500, b"guasto"
+            return 200, canned_pdf()
+
+        services.officina.set_responder(route)
+        page.source.keys_edit.setPlainText(
+            f"{KEY_SINT} {KEY_EMAIL} {KEY_CTE} {genera_long} MOD_TEST_ASSENTE")
+        page.generate()
+        for _ in range(100):
+            pump(100)
+            if not page.is_running():
+                break
+        pump(300)
+        services.officina.set_responder(None)
+
+    scenes += [
+        ("genera-vuota", genera_empty),
+        ("genera-elenco", genera_list),
+        ("genera-esiti", genera_outcomes),
+    ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]
     if args.only:

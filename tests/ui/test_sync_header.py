@@ -166,13 +166,13 @@ def window(qtbot, fake_core, runner):
 
 
 def test_the_sync_tab_is_gone_but_the_page_is_not():
-    assert [p.key for p in PAGES if p.placement == "tab"] == ["search", "officina"]
+    assert [p.key for p in PAGES if p.placement == "tab"] == ["search", "officina", "genera"]
     assert next(p for p in PAGES if p.key == "sync").placement == "hidden"
 
 
-def test_the_bar_has_two_tabs_and_the_chip_before_the_icons(window):
+def test_the_bar_has_three_tabs_and_the_chip_before_the_icons(window):
     bar = window.app_bar
-    assert list(bar.tabs) == ["search", "officina"]
+    assert list(bar.tabs) == ["search", "officina", "genera"]
     assert "sync" in window.pages()
     chip, settings = bar.status_chip, bar.icon_buttons["settings"]
     assert chip.isVisible()

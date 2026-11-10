@@ -213,6 +213,8 @@ QMenu::separator {{ height: 1px; background: {border}; margin: 4px 8px; }}
 
 QStatusBar {{ background: {surface}; color: {muted}; border-top: 1px solid {border}; }}
 QStatusBar::item {{ border: none; }}
+/* Genera: the action bar pinned under the scrolling form (options, button, progress) */
+QFrame#generaActionBar {{ background: {surface}; border: none; border-top: 1px solid {border}; }}
 QSplitter::handle {{ background: {bg}; }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}

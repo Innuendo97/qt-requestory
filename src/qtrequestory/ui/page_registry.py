@@ -59,7 +59,8 @@ log = logging.getLogger(__name__)
 
 #: Page key -> its navigation shortcut; also shown in the tab/icon tooltip.
 #: Ctrl+2 (the old Sincronizzazione tab) opens the header's sync panel instead.
-PAGE_SHORTCUTS = {"search": "Ctrl+1", "officina": "Ctrl+3", "settings": "Ctrl+,", "about": "F1"}
+PAGE_SHORTCUTS = {"search": "Ctrl+1", "officina": "Ctrl+3", "genera": "Ctrl+4", "settings": "Ctrl+,",
+                  "about": "F1"}
 
 
 class PageSpec(NamedTuple):
@@ -107,6 +108,8 @@ PAGES: list[PageSpec] = [
     PageSpec("sync", strings.NAV_SYNC, "arrow-sync", page_factory("sync_page", "SyncPage"), "hidden"),
     PageSpec("officina", strings.OFFICINA_NAV, "wrench",
              page_factory("officina_page", "OfficinaPage"), "tab"),
+    PageSpec("genera", strings.GENERA_NAV, "document-multiple",
+             page_factory("genera_page", "GeneraPage"), "tab"),
     PageSpec("settings", strings.NAV_SETTINGS, "settings",
              page_factory("settings_page", "SettingsPage"), "icon"),
     PageSpec("about", strings.NAV_ABOUT, "info", page_factory("about_page", "AboutPage"), "icon"),

@@ -44,14 +44,14 @@ def window(qtbot, fake_core, runner):
 
 # --------------------------------------------------------------- the shell ---
 
-def test_the_registry_lists_two_tabs_the_hidden_sync_page_then_two_icon_buttons():
-    assert [p.key for p in PAGES] == ["search", "sync", "officina", "settings", "about"]
+def test_the_registry_lists_three_tabs_the_hidden_sync_page_then_two_icon_buttons():
+    assert [p.key for p in PAGES] == ["search", "sync", "officina", "genera", "settings", "about"]
     assert [p.label for p in PAGES] == [
-        strings.NAV_SEARCH, strings.NAV_SYNC, strings.OFFICINA_NAV, strings.NAV_SETTINGS,
-        strings.NAV_ABOUT,
+        strings.NAV_SEARCH, strings.NAV_SYNC, strings.OFFICINA_NAV, strings.GENERA_NAV,
+        strings.NAV_SETTINGS, strings.NAV_ABOUT,
     ]
-    assert [p.placement for p in PAGES] == ["tab", "hidden", "tab", "icon", "icon"]
-    assert [p.icon_name for p in PAGES][2:] == ["wrench", "settings", "info"]
+    assert [p.placement for p in PAGES] == ["tab", "hidden", "tab", "tab", "icon", "icon"]
+    assert [p.icon_name for p in PAGES][2:] == ["wrench", "document-multiple", "settings", "info"]
     assert all(isinstance(p.icon_name, str) and p.icon_name for p in PAGES)
     assert all(callable(p.factory) for p in PAGES)
     assert tuple(PAGES[0]) == (
@@ -62,13 +62,16 @@ def test_the_registry_lists_two_tabs_the_hidden_sync_page_then_two_icon_buttons(
 def test_the_window_opens_on_ricerca_with_every_page_loaded(window):
     assert window.windowTitle() == strings.WINDOW_TITLE
     assert window.current_page_key() == "search"
-    assert sorted(window.pages()) == ["about", "officina", "search", "settings", "sync"]
+    assert sorted(window.pages()) == ["about", "genera", "officina", "search", "settings", "sync"]
+    assert type(window.page("genera")).__name__ == "GeneraPage", "built, not a placeholder"
 
 
-def test_the_app_bar_has_two_tabs_and_two_icon_buttons_in_order(window):
+def test_the_app_bar_has_three_tabs_and_two_icon_buttons_in_order(window):
     bar = window.app_bar
-    assert list(bar.tabs) == ["search", "officina"]
-    assert [b.text() for b in bar.tabs.values()] == [strings.NAV_SEARCH, strings.OFFICINA_NAV]
+    assert list(bar.tabs) == ["search", "officina", "genera"]
+    assert [b.text() for b in bar.tabs.values()] == [strings.NAV_SEARCH, strings.OFFICINA_NAV,
+                                                     strings.GENERA_NAV]
+    assert bar.tabs["genera"].toolTip() == "Genera (Ctrl+4)"
     assert list(bar.icon_buttons) == ["settings", "about"]
     assert bar.icon_buttons["settings"].toolTip() == "Impostazioni (Ctrl+,)"
     assert bar.icon_buttons["about"].toolTip() == "Info (F1)"
@@ -153,7 +156,7 @@ def test_the_window_starts_with_the_focus_in_the_fdi_field(qtbot, window):
 
 def test_tab_walks_the_app_bar_in_order_then_enters_the_page(qtbot, window):
     bar = window.app_bar
-    expected = [bar.tabs["search"], bar.tabs["officina"], bar.status_chip,
+    expected = [bar.tabs["search"], bar.tabs["officina"], bar.tabs["genera"], bar.status_chip,
                 bar.icon_buttons["settings"], bar.icon_buttons["about"]]
     walked = [expected[0]]
     widget = expected[0]
@@ -202,6 +205,7 @@ def test_show_page_ignores_an_unknown_key(window):
     [
         (Qt.Key.Key_1, Qt.KeyboardModifier.ControlModifier, "search"),
         (Qt.Key.Key_3, Qt.KeyboardModifier.ControlModifier, "officina"),
+        (Qt.Key.Key_4, Qt.KeyboardModifier.ControlModifier, "genera"),
         (Qt.Key.Key_Comma, Qt.KeyboardModifier.ControlModifier, "settings"),
         (Qt.Key.Key_F1, Qt.KeyboardModifier.NoModifier, "about"),
     ],

@@ -91,6 +91,15 @@ src/qtrequestory/
 │   ├── control_proof.py   phase 2.5 (F18): proven_words, map_executed — what a control run proves
 │   ├── remove.py          phase 2.5 (D6): delete_initiative_folder, the one whole-tree deleter
 │   ├── delivery.py        build_plan/plan_delivery, deliver/run_delivery, safe_component
+│   ├── service_batch.py   release 1.5.0: BatchMixin — batch_load_elenco/batch_default_headers/batch_run (Genera)
+│   ├── batch/             release 1.5.0: Genera's engine (§Genera: bulk generation)
+│   │   ├── model.py       Target, BatchRequest, Call, Outcome, BatchReport, BatchStarted/BatchItemDone
+│   │   ├── elenco.py      the Quadient CSV list: load_elenco, Elenco, NO_PACKAGE
+│   │   ├── headers.py     AUTOMATIC, default_rows, build_headers
+│   │   ├── resolve.py     parse_keys, targets_from_*, resolve (targets -> calls)
+│   │   ├── memory.py      HtmlMemory: the keys known to answer HTML
+│   │   ├── output.py      Writer, run_dir_name, write_esito, zip_folders
+│   │   └── runner.py      run_batch (3 workers)
 │   ├── pdf/               THE ONLY pypdfium2 importer (a package since phase 2.5, ruling F9); public API in
 │   │                      __init__ (read_chars, page_sizes, page_count, render_page, TextSearch); private:
 │   │   ├── _ink.py        phase 2.5 (§3.1): the ink test — render a suspect object, blank it in memory,
@@ -157,7 +166,9 @@ Dependency direction: `ui -> jobs/search/config/scheduler/extract -> core intern
 
 - App dir: `%LOCALAPPDATA%\qtRequestory\` (override with env `QTREQUESTORY_HOME`):
   `config.json`, `logs\app.log`, `logs\sync.log` (RotatingFileHandler 1 MB × 3).
-  `--config PATH` moves only `config.json`.
+  Release 1.5.0 adds `genera-html.json` (the template keys Genera knows answer HTML,
+  `AppPaths.genera_html_file`). `--config PATH` moves `config.json` and, since it is
+  derived from it, `genera-html.json` too.
 - UI preferences (window geometry, last environment, theme mode, search options, recent
   searches) are not files: they live in `QSettings` (`HKCU\Software\qtRequestory\qtRequestory`),
   opened only through `ui/actions.user_settings()`.
@@ -1703,6 +1714,156 @@ entry but `iniziativa.json` first (read-only files made writable; a link inside 
 never followed), `iniziativa.json` LAST, then the empty folder. A failure part-way renames
 the copy back — it still holds `iniziativa.json`, so the initiative reappears in the list
 (with whatever survived) and can be retried once the file is free.
+
+### Genera: bulk generation (`officina/batch/`, `officina/service_batch.py`; release 1.5.0)
+
+The engine behind the Genera tab (README §Genera, DESIGN-ui §Genera tab): documents from
+template keys, the Quadient list or whole FDIs, straight to a folder, with no initiative and
+no comparison. It is a sibling of the Officina's one-case generation, not a part of it: it
+reuses `generator.send`/`sniff`, `delivery.safe_component`, `fsutil.replace_with_retry` and
+`links.mask_text`, and adds nothing to the case model. Qt-free, stdlib + core only.
+
+**Package layout** (`officina/batch/`, one concern per module, each well under 400 lines):
+
+| Module | Concern |
+|---|---|
+| `model.py` | frozen dataclasses: `Target`, `BatchRequest`, `Call`, `Outcome`, `BatchReport`, and the events `BatchStarted`/`BatchItemDone` (core `Event` subclasses, timestamp out of `==`) |
+| `elenco.py` | the CSV list: `load_elenco` → `Elenco` (packages, keys, dropped rows), `NO_PACKAGE = "_senza_pacchetto"`, `ElencoError` |
+| `headers.py` | `AUTOMATIC`, `default_rows`, `build_headers` |
+| `resolve.py` | `parse_keys`, the `targets_from_*` builders, `resolve` (targets → calls) |
+| `memory.py` | `HtmlMemory`, the keys known to answer HTML |
+| `output.py` | `Writer` (`reserve`/`write_reserved`), `run_dir_name`, `make_run_dir`, `write_esito`, `zip_folders` |
+| `runner.py` | `run_batch`, `count_calls` |
+
+`officina/service_batch.py` is `BatchMixin` on `OfficinaService`: `batch_load_elenco`,
+`batch_default_headers`, `batch_count`, `batch_run`, mirrored on `ui/contracts.OfficinaApi`
+(the UI never imports `officina`). Configuration is read on every call, like the rest of the
+service, so a change in Impostazioni is seen at once — and `batch_run` hands the engine the
+service's settings *reader*, not a snapshot, so it is seen during a run too (step 4 below).
+
+`batch_count(request, cancel=)` is the number of calls `batch_run` would send: the same
+checks and the same lookup, nothing written, nothing sent (a `Call` with a hit whose key is
+not skipped as known HTML). The UI needs it to confirm a run of FDIs, whose size is known only
+from the logs; a stop during it raises `Cancelled`.
+
+**The list file** (`elenco.py`). A malformed file is an Italian `ElencoError`, never a raw
+`csv.Error` or `UnicodeDecodeError`: a NUL byte (an `.xlsx`, a binary file) or a control
+character in the key or package cell means "non sembra un elenco CSV"; an unclosed quote
+(`csv.Error`, or a cell that swallowed a line break together with a `;`) says so. A line break
+inside a quoted *description* cell is legal CSV and still accepted.
+
+**What the request means.** A `Target` is a template key (with the folders it goes to) or a
+whole FDI. A key resolves to the newest call of that key in the logs of `source_env`
+(exact, case-insensitive; the call keeps the logs' spelling, which becomes the
+`template_key` header). An FDI resolves to its newest call **per template key**, only for
+that exact FDI (a test pratica `<fdi>-t15` shares the prefix but is another FDI), and its
+folder is the FDI. An FDI target may be narrowed to some of its keys (`Target.keys`, set by
+the UI's retry): then it gives exactly one call per requested key, from that FDI's own calls,
+in the given order, and a key the FDI has no call for is "nessuna chiamata". Nothing found is
+a `Call` with no hit, reported "nessuna chiamata nei
+log": there is **no fallback** to another environment, because silently generating from a
+different environment's payload would be wrong in a way nobody would notice. A key in several
+packages is ONE call written into several folders (one request, not N). `source_env` is
+separate from the generator so that a coll payload can be sent to svil.
+
+**Order of `run_batch`** (everything that can refuse does so before anything is created or
+sent, always as an Italian `ValueError`):
+
+1. the generator must be enabled and usable (`service._enabled_generator`; never PROD), the
+   destination absolute, and a trial `build_headers` must succeed;
+2. `resolve`, one target at a time (the cancel token is checked between targets); an index
+   that cannot be searched is refused like step 1. Cancelled while resolving: every
+   unresolved target is reported `cancelled` and **nothing is created** — no run folder, no
+   `esito.csv`; the report carries the folder the run would have had;
+3. the run folder `<destination>\<generator>_<AAAAMMGG-HHMMSS>` is created
+   (`output.make_run_dir`; `_2`… when a run of the same second exists: a run never writes
+   into another's folder). A folder that cannot be created (a drive gone, a file in the way,
+   a path too long) **is** a refusal: `ValueError`, before any call — sending hundreds of
+   calls only to throw every document away would be worse than saying so. Then every call's
+   file names are reserved, in call order (see File naming), and `BatchStarted(total)`;
+4. the calls run on `WORKERS = 3` threads. Per row, in order: cancelled? → no hit? →
+   "HTML already known" and HTML not wanted? (skipped without calling) → **the generator
+   again**: the settings are read anew, and a generator disabled, removed or made unusable in
+   Impostazioni since the start fails the row ("…è stato disattivato o modificato in
+   Impostazioni durante la generazione: chiamata non inviata") without sending; otherwise its
+   *current* URL, timeout and Postman-Token are used → read the payload (not readable / not a
+   JSON object: `failed`) → `build_headers` → `send` → record the type in the memory → HTML
+   while not wanted (`html_skipped`) → `Writer.write_reserved` (`OSError`: `failed`). Each
+   row ends as exactly one `Outcome`; nothing a row does escapes it;
+5. `esito.csv` always once the folder exists (also after a stop); then the zips, only if asked and not cancelled.
+   A failure there is logged and never loses the report. `run_batch` never raises
+   `Cancelled`: a stop is `BatchReport.cancelled`.
+
+**Threading and events.** The three workers share only thread-safe objects: the `Writer`
+(names reserved under a lock), the `HtmlMemory` (a lock), the injected clock and uuid
+factory (wrapped in a lock: a test's `next(generator)` is not thread-safe) and the index,
+whose reads are serialised (`IndexService` may rescan a stale day while reading a body).
+Events are emitted **from the calling thread only**, as futures complete, so the `done`
+counter needs no lock and a sink never runs on a worker; `done` counts in completion order
+while `BatchReport.outcomes` keeps the order of the calls. A sink that raises is caught: a
+closed window must not break a run.
+
+**Privacy rule.** Payloads, headers and answer bodies never reach a log, an event, a
+reason or `esito.csv`. Reasons are Italian text written by the engine or taken from
+`SendResult.reason` (already masked) and in any case pass through `mask_text`; an
+unexpected exception is reported by its **type only**, since its message could quote a
+payload. The reason a row failed is the only place a failure is described.
+
+**Headers.** `default_rows` is the automatic names at an empty value followed by the
+Impostazioni profile (the profile wins over an automatic row of the same name, in place).
+`build_headers` takes the table as the *whole* set sent: no layers and no per-case toggle
+(unlike `generator.resolve_headers`). An automatic name with an empty value is computed
+(`template_key` = the call's key, `current_timestamp`, a **new** `correlation_id` per call,
+also for every call of one FDI, `Postman-Token`); any other name with an empty value is sent
+empty; a repeated name (case-insensitive) keeps the last row; a deleted row is not sent.
+The table is real data of the request, so the *trial* build in step 1 catches a malformed
+row before any call goes out.
+
+**HTML memory** (`memory.py`, `AppPaths.genera_html_file` = `genera-html.json` next to
+`config.json`, so it follows `--config`). The type of a document is known only from the
+answer, and an email template answers HTML on every call; to avoid re-calling them every
+time, a key that answered HTML is remembered while "Salva anche gli HTML" is off and is
+skipped next time. With the option on every key is called and the memory follows the
+answers (HTML adds, PDF forgets). The file is `{"html_keys": [...]}` written atomically
+and is a cache: missing or corrupt means empty, a failed save is logged and the change kept
+for the session. A service built without a path (tests) has a memory that is never written.
+It lives next to the configuration, not in the output folder, because it is about the
+template keys, not about one run.
+
+**Outcome statuses** (`model.Status`): `ok`, `html_skipped`, `no_call`, `failed`,
+`cancelled`; in `esito.csv`: `ok`, `saltato: HTML`, `nessuna chiamata nei log`,
+`non riuscito`, `annullato` (`output.ESITO_LABELS`). The UI has its own, shorter words
+(DESIGN-ui §Genera tab). `failed` carries the reason and, when a call was made, HTTP status
+and duration. "Retry" is a UI concern: it re-submits `failed`, `no_call` and `cancelled`;
+a row that came from an FDI is retried as that FDI narrowed to its failed keys
+(`Target.keys`), so it takes the same FDI's call again and lands in the FDI's folder.
+
+**File naming** (`output.py`). Layout:
+`<run>\<folder>\<TK>.<ext>`, `<run>\<folder>.zip`, `<run>\esito.csv`, with `<folder>` = the
+package, the FDI or `_senza_pacchetto`. Every name is user data and becomes exactly one
+component through `safe_component`. Two names that clean up to the same component in the
+same folder (`A:B`/`A?B`, or `MOD_A`/`mod_a` on a case-insensitive disk) never overwrite
+each other: the later one gets `_2`, `_3`…, comparing case-insensitively and also against
+what is already on disk. The names are **reserved in call order before the first call**
+(`Writer.reserve`, under a lock), so the same request always gives the same names whatever
+order the three workers finish in. A reservation is a stem valid for both `.pdf` and `.html`
+(the type is known only from the answer), so `K.pdf` next to `K_2.html` is possible. The
+price: a row that fails keeps its stem, so a `_2` can stand without its base name (only when
+two keys clean up to the same name). A key in several folders is written to the first and
+copied from it to the others; if one write fails the files that call already wrote are
+removed, so a failed row leaves nothing behind. A package called `esito.csv` becomes the
+folder `_esito.csv`, and a zip whose name is taken by a folder (a package `X.zip`) gets
+`_2`. Every file goes
+through a hidden `.<name>.<random>.part` in its final folder and then `replace_with_retry`:
+whole or absent, `.part` removed on every path. `esito.csv` is `;`-separated, UTF-8 with
+BOM (Excel), columns `template_key;cartella;fdi;esito;tipo;file;durata_ms;stato_http;motivo`,
+`file` relative to the run folder, several folders/files joined by ` | `. `zip_folders` writes
+`<folder>.zip` beside each non-empty folder (the folder stays), skipping symlinks.
+
+**Why a separate engine and not N Officina cases.** A case carries a target, an AS-IS and
+versions on disk; a bulk run of hundreds of calls would create hundreds of case folders for
+documents nobody compares. The shared parts (`send`, `sniff`, `safe_component`) are the
+risky ones and stay single-sourced.
 
 ## Packaging (`qtRequestory.spec`, `scripts/build.ps1`)
 

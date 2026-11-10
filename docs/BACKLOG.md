@@ -191,6 +191,35 @@ si confronta dal DOM (TO-BE).
 Chiuso dalla 1.3.1: il payload viene inviato esattamente com'è, link firmati compresi —
 svil e coll contengono solo dati di prova; le firme restano mascherate nei log e nei messaggi.
 
+## Genera (dalla 1.5.0)
+
+Descritta in README §Genera, DESIGN-core §Genera e DESIGN-ui §Genera tab. Limiti noti:
+
+- **Nessun retry automatico.** Una riga non riuscita resta tale finché l'utente non preme
+  *Riprova i non riusciti* (voluto: un errore del generatore non si ripete da solo contro
+  svil o coll).
+- **Gli header modificati non si salvano**: vivono nel presenter e si perdono alla chiusura
+  del programma (voluto, vedi DESIGN-ui); chi ha sempre le stesse modifiche deve metterle nel
+  profilo di Impostazioni › Officina.
+- **Una chiamata già partita non si interrompe**: *Interrompi* lascia finire le (al massimo
+  tre) in corso, fino al timeout dell'Officina (120 s di serie); le altre diventano
+  «annullato».
+- **Gli FDI vanno scritti per intero** e il campo non controlla la lunghezza né il formato:
+  un FDI accorciato non trova nulla («nessuna chiamata nei log») invece di avvisare.
+- **`officina/service.py` è a 407 righe**, appena sopra la soglia delle ~400 (i moduli di
+  Genera sono stati divisi e stanno sotto: `runner.py` 389, `genera_presenter.py` 356).
+- **Nomi con buchi**: i nomi dei file si riservano in ordine prima delle chiamate, quindi una
+  riga non riuscita tiene il suo nome e può restare un `_2` senza il nome base (solo quando
+  due template key diventano uguali una volta ripulite). Lo stesso nome vale per pdf e html:
+  `K.pdf` accanto a `K_2.html` è possibile.
+- **Il conteggio degli FDI legge i log due volte**: la conferma sopra le 20 chiamate cerca le
+  chiamate, poi la generazione le cerca di nuovo (nel frattempo una sincronizzazione può
+  cambiarne il numero di poco).
+- **Un elenco con una riga di titolo prima delle intestazioni** non viene riconosciuto
+  (le intestazioni devono stare nella prima riga).
+- **Con la finestra bassa gli esiti si leggono scorrendo**: il pulsante resta sempre in vista
+  in basso, ma la tabella non ha un'area fissa sua.
+
 ## Codici di uscita e CLI
 
 - `EXIT_CONFIG_ERROR = 2` coincide con il 2 "nessun ambiente raggiungibile" di `--sync`:

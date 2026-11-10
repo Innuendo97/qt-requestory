@@ -36,6 +36,12 @@ class AppPaths:
         return self.config_override if self.config_override is not None else self.app_dir / "config.json"
 
     @property
+    def genera_html_file(self) -> Path:
+        """Genera's memory of the template keys that answer HTML, next to
+        ``config.json`` (it follows ``--config`` like the configuration)."""
+        return self.config_file.with_name("genera-html.json")
+
+    @property
     def logs_dir(self) -> Path:
         return self.app_dir / "logs"
 

@@ -55,6 +55,7 @@ JOB_CHECK_ENVS = "Verifica raggiungibilità"
 JOB_ABOUT_LOG = "Lettura del log"
 JOB_WIZARD_REACHABILITY = "Verifica raggiungibilità"
 JOB_WIZARD_TASK_STATUS = "Verifica sincronizzazione automatica"
+JOB_GENERA = "Generazione dei documenti"
 #: {message} = the error text of a failed background job.
 STATUS_ERROR = "Errore: {message}"
 
@@ -81,6 +82,8 @@ QUIT_DURING_JOB_TEXT = "{label} in corso{progress}. Interrompere e uscire?"
 QUIT_PROGRESS = "{done} di {total} file"
 QUIT_SYNC_INFO = "I file non ancora scaricati verranno ripresi al prossimo avvio."
 QUIT_INDEX_INFO = "I file non ancora indicizzati verranno ripresi al prossimo avvio."
+GENERA_QUIT_INFO = ("Le chiamate non ancora partite vengono annullate; i documenti già "
+                    "ricevuti restano nella cartella della generazione.")
 QUIT_STOP = "Interrompi ed esci"
 QUIT_CONTINUE = "Continua"
 

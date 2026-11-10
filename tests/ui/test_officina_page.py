@@ -605,7 +605,7 @@ def window(qtbot, fake_core, runner):
 def test_ctrl_3_opens_the_officina_tab(qtbot, window):
     assert "officina" in window.pages()
     assert isinstance(window.page("officina"), OfficinaPage)
-    assert list(window.app_bar.tabs) == ["search", "officina"]
+    assert list(window.app_bar.tabs) == ["search", "officina", "genera"]
     window.shortcuts["Ctrl+3"].activated.emit()
     assert window.current_page_key() == "officina"
     assert window.app_bar.tabs["officina"].toolTip() == "Officina (Ctrl+3)"

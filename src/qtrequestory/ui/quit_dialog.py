@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QMessageBox, QPushButton, QWidget
 
 from qtrequestory.ui import strings
 from qtrequestory.ui.workers import (
+    GENERA_JOB,
     OFFICINA_ADD_JOB,
     OFFICINA_COMPARE_JOB,
     OFFICINA_DELIVERY_JOB,
@@ -30,7 +31,8 @@ __all__ = ["JOB_LABELS", "QUIT_INFO", "build_quit_dialog", "confirm_quit_during_
 QUIT_INFO = {"sync": strings.QUIT_SYNC_INFO, "index": strings.QUIT_INDEX_INFO,
              "import": strings.QUIT_IMPORT_INFO, "recycle": strings.QUIT_RECYCLE_INFO,
              **{lane: strings.OFFICINA_QUIT_INFO for lane in OFFICINA_GENERATE_JOBS},
-             OFFICINA_DELIVERY_JOB: strings.OFFICINA_DELIVERY_QUIT_INFO}
+             OFFICINA_DELIVERY_JOB: strings.OFFICINA_DELIVERY_QUIT_INFO,
+             GENERA_JOB: strings.GENERA_QUIT_INFO}
 
 #: ``JobRunner`` name -> what to call that operation in front of the user. The
 #: names are identifiers chosen by the pages ("check-envs", "search_plan",
@@ -66,6 +68,7 @@ JOB_LABELS = {
     OFFICINA_DOM_JOB: strings.DOM_JOB,
     OFFICINA_PICK_JOB: strings.CHIAMATA_JOB_PICK,
     OFFICINA_ADD_JOB: strings.CHIAMATA_JOB,
+    GENERA_JOB: strings.JOB_GENERA,
 }
 
 

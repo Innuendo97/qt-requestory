@@ -27,6 +27,7 @@ others. One module per page means each task owns a file:
 ``eliminazioni.py``          Phase 2.5: undoable deletions (bar, "Elimina iniziativa", quit)
 ``officina_pannello.py``     Officina 2.5: the side panel (types, zones, legend, rail)
 ``officina_filtri.py``       Officina 2.5: the "Filtri del confronto" dialog
+``genera.py``                Genera: documents from template keys, the list or FDIs
 ===========================  ===================================================
 
 Usage — always through the package, never the submodule::
@@ -57,6 +58,7 @@ from .officina_configura import *  # noqa: F401,F403
 from .eliminazioni import *  # noqa: F401,F403
 from .officina_pannello import *  # noqa: F401,F403
 from .officina_filtri import *  # noqa: F401,F403
+from .genera import *  # noqa: F401,F403
 
 
 def lower_first(sentence: str) -> str:

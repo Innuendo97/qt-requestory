@@ -106,8 +106,9 @@ Gli indirizzi degli ambienti non sono dentro il programma. Puoi darglieli così:
 
 ## Uso normale
 
-In alto ci sono le pagine principali, **Ricerca** (`Ctrl+1`) e **Officina**
-(`Ctrl+3`, vedi [Officina](#officina)); a destra un **chip di
+In alto ci sono le pagine principali, **Ricerca** (`Ctrl+1`), **Officina**
+(`Ctrl+3`, vedi [Officina](#officina)) e **Genera** (`Ctrl+4`, vedi
+[Genera](#genera)); a destra un **chip di
 sincronizzazione** (l'icona ⟳ con lo stato di ogni ambiente), poi le icone di
 **Impostazioni** (`Ctrl+,`) e **Info** (`F1`). All'avvio compare per un
 istante una schermata di caricamento (logo, nome, versione e fase — «Apro
@@ -777,6 +778,174 @@ sono in `docs/BACKLOG.md`.
 
 ---
 
+## Genera
+
+**Genera** (`Ctrl+4`) produce i documenti **senza passare dall'Officina**: scegli
+cosa generare e dove, e premi **Genera**. Serve quando ti basta avere uno o più
+PDF da svil o da coll, in cartelle in ordine, senza creare iniziative e casi:
+per esempio tutti i moduli di un package dopo un aggiornamento, o i documenti
+di una pratica (un FDI). Non confronta nulla e non cambia i payload: ogni
+chiamata parte com'è nei log.
+
+### Cosa generare
+
+Tre sorgenti, a segmenti in alto (**Template key · Elenco · FDI**); ognuna
+ricorda il proprio testo finché non chiudi il programma:
+
+- **Template key** — una o più, separate da spazi, virgole, punto e virgola o
+  a capo; i doppioni (anche con maiuscole diverse) contano una volta. Sotto il
+  campo vedi quante sono e in che cartella finiranno.
+- **Elenco** — l'elenco CSV di Quadient (colonne «Template key» e «package
+  name», separate da `;`). Si sceglie con *Sfoglia…* e viene ricordato; accetta
+  UTF-8 o il vecchio cp1252. Compare la lista dei package, ognuno con la
+  spunta e il numero di template key; *Filtra i package* restringe la lista e
+  *Tutti* / *Nessuno* agiscono sui package mostrati. Si genera solo ciò che è
+  spuntato. Le righe senza template key sono scartate (e contate sotto la
+  lista); un package vuoto diventa `_senza_pacchetto`. Una template key che
+  sta in più package si genera **una volta** e il file viene scritto in ogni
+  cartella. Un file che non è un elenco CSV (per esempio un `.xlsx`, o un CSV
+  con una virgoletta non chiusa) viene rifiutato con un messaggio che lo dice.
+- **FDI** — uno per riga, **per intero** come nei log (non solo l'inizio). Di
+  ogni FDI si generano tutte le sue template key, ciascuna dalla sua chiamata
+  più recente.
+
+Se hai caricato un elenco, anche le template key scritte a mano finiscono nella
+cartella del loro package; se non sono nell'elenco, in `_senza_pacchetto`.
+
+### Dove
+
+- **Genera su** — il generatore di documenti (svil o coll), tra quelli attivi in
+  Impostazioni › Officina. Se non ce n'è nessuno la scheda lo dice e rimanda
+  alle Impostazioni.
+- **Chiamate da** — l'ambiente dei log da cui si prendono i payload. Di serie è
+  lo stesso del generatore e lo segue finché non lo cambi tu: così puoi anche
+  inviare a svil un payload preso da coll. Per ogni template key si usa la
+  chiamata **più recente** di quell'ambiente; se non c'è, la riga resta
+  «nessuna chiamata» e non si ripiega su un altro ambiente.
+- **Salva in** — la cartella di destinazione, con *Sfoglia…*.
+
+**PROD non si può chiamare**: Genera usa solo i generatori attivi in
+Impostazioni e ogni invio passa dallo stesso controllo dell'Officina, che
+rifiuta un generatore con `prod` nel nome o nell'URL.
+
+### Header
+
+La sezione **Header** è chiusa e riassume la situazione («Header · 7 inviati»,
+con «· 1 modificato» quando differisce dalle Impostazioni). Aprila per vedere la
+tabella completa di **ciò che viene inviato**:
+
+- parte dagli header automatici (`template_key`, `current_timestamp`,
+  `correlation_id`, `Postman-Token`) e dal profilo di Impostazioni › Officina;
+- **«automatico»** vuol dire che il valore è calcolato a ogni chiamata (la
+  template key della riga, l'ora, un nuovo `correlation_id` per ogni chiamata,
+  il token); se scrivi un valore, viene usato quello;
+- puoi cambiare un valore, *Aggiungere* una riga (per esempio `IMEL: active`) o
+  *Rimuovere* una riga: **una riga rimossa è un header che non viene inviato**,
+  anche se è uno di quelli automatici (senza `Postman-Token` la chiamata finisce
+  nei log nginx);
+- *Ripristina* torna al profilo delle Impostazioni;
+- le modifiche valgono **finché il programma resta aperto**: non vengono salvate
+  e alla prossima apertura si riparte dalle Impostazioni.
+
+Un header non valido blocca il pulsante e dice quale.
+
+### Opzioni
+
+- **Crea anche lo zip (uno per cartella)** — accanto a ogni cartella si crea
+  `<cartella>.zip`; la cartella resta. Se interrompi la generazione lo zip non
+  si crea.
+- **Salva anche gli HTML** — il tipo di documento si conosce solo dalla
+  risposta. Con l'opzione spenta, una template key che risponde con un HTML
+  (un'email) non viene salvata, risulta «saltato: HTML» e **viene ricordata**:
+  alle generazioni successive non viene più chiamata. Con l'opzione accesa si
+  chiamano tutte e la memoria si aggiorna (una key che ora risponde con un PDF
+  esce dalla memoria). La memoria è un file accanto a `config.json`
+  (`genera-html.json`).
+
+### Generare
+
+Il pulsante sta sempre in basso, fermo, anche quando la pagina scorre. Dice
+cosa farà («Genera 12 documenti») e, finché non si può premere, la riga sotto
+dice il primo motivo (manca una template key, la cartella…). `Ctrl+Invio` fa
+lo stesso; un doppio clic genera una volta sola. Le chiamate partono **tre
+alla volta**.
+
+- **Oltre 20 chiamate** il programma chiede conferma, con il numero e
+  l'ambiente. Con gli FDI prima cerca le chiamate nei log («Cerco le
+  chiamate…», si può interrompere) e poi chiede con il numero vero
+  («Partono 37 chiamate (2 FDI)…»).
+- **Interrompi** (il pulsante cambia nome durante il lavoro): le chiamate già
+  partite finiscono e vengono salvate, le altre diventano «annullato». Se
+  interrompi mentre cerca le chiamate non si crea nessuna cartella.
+- Se la generazione non può partire (generatore non valido, header non valido,
+  ricerca nei log impossibile, cartella di destinazione che non si può
+  creare…) lo dice in linea, senza creare nulla e senza inviare nulla.
+- Se durante la generazione disattivi o cambi il generatore in Impostazioni,
+  le chiamate non ancora partite non vengono inviate e risultano «non
+  riuscito» con il motivo; gli esiti restano sullo schermo.
+
+### Dove finiscono i file
+
+Ogni generazione crea una cartella sua dentro la destinazione:
+
+```
+<destinazione>\<ambiente>_<AAAAMMGG-HHMMSS>\
+    <cartella>\<TemplateKey>.pdf      (o .html)
+    <cartella>.zip                    (se hai chiesto lo zip)
+    esito.csv
+```
+
+`<cartella>` è il package name, l'FDI (modalità FDI) o `_senza_pacchetto`. I
+nomi sono ripuliti dai caratteri non ammessi da Windows; due nomi che diventano
+uguali nella stessa cartella non si sovrascrivono (il secondo diventa `_2`, poi
+`_3`…). I nomi si decidono **prima** di chiamare, nell'ordine delle chiamate:
+la stessa richiesta dà sempre gli stessi nomi. Un file è completo oppure
+assente: non restano file a metà.
+
+`esito.csv` (separatore `;`, UTF-8 con BOM, si apre con Excel) ha una riga per
+chiamata: `template_key`, `cartella`, `fdi`, `esito`, `tipo`, `file`,
+`durata_ms`, `stato_http`, `motivo`. Non contiene payload, header né link
+firmati.
+
+### Gli esiti
+
+Nessun errore ferma il lotto. Ogni riga della tabella ha un glifo e una parola:
+
+| Nella tabella | In `esito.csv` | Significa |
+|---|---|---|
+| ✓ generato | `ok` | il documento è stato salvato |
+| ⊘ saltato: HTML | `saltato: HTML` | ha risposto un HTML che non hai chiesto (o la key è già nota come HTML): non salvato |
+| ○ nessuna chiamata | `nessuna chiamata nei log` | non c'è una chiamata di quella template key nei log di «Chiamate da» |
+| ✕ non riuscito | `non riuscito` | errore, con il **motivo**: risposta HTTP di errore, risposta che non è né PDF né HTML, tempo scaduto, payload illeggibile, scrittura su disco non riuscita… |
+| – annullato | `annullato` | non è partita perché hai interrotto |
+
+Alla fine compaiono il riepilogo («1 generato · 1 non riuscito · in
+svil_AAAAMMGG-HHMMSS») e un avviso; *Apri cartella* apre la cartella della
+generazione e *Solo non riusciti* filtra la tabella.
+
+**Riprova i non riusciti** richiama, con le scelte di adesso (generatore,
+header, cartella…), le sole righe non riuscite, senza chiamata o annullate,
+senza dover impostare di nuovo nulla. Una riga di un FDI viene ripresa dalla
+chiamata **di quello stesso FDI** e torna nella sua cartella. Non c'è alcun
+ritentativo automatico.
+
+### Cosa ricorda
+
+Il programma ricorda la sorgente scelta, il generatore, l'ambiente «Chiamate
+da» (se non lo segue), la cartella di destinazione, il file dell'elenco e le
+due opzioni. **Non ricorda** le template key e gli FDI scritti, i package
+spuntati, le modifiche agli header e gli esiti.
+
+### Limiti
+
+- Una chiamata già partita non si può interrompere: *Interrompi* aspetta che le
+  (al massimo tre) in corso finiscano, o scadano.
+- Gli FDI vanno scritti per intero; il campo non controlla la lunghezza.
+- I payload sono quelli dei log: se nei log non c'è una chiamata, non c'è nulla
+  da generare.
+
+---
+
 ## Dove finiscono le cose
 
 | Cosa | Dove |
@@ -789,6 +958,8 @@ sono in `docs/BACKLOG.md`.
 | File estratti | `%TEMP%\qtrequestory-calls\` (temporanei) |
 | Preferenze della finestra (tema, ricerche recenti…) | registro utente, `HKCU\Software\qtRequestory` |
 | Officina (iniziative, casi, payload, documenti generati) | la cartella scelta in Impostazioni › Officina, vedi [Officina](#officina) |
+| Documenti di Genera, con `esito.csv` | la cartella di destinazione scelta nella scheda, vedi [Genera](#genera) |
+| Template key HTML ricordate da Genera | `%LOCALAPPDATA%\qtRequestory\genera-html.json` (accanto a `config.json`) |
 
 La pagina **Info** mostra tutti questi percorsi, con i pulsanti per copiarli e
 aprirli, e le ultime righe del log del programma.

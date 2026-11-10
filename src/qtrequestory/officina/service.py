@@ -28,6 +28,9 @@ or an unmasked link.
 After a successful generation the case's control generation may start in the
 background (``officina.service_control``): never a version, never an error.
 
+**Genera** (``batch_load_elenco``, ``batch_default_headers``, ``batch_run``):
+in ``officina.service_batch``.
+
 **Comparison** (:meth:`OfficinaService.compare`, :meth:`render_path`): in
 ``officina.service_compare`` (the text engine, Edge's HTML print and their
 caches); see its docstring. The phase-2 case comparison and review actions
@@ -63,6 +66,7 @@ from qtrequestory.officina.links import mask, mask_bytes, mask_text, mask_text_f
 from qtrequestory.officina.model import AsisAlreadyExistsError, Case, Initiative, Version, Workspace
 from qtrequestory.officina.model_call import replace_payload
 from qtrequestory.officina.remove import delete_initiative_folder
+from qtrequestory.officina.service_batch import BatchMixin
 from qtrequestory.officina.service_compare import EDGE_TIMEOUT_S, CompareError, CompareMixin, HtmlToPdf
 from qtrequestory.officina.service_control import ControlMixin, ControlRunner, start_thread
 from qtrequestory.officina.service_filters import FiltersMixin
@@ -81,11 +85,12 @@ REASON_PDF_FOR_HTML = ("risposta PDF per un caso HTML: il generatore ha prodotto
                        "non il corpo dell'email (controllare template_key e payload)")
 REASON_VANISHED_CALL = "la chiamata non è più nel log locale: ripetere la ricerca"
 
-class OfficinaService(CompareMixin, ReviewMixin, FiltersMixin, ControlMixin):
+class OfficinaService(CompareMixin, ReviewMixin, FiltersMixin, ControlMixin, BatchMixin):
     """Satisfies ``ui.contracts.OfficinaApi``. Thread-safe: the UI calls it
     from JobRunner workers (the caches are guarded by a lock). ``control_runner``
     starts the background control generations (``service_control``; None:
-    none — the tests that count calls to their local server)."""
+    none — the tests that count calls to their local server). ``html_memory``:
+    the file of Genera's HTML memory (``service_batch``; None: this session only)."""
 
     def __init__(
         self,
@@ -97,6 +102,7 @@ class OfficinaService(CompareMixin, ReviewMixin, FiltersMixin, ControlMixin):
         new_uuid: Callable[[], str] = lambda: str(uuid.uuid4()),
         html_to_pdf: HtmlToPdf = edge_html_to_pdf,
         control_runner: ControlRunner | None = start_thread,
+        html_memory: Path | None = None,
     ) -> None:
         self._config_source = config_source
         self._index = index  # an IndexApi: only case_from_hit needs it
@@ -107,6 +113,7 @@ class OfficinaService(CompareMixin, ReviewMixin, FiltersMixin, ControlMixin):
         self._init_case()
         self._init_filters()
         self._init_control(control_runner)
+        self._init_batch(html_memory)
 
     # --------------------------------------------------------------- workspace ---
 
