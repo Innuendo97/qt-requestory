@@ -13,6 +13,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from qtrequestory.ui.theme_qss_genera import QSS_GENERA
 from qtrequestory.ui.theme_qss_officina import QSS_OFFICINA_25
 
 __all__ = ["QSS", "glyph"]
@@ -69,6 +70,7 @@ QFrame#syncPanel QFrame#syncPanelRule {{ background: {border}; border: none; max
 QPushButton[role="link"] {{ background: transparent; border: none; color: {accent};
     padding: 4px 2px; font-weight: 600; }}
 QPushButton[role="link"]:hover, QPushButton[role="link"]:focus {{ text-decoration: underline; }}
+QPushButton[role="link"]:disabled {{ background: transparent; border: none; color: {muted}; }}
 QWidget#appBar QPushButton[role="icon"]:hover {{ background: {header_raise};
     border-color: {header_raise}; }}
 QWidget#appBar QPushButton[role="icon"]:checked {{ background: {header_raise};
@@ -188,13 +190,17 @@ QHeaderView::section {{ background: {surface}; color: {muted}; font-weight: 600;
 QTableCornerButton::section {{ background: {surface}; border: none; }}
 
 QCheckBox {{ spacing: 8px; }}
-QCheckBox::indicator, QTableView::indicator {{ width: 14px; height: 14px; border-radius: 3px;
-    border: 1px solid {muted}; background: {surface}; }}
-QCheckBox::indicator:hover, QTableView::indicator:hover {{ border-color: {accent}; }}
-QCheckBox::indicator:checked, QTableView::indicator:checked {{ background: {accent};
-    border-color: {accent}; image: url({check}); }}
-QCheckBox::indicator:disabled, QTableView::indicator:disabled {{ border-color: {border};
-    background: {bg}; }}
+/* Every check box, in a form or in an item view: Fusion alone draws an item
+   view's unticked box with the palette's Mid (the border token), invisible on
+   the dark surface. */
+QCheckBox::indicator, QTableView::indicator, QListView::indicator, QTreeView::indicator {{
+    width: 14px; height: 14px; border-radius: 3px; border: 1px solid {muted}; background: {surface}; }}
+QCheckBox::indicator:hover, QTableView::indicator:hover, QListView::indicator:hover,
+QTreeView::indicator:hover {{ border-color: {accent}; }}
+QCheckBox::indicator:checked, QTableView::indicator:checked, QListView::indicator:checked,
+QTreeView::indicator:checked {{ background: {accent}; border-color: {accent}; image: url({check}); }}
+QCheckBox::indicator:disabled, QTableView::indicator:disabled, QListView::indicator:disabled,
+QTreeView::indicator:disabled {{ border-color: {border}; background: {bg}; }}
 
 QPlainTextEdit, QTextEdit {{ background: {surface}; color: {text}; border: 1px solid {border};
     border-radius: 6px; selection-background-color: {selection};
@@ -213,8 +219,6 @@ QMenu::separator {{ height: 1px; background: {border}; margin: 4px 8px; }}
 
 QStatusBar {{ background: {surface}; color: {muted}; border-top: 1px solid {border}; }}
 QStatusBar::item {{ border: none; }}
-/* Genera: the action bar pinned under the scrolling form (options, button, progress) */
-QFrame#generaActionBar {{ background: {surface}; border: none; border-top: 1px solid {border}; }}
 QSplitter::handle {{ background: {bg}; }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
@@ -321,7 +325,7 @@ QPushButton[toggle="true"] {{ background: transparent; border: 1px solid transpa
 QPushButton[toggle="true"]:hover {{ border-color: {border}; color: {text}; }}
 QPushButton[toggle="true"]:checked {{ background: {selection}; color: {selection_text};
     border-color: {selection}; }}
-""" + QSS_OFFICINA_25
+""" + QSS_OFFICINA_25 + QSS_GENERA
 
 
 #: Stroked paths in a 10x10 box: the glyphs the stylesheet draws itself.

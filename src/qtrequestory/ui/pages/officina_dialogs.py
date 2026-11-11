@@ -11,13 +11,21 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QLineEdit, QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QInputDialog,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QWidget,
+)
 
 from qtrequestory.ui import strings
 
 __all__ = ["ask_conflict", "ask_folder", "ask_note", "ask_open_file", "ask_text",
-           "ask_tolerate_note", "ask_unsaved_rules", "confirm",
-           "in_onedrive", "on_network"]
+           "ask_tolerate_note", "ask_unsaved_rules", "confirm", "confirm_box",
+           "in_onedrive", "input_box", "on_network"]
 
 
 def ask_folder(parent: QWidget | None, title: str, start: Path | None = None) -> Path | None:
@@ -34,18 +42,41 @@ def ask_open_file(parent: QWidget | None, title: str, filters: str,
     return Path(chosen) if chosen else None
 
 
+def input_box(parent: QWidget | None, title: str, label: str, text: str = "", *,
+              multiline: bool = False) -> QInputDialog:
+    """The box of :func:`ask_text` / :func:`ask_note`, not shown. Qt's static
+    ``getText`` has English buttons (the app loads no Qt translation), so the
+    dialog is built here with ours."""
+    box = QInputDialog(parent)
+    box.setWindowTitle(title)
+    box.setLabelText(label)
+    box.setInputMode(QInputDialog.InputMode.TextInput)
+    if multiline:
+        box.setOption(QInputDialog.InputDialogOption.UsePlainTextEditForTextInput, True)
+    else:
+        box.setTextEchoMode(QLineEdit.EchoMode.Normal)
+    box.setTextValue(text)
+    box.setOkButtonText(strings.BTN_OK)
+    box.setCancelButtonText(strings.BTN_CANCEL)
+    return box
+
+
+def _ask_input(box: QInputDialog) -> str | None:
+    try:
+        value = box.textValue().strip() if box.exec() else ""
+        return value or None
+    finally:
+        box.deleteLater()
+
+
 def ask_text(parent: QWidget | None, title: str, label: str, text: str = "") -> str | None:
     """One line of text, stripped; None when cancelled or left empty."""
-    value, ok = QInputDialog.getText(parent, title, label, QLineEdit.EchoMode.Normal, text)
-    value = value.strip() if ok else ""
-    return value or None
+    return _ask_input(input_box(parent, title, label, text))
 
 
 def ask_note(parent: QWidget | None, title: str, label: str) -> str | None:
     """A mandatory note (several lines allowed); None when cancelled or blank."""
-    value, ok = QInputDialog.getMultiLineText(parent, title, label, "")
-    value = value.strip() if ok else ""
-    return value or None
+    return _ask_input(input_box(parent, title, label, multiline=True))
 
 
 def ask_tolerate_note(parent: QWidget | None, what: str) -> str | None:
@@ -59,12 +90,32 @@ def ask_tolerate_note(parent: QWidget | None, what: str) -> str | None:
         dialog.deleteLater()
 
 
-def confirm(parent: QWidget | None, title: str, text: str) -> bool:
-    """A yes/no question; "No" is the default."""
-    answer = QMessageBox.question(parent, title, text,
-                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                  QMessageBox.StandardButton.No)
-    return answer == QMessageBox.StandardButton.Yes
+def confirm_box(parent: QWidget | None, title: str, text: str, *, yes: str | None = None,
+                no: str | None = None) -> tuple[QMessageBox, QPushButton]:
+    """The box of :func:`confirm`, not shown: ``(box, the yes button)``.
+
+    Qt's standard Yes/No are English (the app loads no Qt translation), so the
+    buttons are always ours: what they do ("Genera 56 documenti" / "Annulla")
+    when the caller says it, else "Sì" / "No". The safe answer is both the
+    default (Enter) and the escape button."""
+    box = QMessageBox(QMessageBox.Icon.Question, title, text, parent=parent)
+    accept = box.addButton(yes or strings.BTN_YES, QMessageBox.ButtonRole.AcceptRole)
+    reject = box.addButton(no or strings.BTN_NO, QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(reject)
+    box.setEscapeButton(reject)
+    return box, accept
+
+
+def confirm(parent: QWidget | None, title: str, text: str, *, yes: str | None = None,
+            no: str | None = None) -> bool:
+    """A yes/no question in Italian; the "no" button is the default
+    (:func:`confirm_box`)."""
+    box, accept = confirm_box(parent, title, text, yes=yes, no=no)
+    try:
+        box.exec()
+        return box.clickedButton() is accept
+    finally:
+        box.deleteLater()
 
 
 def ask_unsaved_rules(parent: QWidget | None, *, valid: bool, cancellable: bool) -> str:

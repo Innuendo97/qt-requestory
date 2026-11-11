@@ -74,7 +74,6 @@ def test_import_refused_in_the_dialog(qtbot, fake_core, runner, tmp_path):
 
 
 def test_index_refused_in_impostazioni(qtbot, fake_core, runner, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
     from qtrequestory.ui.pages.settings_page import SettingsPage
     from tests.ui.test_settings_page import StubWindow, _answer
 
@@ -82,6 +81,6 @@ def test_index_refused_in_impostazioni(qtbot, fake_core, runner, monkeypatch):
     window = StubWindow()
     page = SettingsPage(fake_core, runner, window)
     qtbot.addWidget(page)
-    _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    _answer(monkeypatch, True)
     page.rebuild_button.click()
     assert strings.SETTINGS_INDEX_REFUSED.format(problem=LOWER) in window.status

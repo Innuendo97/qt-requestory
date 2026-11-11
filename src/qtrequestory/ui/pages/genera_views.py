@@ -148,3 +148,46 @@ class GeneraViews:
 
     def headers_summary(self) -> str:
         return headers_summary(self._default_headers, self._headers)
+
+    def headers_sent_text(self) -> str:
+        """The collapsed header step: "7 inviati" (no values)."""
+        return strings.GENERA_HEADERS_SENT.format(n=sum(1 for name, _v in self._headers if name.strip()))
+
+    def headers_modified_text(self) -> str:
+        """The pill of the collapsed header step: "1 modificato"; "" when none."""
+        m = self.modified_headers()
+        if not m:
+            return ""
+        return strings.GENERA_HEADERS_MODIFIED_ONE if m == 1 else strings.GENERA_HEADERS_MODIFIED.format(m=m)
+
+    def source_note(self) -> tuple[str, bool]:
+        """``(sentence, can follow)`` under "Dove" when the payloads do not come
+        from the generator's own logs: legitimate (coll payloads sent to svil),
+        but surprising — so it is said, with a way back when there is one."""
+        env, source = self._generator, self._source_env
+        if not env or not source or env == source:
+            return "", False
+        if env in self._envs:
+            return strings.GENERA_SOURCE_OTHER.format(source=source, env=env), True
+        return strings.GENERA_SOURCE_NO_LOGS.format(env=env), False
+
+    def confirm_yes(self, count: int) -> str:
+        """The confirmation's button: what it will do ("Genera 56 documenti")."""
+        return plural(count, strings.GENERA_START_ONE, strings.GENERA_START_N)
+
+    def plan_lines(self) -> list[str]:
+        """What the results pane says before the first run: what will happen
+        and where the files go, or what to do first."""
+        if self.problems() or not self.call_count():
+            return [strings.GENERA_PLAN_NOT_READY, strings.GENERA_PLAN_OPEN]
+        if self._mode == "fdi":
+            folder = strings.GENERA_PLAN_FOLDER_FDI
+        elif self._mode == "elenco" or self._elenco is not None:
+            folder = strings.GENERA_PLAN_FOLDER_PACKAGE
+        else:
+            folder = NO_PACKAGE
+        run = strings.GENERA_PLAN_RUN.format(env=self._generator)
+        path = str(Path(self._destination) / run / folder) if self._destination is not None else ""
+        return [strings.GENERA_PLAN_WHAT.format(what=self.start_text(), env=self._generator,
+                                                source=self._source_env),
+                strings.GENERA_PLAN_WHERE.format(path=path), strings.GENERA_PLAN_OPEN]

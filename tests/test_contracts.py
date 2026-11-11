@@ -794,6 +794,8 @@ class TestExtractService:
         assert opened[-1][0] == str(editor)
         svc2.open_folder(tmp_path)
         assert folders[-1] == str(tmp_path)
+        svc2.open_file(tmp_path / "MOD_TEST_A.pdf")  # the default application, never the editor
+        assert folders[-1] == str(tmp_path / "MOD_TEST_A.pdf") and opened[-1][0] == str(editor)
 
 
 # --------------------------------------------------------------- the fakes ---

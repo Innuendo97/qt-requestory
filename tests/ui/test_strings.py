@@ -16,7 +16,7 @@ from qtrequestory.ui import strings
 PAGE_MODULES = ("common", "search", "sync", "settings", "wizard", "about", "imports", "officina",
                 "officina_verdetto", "officina_avanzamento", "officina_elenco", "officina_azioni",
                 "officina_rumore", "officina_chiamata", "officina_configura", "eliminazioni",
-                "officina_pannello", "officina_filtri", "genera")
+                "officina_pannello", "officina_filtri", "genera", "genera_chiamate")
 
 
 @pytest.mark.parametrize("name", PAGE_MODULES)

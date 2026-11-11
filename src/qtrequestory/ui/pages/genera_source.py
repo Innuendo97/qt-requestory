@@ -1,18 +1,23 @@
-""""Cosa generare": the three sources of the Genera tab, one card.
+""""Cosa generare": the three sources of the Genera tab.
 
-Segments **Template key · Elenco · FDI**, and under them only the current
-source (the others are hidden, not stacked: a stacked widget would be as tall
-as the tallest source, the list):
+Two widgets, because the setup pane pins one and scrolls the other:
 
-* **Template key** — a monospace field, any separator; under it how many and
-  where they go ("2 template key · cartella _senza_pacchetto").
-* **Elenco** — the file (elided path + [Sfoglia…]) and, before one is loaded,
-  what the file must look like; then a filter, the packages with a tick and
-  their key count, [Tutti] [Nessuno] (on the packages SHOWN), and
-  "3 package scelti su 40 · 57 template key" (+ the rows dropped).
-* **FDI** — a monospace field, whole FDIs, one per line.
+* :attr:`GeneraSource.modes` — the heading and the segments **Template key ·
+  Elenco · FDI**, pinned at the top of the setup pane (they never scroll away);
+* :class:`GeneraSource` itself — only the current source (the others are
+  hidden, not stacked: a stacked widget would be as tall as its tallest page),
+  taking the height the pane has left:
 
-The card only forwards edits to the presenter and re-renders from it
+  * **Template key** — a monospace field, any separator; under it how many and
+    where they go ("2 template key · cartella _senza_pacchetto");
+  * **Elenco** — the file (elided path + [Sfoglia…]) and, before one is loaded,
+    what it must look like; then a filter with [Tutti] [Nessuno] (on the
+    packages SHOWN), the packages (``genera_packages``: tall rows, ticked with
+    a click anywhere) and the running total "3 package scelti su 40 · 57
+    template key" (+ the rows dropped);
+  * **FDI** — a monospace field, whole FDIs, one per line.
+
+The widgets only forward edits to the presenter and re-render from it
 (:meth:`GeneraSource.render`); the text fields are the source of their own
 text, so a render never moves the cursor.
 """
@@ -20,16 +25,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QButtonGroup,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -39,49 +40,84 @@ from PySide6.QtWidgets import (
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import Elenco
 from qtrequestory.ui.pages import officina_dialogs as ask
+from qtrequestory.ui.pages.genera_packages import PackageList
 from qtrequestory.ui.pages.genera_presenter import MODES, GeneraPresenter
 from qtrequestory.ui.pages.settings_widgets import PathField, button, muted
 
 __all__ = ["GeneraSource"]
 
-#: Four lines of keys or FDIs; more scroll.
+#: Four lines of keys or FDIs at least; the field grows with the pane.
 FIELD_HEIGHT = 92
-#: The package list: about six rows, then it scrolls.
-LIST_HEIGHT = 156
+#: The package list never gets shorter than about seven rows.
+LIST_MIN_HEIGHT = 216
 
 _LABELS = {"keys": strings.GENERA_MODE_KEYS, "elenco": strings.GENERA_MODE_ELENCO,
            "fdi": strings.GENERA_MODE_FDI}
 
 
+class _Field(QPlainTextEdit):
+    """A field that ASKS for four lines and takes whatever height is free.
+    The setup pane's scroll area sizes its content by height-for-width (the
+    wrapped notes), i.e. by preferred heights: QPlainTextEdit's own ~190 px
+    preference pushed the steps under it out of view on a 768 px screen."""
+
+    def sizeHint(self):  # noqa: N802 - Qt naming
+        hint = super().sizeHint()
+        hint.setHeight(FIELD_HEIGHT)
+        return hint
+
+
 def _field(placeholder: str) -> QPlainTextEdit:
-    edit = QPlainTextEdit()
+    edit = _Field()
     edit.setFont(theme.mono_font())
     edit.setPlaceholderText(placeholder)
     edit.setTabChangesFocus(True)  # Tab walks the form, it does not type a tab
     edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-    edit.setFixedHeight(FIELD_HEIGHT)
+    edit.setMinimumHeight(FIELD_HEIGHT)
     return edit
 
 
-def _column(*widgets: QWidget, spacing: int = theme.SPACE[1]) -> QWidget:
+def _column(*widgets: QWidget, spacing: int = theme.SPACE[1], stretch: QWidget | None = None) -> QWidget:
     holder = QWidget()
     layout = QVBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(spacing)
     for widget in widgets:
-        layout.addWidget(widget)
+        layout.addWidget(widget, 1 if widget is stretch else 0)
     return holder
 
 
-class GeneraSource(QFrame):
-    """The "Cosa generare" card (module docstring)."""
+class GeneraSource(QWidget):
+    """The current source's panel; :attr:`modes` is its pinned head (module docstring)."""
 
     def __init__(self, presenter: GeneraPresenter, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._presenter = presenter
         self._shown_elenco: Elenco | None = None
-        theme.set_role(self, "card")
+        self.modes = self._modes()
 
+        self.keys_edit = _field(strings.GENERA_KEYS_PLACEHOLDER)
+        self.keys_note = muted()
+        self.keys_panel = _column(self.keys_edit, self.keys_note, stretch=self.keys_edit)
+        self.fdi_edit = _field(strings.GENERA_FDI_PLACEHOLDER)
+        self.fdi_note = muted()
+        self.fdi_panel = _column(self.fdi_edit, self.fdi_note, stretch=self.fdi_edit)
+        self.elenco_panel = self._elenco_panel()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        for panel in (self.keys_panel, self.elenco_panel, self.fdi_panel):
+            layout.addWidget(panel, 1)
+
+        self.keys_edit.textChanged.connect(
+            lambda: self._presenter.set_keys_text(self.keys_edit.toPlainText()))
+        self.fdi_edit.textChanged.connect(
+            lambda: self._presenter.set_fdi_text(self.fdi_edit.toPlainText()))
+        self.filter_edit.textChanged.connect(self.package_list.apply_filter)
+        self.package_list.toggled.connect(self._presenter.set_package_checked)
+
+    def _modes(self) -> QWidget:
         heading = QLabel(strings.GENERA_WHAT)
         theme.set_role(heading, "section")
         self.mode_buttons: dict[str, QPushButton] = {}
@@ -98,29 +134,13 @@ class GeneraSource(QFrame):
             seg.clicked.connect(lambda _c=False, m=mode: self._presenter.set_mode(m))
         segments.addStretch(1)
         theme.set_segmented(list(self.mode_buttons.values()))
-
-        self.keys_edit = _field(strings.GENERA_KEYS_PLACEHOLDER)
-        self.keys_note = muted()
-        self.keys_panel = _column(self.keys_edit, self.keys_note)
-        self.fdi_edit = _field(strings.GENERA_FDI_PLACEHOLDER)
-        self.fdi_note = muted()
-        self.fdi_panel = _column(self.fdi_edit, self.fdi_note)
-        self.elenco_panel = self._elenco_panel()
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(theme.SPACE[3], theme.SPACE[2], theme.SPACE[3], theme.SPACE[3])
-        layout.setSpacing(theme.SPACE[2])
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SPACE[1] + theme.SPACE[0])
         layout.addWidget(heading)
         layout.addLayout(segments)
-        for panel in (self.keys_panel, self.elenco_panel, self.fdi_panel):
-            layout.addWidget(panel)
-
-        self.keys_edit.textChanged.connect(
-            lambda: self._presenter.set_keys_text(self.keys_edit.toPlainText()))
-        self.fdi_edit.textChanged.connect(
-            lambda: self._presenter.set_fdi_text(self.fdi_edit.toPlainText()))
-        self.filter_edit.textChanged.connect(lambda _t: self._apply_filter())
-        self.package_list.itemChanged.connect(self._on_item_changed)
+        return holder
 
     def _elenco_panel(self) -> QWidget:
         self.elenco_path = PathField(strings.GENERA_ELENCO_NONE)
@@ -140,23 +160,23 @@ class GeneraSource(QFrame):
         self.all_button.setToolTip(strings.GENERA_ELENCO_ALL_TIP)
         self.none_button = button(strings.GENERA_ELENCO_NO_PACKAGES, lambda: self._tick_shown(False))
         self.none_button.setToolTip(strings.GENERA_ELENCO_NONE_TIP)
-        tools = QHBoxLayout()
+        tools_row = QWidget()
+        tools = QHBoxLayout(tools_row)
         tools.setContentsMargins(0, 0, 0, 0)
         tools.setSpacing(theme.SPACE[1])
         tools.addWidget(self.filter_edit, 1)
         tools.addWidget(self.all_button)
         tools.addWidget(self.none_button)
-        self.package_list = QListWidget()
-        self.package_list.setFixedHeight(LIST_HEIGHT)
-        self.package_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.package_list.setUniformItemSizes(True)
-        self.elenco_summary = muted()
+        self.package_list = PackageList()
+        self.package_list.setMinimumHeight(LIST_MIN_HEIGHT)
+        self.elenco_summary = QLabel()  # the running total: plain text, not muted
         self.elenco_skipped = muted()
-        tools_row = QWidget()
-        tools_row.setLayout(tools)
-        self.package_panel = _column(tools_row, self.package_list, self.elenco_summary, self.elenco_skipped)
-        return _column(self.elenco_path, self.elenco_error, self.elenco_hint, self.package_panel,
-                       spacing=theme.SPACE[2])
+        self.package_panel = _column(tools_row, self.package_list, self.elenco_summary, self.elenco_skipped,
+                                     spacing=theme.SPACE[1] + theme.SPACE[0], stretch=self.package_list)
+        panel = _column(self.elenco_path, self.elenco_error, self.elenco_hint, self.package_panel,
+                        spacing=theme.SPACE[2], stretch=self.package_panel)
+        panel.layout().addStretch(0)
+        return panel
 
     # -- user actions ---------------------------------------------------------------
 
@@ -168,20 +188,7 @@ class GeneraSource(QFrame):
             self._presenter.load_elenco(Path(chosen))
 
     def _tick_shown(self, on: bool) -> None:
-        shown = [self.package_list.item(i).data(Qt.ItemDataRole.UserRole)
-                 for i in range(self.package_list.count()) if not self.package_list.item(i).isHidden()]
-        self._presenter.set_packages_checked(shown, on)
-
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        self._presenter.set_package_checked(item.data(Qt.ItemDataRole.UserRole),
-                                            item.checkState() == Qt.CheckState.Checked)
-
-    def _apply_filter(self) -> None:
-        wanted = self.filter_edit.text().strip().casefold()
-        for i in range(self.package_list.count()):
-            item = self.package_list.item(i)
-            name = str(item.data(Qt.ItemDataRole.UserRole))
-            item.setHidden(bool(wanted) and wanted not in name.casefold())
+        self._presenter.set_packages_checked(self.package_list.shown(), on)
 
     # -- rendering ----------------------------------------------------------------------
 
@@ -197,7 +204,7 @@ class GeneraSource(QFrame):
         _set_text(self.fdi_edit, p.fdi_text)
         for note, text in ((self.keys_note, p.keys_note()), (self.fdi_note, p.fdi_note())):
             note.setText(text)
-            note.setVisible(bool(text))  # an empty line would leave a gap in the card
+            note.setVisible(bool(text))  # an empty line would leave a gap
         self._render_elenco()
 
     def _render_elenco(self) -> None:
@@ -209,35 +216,18 @@ class GeneraSource(QFrame):
         self.elenco_hint.setVisible(not loaded)
         self.package_panel.setVisible(loaded)
         if p.elenco is not self._shown_elenco:
-            self._fill_packages(p.elenco)
-        checked = p.checked_packages
-        with QSignalBlocker(self.package_list):
-            for i in range(self.package_list.count()):
-                item = self.package_list.item(i)
-                state = (Qt.CheckState.Checked if item.data(Qt.ItemDataRole.UserRole) in checked
-                         else Qt.CheckState.Unchecked)
-                if item.checkState() != state:
-                    item.setCheckState(state)
+            self._shown_elenco = p.elenco
+            self.package_list.fill(p.elenco.packages() if p.elenco is not None else [])
+            self.package_list.apply_filter(self.filter_edit.text())
+        self.package_list.set_checked(p.checked_packages)
         self.elenco_summary.setText(p.elenco_summary())
         skipped = p.elenco_skipped_note()
         self.elenco_skipped.setText(skipped)
         self.elenco_skipped.setVisible(bool(skipped))
 
-    def _fill_packages(self, elenco: Elenco | None) -> None:
-        self._shown_elenco = elenco
-        with QSignalBlocker(self.package_list):
-            self.package_list.clear()
-            for package, n in (elenco.packages() if elenco is not None else []):
-                item = QListWidgetItem(strings.GENERA_ELENCO_ROW.format(package=package, n=n))
-                item.setData(Qt.ItemDataRole.UserRole, package)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(Qt.CheckState.Unchecked)
-                self.package_list.addItem(item)
-        self._apply_filter()
-
     def package_texts(self) -> list[str]:
-        """Every package row as shown (tests, accessibility)."""
-        return [self.package_list.item(i).text() for i in range(self.package_list.count())]
+        """Every package row as read aloud (tests, accessibility)."""
+        return self.package_list.texts()
 
     def first_field(self) -> QWidget:
         """Where typing goes for the current source."""

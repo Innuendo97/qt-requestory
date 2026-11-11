@@ -11,6 +11,9 @@
   ``…_GAS``); the FDI column (flat mode only) is as wide as a whole uuid, at
   most :data:`FDI_MAX_WIDTH`, elided in the middle below that — so the flat
   list fits a 1366 px screen without a horizontal scroll bar.
+* **Selection:** several calls can be selected (Ctrl/Shift+click) — what
+  "Genera documento" sends; the preview shows the current one. Collapsing a
+  group deselects its calls: nothing selected stays out of sight.
 * **Enter** on a call opens it (the page opens a double-clicked call too).
 * **Drag out:** dragging a call hands the file manager (or Notepad++, or an
   e-mail) a real ``.json`` file — written on drag start by ``drag_provider``.
@@ -20,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QModelIndex, Qt, QUrl, Signal
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QMimeData, QModelIndex, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -166,7 +169,8 @@ class ResultsView(QTreeView):
         self.setModel(model)
         self.setItemDelegate(ResultsDelegate(self))
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # several calls at once (Ctrl/Shift+click): "Genera documento" of each
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setAlternatingRowColors(True)
         self.setUniformRowHeights(True)
         self.setAllColumnsShowFocus(True)
@@ -191,13 +195,63 @@ class ResultsView(QTreeView):
         self.setSortingEnabled(True)
         model.modelReset.connect(self._after_reset)
         model.layoutChanged.connect(self._span_groups)
+        self.collapsed.connect(self._deselect_children)
         self._after_reset()
 
     # -- selection ---------------------------------------------------------
 
     def selected_hit(self) -> SearchHit | None:
-        rows = self.selectionModel().selectedRows()
-        return self.results.hit_of(rows[0]) if rows else None
+        """The call the preview shows: the current row when it is selected,
+        else the first selected one (several can be: "Genera documento")."""
+        selection = self.selectionModel()
+        current = self.currentIndex()
+        if current.isValid() and selection.isRowSelected(current.row(), current.parent()):
+            hit = self.results.hit_of(current)
+            if hit is not None:
+                return hit
+        hits = self.selected_hits()
+        return hits[0] if hits else None
+
+    def selected_hits(self) -> list[SearchHit]:
+        """Every selected call, in the order of the rows on screen."""
+        selection = self.selectionModel()
+        return [hit for index, hit in self._leaves()
+                if selection.isRowSelected(index.row(), index.parent())]
+
+    def group_hits(self, group: QModelIndex) -> list[SearchHit]:
+        """The calls a group row shows, in order (``[]`` for anything else)."""
+        if not self.is_group(group):
+            return []
+        group = group.siblingAtColumn(0)
+        rows = range(self.results.rowCount(group))
+        return [h for h in (self.results.hit_of(self.results.index(r, 0, group)) for r in rows)
+                if h is not None]
+
+    def _leaves(self):
+        """``(index, hit)`` of every call, in the order of the rows on screen."""
+        model, root = self.results, QModelIndex()
+        for row in range(model.rowCount(root)):
+            index = model.index(row, 0, root)
+            if model.is_group(index):
+                for child in range(model.rowCount(index)):
+                    leaf = model.index(child, 0, index)
+                    hit = model.hit_of(leaf)
+                    if hit is not None:
+                        yield leaf, hit
+            else:
+                hit = model.hit_of(index)
+                if hit is not None:
+                    yield index, hit
+
+    def _deselect_children(self, group: QModelIndex) -> None:
+        """A group collapsed: its calls are off screen, so they stop being
+        selected — "Genera documento" sends exactly what is seen selected (a
+        group row with nothing selected still means all its calls)."""
+        rows = self.results.rowCount(group)
+        if rows:
+            last = self.results.index(rows - 1, self.results.columnCount(group) - 1, group)
+            calls = QItemSelection(self.results.index(0, 0, group), last)
+            self.selectionModel().select(calls, QItemSelectionModel.SelectionFlag.Deselect)
 
     def select_hit(self, hit: SearchHit | None) -> None:
         index = self.results.index_of(hit) if hit is not None else QModelIndex()

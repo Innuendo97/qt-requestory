@@ -32,6 +32,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from qtrequestory.core.opener import child_env, clean_dll_directory
 from qtrequestory.officina.compare.sanitise import sanitise_html
 
 __all__ = ["find_edge", "html_to_pdf", "sanitise_html"]
@@ -148,8 +149,9 @@ def _run(argv: list[str], timeout_s: int) -> str | None:
     """Run Edge; ``None`` if it exited 0, else the reason."""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, creationflags=flags)
+        with clean_dll_directory():
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, creationflags=flags, env=child_env())
     except OSError as exc:
         return f"impossibile avviare Edge: {exc}"
     try:
@@ -163,9 +165,11 @@ def _run(argv: list[str], timeout_s: int) -> str | None:
 def _kill_tree(proc: subprocess.Popen) -> None:
     """Stop Edge and the child processes it spawned (only our own tree)."""
     if sys.platform == "win32":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+        with clean_dll_directory():
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
+                           env=child_env())
     proc.kill()
     proc.wait()
 

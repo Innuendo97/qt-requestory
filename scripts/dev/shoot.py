@@ -26,6 +26,7 @@ import dataclasses
 import os
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -2313,7 +2314,8 @@ def main(argv: list[str] | None = None) -> int:
         ("officina-eliminazione-elenco", officina_deletions(3, expanded=True)),
     ]
     # -- Genera: first look, a loaded list, a finished run (synthetic data only) --
-    from tests.conftest import KEY_CTE, KEY_EMAIL, KEY_SINT
+    from qtrequestory.ui import strings as ui_strings
+    from tests.conftest import FDI_A, FDI_B, KEY_CTE, KEY_EMAIL, KEY_SINT
     from tests.fakes.fake_core import canned_pdf
     from tests.officina._server import HTML
 
@@ -2328,26 +2330,49 @@ def main(argv: list[str] | None = None) -> int:
     genera_lines.append(";;;;888_VUOTO")
     genera_csv.write_bytes(("\r\n".join(genera_lines) + "\r\n").encode("cp1252"))
 
+    genera_release = threading.Event()  # what holds the "-in-corso" scene's calls
+
+    def genera_wait(page) -> None:
+        for _ in range(100):
+            if not page.is_running():
+                break
+            pump(100)
+        pump(200)
+
     def genera_reset():
+        window.resize(width, height)  # "-stretta" narrowed it
         window.show_page("genera")
         page = window.page("genera")
+        if page.is_running():  # "-in-corso" let its run go on
+            genera_release.set()
+            genera_wait(page)
+        genera_release.clear()
         page.presenter.set_mode("keys")
         page.source.keys_edit.setPlainText("")
         page.source.fdi_edit.setPlainText("")
+        page.source.filter_edit.setText("")
         page.headers_toggle.setChecked(False)
         page._reset_headers()
+        # back to before any run: no report, the empty pane and its plan
+        page.report = None
         page.results.clear_for_run()
-        page.results.only_failed.setChecked(False)
+        page.results.stack.setCurrentWidget(page.results.empty)
         page.presenter.load_elenco(tmp / "nessun-elenco.csv", quiet=True)  # no list loaded
         page.source_combo.setCurrentText("coll")  # the scene mirror's calls are the coll ones
         services.officina.set_responder(None)
         pump(200)
-        page._scroll.verticalScrollBar().setValue(0)
+        page.setup.scroll.verticalScrollBar().setValue(0)
         return page
 
     def genera_empty() -> None:
         page = genera_reset()
         page.presenter.set_destination(None)
+        page.initial_focus()
+
+    def genera_ready() -> None:
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+        page.source.keys_edit.setPlainText(f"{KEY_SINT} {KEY_EMAIL} {KEY_CTE}")
         page.initial_focus()
 
     def genera_list() -> None:
@@ -2357,32 +2382,163 @@ def main(argv: list[str] | None = None) -> int:
         page.presenter.load_elenco(genera_csv)
         page.presenter.set_packages_checked(["111_LUCE_FIX", "333_DUAL"], True)
 
-    def genera_outcomes() -> None:
+    def genera_fdi() -> None:
         page = genera_reset()
         page.presenter.set_destination(genera_dest)
+        page.presenter.set_mode("fdi")
+        page.source.fdi_edit.setPlainText(f"{FDI_A}\n{FDI_B}")
 
-        def route(request):
-            if request.template_key == KEY_EMAIL:
-                return 200, HTML
-            if request.template_key == KEY_CTE:
-                return 500, b"guasto"
+    def genera_route(request):
+        if request.template_key == KEY_EMAIL:
+            return 200, HTML
+        if request.template_key == KEY_CTE:
+            return 500, b"guasto"
+        return 200, canned_pdf()
+
+    def genera_outcomes(chip: str | None = None):
+        def prepare() -> None:
+            page = genera_reset()
+            page.presenter.set_destination(genera_dest)
+            services.officina.set_responder(genera_route)
+            page.source.keys_edit.setPlainText(
+                f"{KEY_SINT} {KEY_EMAIL} {KEY_CTE} {genera_long} MOD_TEST_ASSENTE")
+            page.generate()
+            genera_wait(page)
+            services.officina.set_responder(None)
+            if chip:
+                page.results.chips.select(chip)
+                page.results.table.setFocus()
+        return prepare
+
+    def genera_running():
+        """Two FDIs (six calls): two answered, the others held until the next scene."""
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+        answered = {"n": 0}
+        lock = threading.Lock()
+
+        def held(request):
+            with lock:
+                answered["n"] += 1
+                hold = answered["n"] > 2
+            if hold:
+                genera_release.wait(30)
             return 200, canned_pdf()
 
-        services.officina.set_responder(route)
-        page.source.keys_edit.setPlainText(
-            f"{KEY_SINT} {KEY_EMAIL} {KEY_CTE} {genera_long} MOD_TEST_ASSENTE")
+        services.officina.set_responder(held)
+        page.presenter.set_mode("fdi")
+        page.source.fdi_edit.setPlainText(f"{FDI_A}\n{FDI_B}")
         page.generate()
-        for _ in range(100):
+        for _ in range(50):
             pump(100)
-            if not page.is_running():
+            if len(page.results.outcomes()) >= 2:
                 break
         pump(300)
-        services.officina.set_responder(None)
+        return _Restoring(window, genera_release.set)  # the next scene waits for its end
+
+    def genera_headers() -> None:
+        """The header table open, one row removed and one being typed."""
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+        page.source.keys_edit.setPlainText(KEY_SINT)
+        page.headers_toggle.setChecked(True)
+        pump(100)
+        table = page.header_table
+        table.selectRow(table.rowCount() - 1)
+        page.remove_header_button.click()
+        page.add_header_button.click()
+        pump(100)
+        from PySide6.QtWidgets import QLineEdit
+
+        for editor in table.viewport().findChildren(QLineEdit):  # the name cell, open for typing
+            editor.setText("X-Prova")
+        pump(200)
+
+    def genera_reminder() -> None:
+        """Elenco on a short screen: the Header step below the fold, its edit recalled over the button."""
+        genera_list()
+        page = window.page("genera")
+        page.header_table.add_row("X-Prova", "1")
+        pump(200)
+
+    def genera_narrow():
+        """Below the two-pane width: setup on top, results under it."""
+        genera_outcomes()()
+        extra = window.width() - window.page("genera").width()
+        window.resize(extra + 900, height)
+        pump(400)
+        return _Restoring(window, lambda: window.resize(width, height))
+
+    def genera_confirm():
+        """The confirmation above 20 calls, grabbed on its own."""
+        from qtrequestory.ui.pages.officina_dialogs import confirm_box
+
+        page = genera_reset()
+        page.presenter.set_destination(genera_dest)
+        page.source.keys_edit.setPlainText(" ".join(f"MOD_TEST_{i:02d}" for i in range(56)))
+        p = page.presenter
+        title, text = p.confirmation(p.build_request(), 56)
+        box, _accept = confirm_box(window, title, text, yes=p.confirm_yes(56), no=ui_strings.BTN_CANCEL)
+        box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        box.show()
+        pump(300)
+        return box
+
+    def settings_rebuild_question():
+        """Impostazioni's [Ricostruisci indice] question, grabbed on its own."""
+        from qtrequestory.ui.pages.officina_dialogs import confirm_box
+
+        box, _accept = confirm_box(window, ui_strings.SETTINGS_REBUILD_TITLE, ui_strings.SETTINGS_REBUILD_QUESTION,
+                                   yes=ui_strings.SETTINGS_REBUILD_YES, no=ui_strings.BTN_CANCEL)
+        box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        box.show()
+        pump(300)
+        return box
+
+    def ricerca_genera() -> None:
+        """Ricerca's "Genera documento" of two calls, then the Genera tab."""
+        from PySide6.QtCore import QItemSelectionModel
+
+        genera_reset().presenter.set_destination(genera_dest)
+        from tests.ui.test_search_page import WIDE_FROM, WIDE_TO
+
+        window.show_page("search")
+        search.form.set_env("coll")  # the fake index's calls
+        search.set_grouped(False)
+        search.form.set_fdi("")
+        search.form.set_template_key(KEY_SINT)
+        search.form.set_custom_range(WIDE_FROM, WIDE_TO)
+        search.run_search()
+        pump(900)
+        hits = search.model.hits()[:2]
+        if len(hits) < 2:
+            print("ricerca-genera: no calls found, scene skipped")
+            return
+        search.view.setCurrentIndex(search.model.index_of(hits[0]))
+        flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        search.view.selectionModel().select(search.model.index_of(hits[1]), flags)
+        pump(100)
+        search.generate.button.click()
+        genera_wait(window.page("genera"))
+        window.toast.hide()
+        window.show_page("genera")
+        pump(300)
 
     scenes += [
         ("genera-vuota", genera_empty),
+        ("genera-pronta", genera_ready),
         ("genera-elenco", genera_list),
-        ("genera-esiti", genera_outcomes),
+        ("genera-fdi", genera_fdi),
+        ("genera-header-aperti", genera_headers),
+        ("genera-header-promemoria", genera_reminder),
+        ("genera-conferma", genera_confirm),
+        ("genera-in-corso", genera_running),
+        ("genera-esiti", genera_outcomes()),
+        ("genera-esiti-filtro", genera_outcomes("failed")),
+        ("genera-esiti-riprova", genera_outcomes("retry")),  # what Riprova sends again
+        ("genera-stretta", genera_narrow),
+        ("ricerca-genera", ricerca_genera),
+        ("impostazioni-ricostruisci", settings_rebuild_question),
     ]
     if args.page == "search":
         scenes = [*search_scenes, ("toast", toast), ("menu", context_menu)]

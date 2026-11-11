@@ -6,7 +6,8 @@
    is created or any call sent — a generator that is not enabled or not
    usable (``service._enabled_generator``: never PROD), a destination that
    is not an absolute path, a header table that cannot be built.
-2. Resolve the targets into calls (``resolve``). An index that cannot be
+2. Resolve the targets into calls (``resolve``; an exact ``"call"`` target
+   is its own call, nothing looked up). An index that cannot be
    searched is refused like step 1 (``ValueError``, nothing created).
    Cancelled while resolving: nothing is created (no folder, no
    ``esito.csv``: nothing was sent), every target is reported ``cancelled``
@@ -75,7 +76,7 @@ from qtrequestory.officina.batch.output import (
     write_esito,
     zip_folders,
 )
-from qtrequestory.officina.batch.resolve import resolve
+from qtrequestory.officina.batch.resolve import exact_call, resolve
 from qtrequestory.officina.generator import HeaderError, send
 from qtrequestory.officina.links import mask_text, mask_text_for_log
 
@@ -132,7 +133,7 @@ def run_batch(
 
     writer = Writer(run_dir)
     # in call order, before anything is sent: the names never depend on who answers first
-    slots = [writer.reserve(c.folders, c.key) if c.hit is not None else () for c in calls]
+    slots = [writer.reserve(c.folders, c.key) if c.sendable else () for c in calls]
     total = len(calls)
     emit(BatchStarted(total))
     lane = _Lane(request, settings, memory, writer, index,
@@ -211,7 +212,7 @@ class _Lane:
         request = self._request
         if self._cancelled():
             return _outcome(call, "cancelled", REASON_CANCELLED)
-        if call.hit is None:
+        if not call.sendable:  # not found, or an exact call logged without a key
             return _outcome(call, "no_call", reason_no_call(request.source_env))
         if not request.save_html and self._memory.is_html(call.key):
             return _outcome(call, "html_skipped", REASON_HTML_KNOWN, doc_type="html")
@@ -272,7 +273,7 @@ def _endpoint(settings: OfficinaSettings, name: str) -> tuple[Any, str]:
 
 def _may_write(call: Call, request: BatchRequest, memory: HtmlMemory) -> bool:
     """True for a call that will be sent (found, and not a key known to answer HTML)."""
-    return call.hit is not None and (request.save_html or not memory.is_html(call.key))
+    return call.sendable and (request.save_html or not memory.is_html(call.key))
 
 
 def _check(request: BatchRequest, settings: OfficinaSettings) -> Any:
@@ -338,14 +339,17 @@ def _outcome(call: Call, status: Status, reason: str = "", *, doc_type=None,
              http_status: int | None = None) -> Outcome:
     return Outcome(key=call.key, folders=call.folders, fdi=call.fdi, status=status,
                    doc_type=doc_type, files=tuple(files), duration_ms=int(duration_ms or 0),
-                   http_status=http_status, reason=mask_text(reason))
+                   http_status=http_status, reason=mask_text(reason),
+                   exact_hit=call.hit if call.exact else None)
 
 
 def _target_cancelled(target: Target) -> list[Outcome]:
     """The outcomes of a target never looked up (cancelled during resolution):
-    one for a key or a whole FDI, one per key of a narrowed FDI."""
+    one for a key, a whole FDI or an exact call, one per key of a narrowed FDI."""
     value = target.value.strip()
-    if target.kind == "fdi":
+    if target.kind == "call" and target.hit is not None:
+        calls = [exact_call(target)]
+    elif target.kind == "fdi":
         keys = [k.strip() for k in target.keys if k.strip()] or [""]
         calls = [Call(key=k, folders=(value,), fdi=value, hit=None) for k in keys]
     else:

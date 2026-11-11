@@ -181,6 +181,8 @@ SETTINGS_REBUILD_QUESTION = (
     "L'indice verrà ricostruito da zero rileggendo tutti i file già scaricati. "
     "Può richiedere qualche minuto. Vuoi continuare?"
 )
+#: The question's button that rebuilds (the other one is "Annulla", the default).
+SETTINGS_REBUILD_YES = "Ricostruisci l'indice"
 SETTINGS_BTN_RERUN_WIZARD = "Riesegui configurazione iniziale"
 SETTINGS_CONFIG_LABEL = "File di configurazione"
 SETTINGS_WIZARD_LABEL = "Configurazione iniziale"
@@ -200,6 +202,9 @@ SETTINGS_ERROR_BULLET = "• "
 SETTINGS_ERROR_NO_MIRROR = "indica la cartella dei log locali"
 SETTINGS_REINDEX_TITLE = "Cartella dei log cambiata"
 SETTINGS_REINDEX_QUESTION = "Vuoi indicizzare i log presenti nella nuova cartella ora?"
+#: Its buttons: index now, or not now (the default: the index can be rebuilt later).
+SETTINGS_REINDEX_YES = "Indicizza ora"
+SETTINGS_REINDEX_NO = "Non ora"
 SETTINGS_INDEX_STARTED = "Indicizzazione avviata…"
 #: {n} = files scanned.
 SETTINGS_INDEX_DONE = "Indicizzazione completata: {n} file."

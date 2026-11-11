@@ -44,7 +44,8 @@ if TYPE_CHECKING:
     from qtrequestory.ui.pages.search_page import SearchPage
 
 __all__ = [
-    "BODY_ACTIONS", "add_to_officina", "build_context_menu", "copy_shortcut", "install_shortcuts",
+    "BODY_ACTIONS", "add_to_officina", "build_context_menu", "context_menu_at", "copy_shortcut",
+    "install_shortcuts",
     "prepare_drag_file", "row_tsv", "show_context_menu",
 ]
 
@@ -155,20 +156,37 @@ def copy_row_tsv(page: SearchPage) -> None:
 
 
 def show_context_menu(page: SearchPage, pos) -> None:
-    """Right click on a call (a group row has no menu)."""
+    """Right click on a call or an FDI group row (:func:`context_menu_at`)."""
     view = page.view
-    hit = view.results.hit_of(view.indexAt(pos))
-    if hit is None:
+    menu = context_menu_at(page, pos)
+    if menu is None:
         return
-    view.select_hit(hit)
-    menu = build_context_menu(page, hit)
     menu.exec(view.viewport().mapToGlobal(pos))
     menu.deleteLater()
 
 
+def context_menu_at(page: SearchPage, pos) -> QMenu | None:
+    """The menu of the row at ``pos`` (viewport coordinates), not shown: on a
+    call, the row menu (a call inside a multiple selection keeps it); on an
+    FDI group row, "Genera documenti" of its calls; elsewhere None."""
+    view = page.view
+    index = view.indexAt(pos)
+    hit = view.results.hit_of(index)
+    if hit is None:
+        if not view.is_group(index):
+            return None
+        view.setCurrentIndex(index)  # the group, nothing selected: what a click does
+        return page.generate.group_menu(index)
+    if hit not in view.selected_hits():
+        view.select_hit(hit)
+    return build_context_menu(page, hit)
+
+
 def build_context_menu(page: SearchPage, hit: SearchHit) -> QMenu:
-    """The row menu, built without showing it (so it can be tested)."""
+    """The row menu, built without showing it (so it can be tested).
+    "Genera documento" acts on the selection when ``hit`` is part of it."""
     menu = QMenu(page)
+    menu.setToolTipsVisible(True)
     has_pane = page.preview_widget() is not None
     open_label = getattr(page.preview_widget(), "open_label", None)
     for label, method, icon_name, sequence in BODY_ACTIONS:
@@ -191,6 +209,8 @@ def build_context_menu(page: SearchPage, hit: SearchHit) -> QMenu:
          icon_name="folder-open")
     menu.addSeparator()
     _add(menu, strings.OFFICINA_ADD_MENU, partial(add_to_officina, page, hit), icon_name="wrench")
+    selected = page.view.selected_hits()
+    page.generate.add_entry(menu, selected if hit in selected else [hit])
     for extra in page.context_menu_actions:
         menu.addAction(extra)
     return menu

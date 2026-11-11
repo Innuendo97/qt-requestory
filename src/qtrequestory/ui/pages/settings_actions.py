@@ -14,6 +14,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from qtrequestory.ui import strings
+from qtrequestory.ui.pages import officina_dialogs as ask
 from qtrequestory.ui.pages.settings_presenter import check_reachable, normalised
 from qtrequestory.ui.pages.settings_widgets import PathField
 from qtrequestory.ui.workers import officina_writing
@@ -38,11 +39,13 @@ class SettingsActions:
       ``mirror_path`` and ``editor_path`` (``PathField``).
     """
 
+    # The two questions are Italian, their buttons say what they do and the safe
+    # one is the default (``officina_dialogs.confirm``): Qt's standard Yes/No
+    # were English and defaulted to Yes, so Enter started a full rebuild.
+
     def _offer_reindex(self) -> None:
-        answer = QMessageBox.question(
-            self, strings.SETTINGS_REINDEX_TITLE, strings.SETTINGS_REINDEX_QUESTION
-        )
-        if answer == QMessageBox.StandardButton.Yes:
+        if ask.confirm(self, strings.SETTINGS_REINDEX_TITLE, strings.SETTINGS_REINDEX_QUESTION,
+                       yes=strings.SETTINGS_REINDEX_YES, no=strings.SETTINGS_REINDEX_NO):
             self._start_index(full_rebuild=False)
 
     # -- jobs --------------------------------------------------------------
@@ -50,10 +53,8 @@ class SettingsActions:
     def rebuild_index(self) -> None:
         if self._index_refused():
             return
-        answer = QMessageBox.question(
-            self, strings.SETTINGS_REBUILD_TITLE, strings.SETTINGS_REBUILD_QUESTION
-        )
-        if answer == QMessageBox.StandardButton.Yes:
+        if ask.confirm(self, strings.SETTINGS_REBUILD_TITLE, strings.SETTINGS_REBUILD_QUESTION,
+                       yes=strings.SETTINGS_REBUILD_YES, no=strings.BTN_CANCEL):
             self._start_index(full_rebuild=True)
 
     def _index_refused(self) -> bool:

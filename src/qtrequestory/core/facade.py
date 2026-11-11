@@ -570,6 +570,9 @@ class ExtractService:
     def open_folder(self, path: Path) -> None:
         opener.open_folder(Path(path), startfile=self._startfile)
 
+    def open_file(self, path: Path) -> None:
+        opener.open_file(Path(path), startfile=self._startfile)
+
     def output_dir(self) -> Path:
         return self._config_source().resolved_output_dir
 

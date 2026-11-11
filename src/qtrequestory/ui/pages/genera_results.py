@@ -1,281 +1,292 @@
-"""The Genera tab's results: one row per document, a summary, what to do next.
+"""The Genera tab's results pane: always on screen, the thing the user waits for.
 
-**Rows.** Template key (monospace, elided in the middle — both ends of a key
-matter — full text as tooltip) · Cartella · Esito · Tipo · Durata · Motivo.
-An FDI with no call (or never looked up) has no key: its FDI is shown
-instead. The outcome is a glyph AND a word, its colour only a third channel
-(``ok`` green; failures and missing calls ``warn`` — DESIGN-ui keeps ``bad``
-for loss; skipped and cancelled muted), re-tinted when the theme changes.
+::
 
-**Live, then the truth.** While a run goes, rows arrive in completion order
-(:meth:`GeneraResults.add_live`); the final ``BatchReport`` replaces them in
-call order (:meth:`GeneraResults.show_report`) — also when no event came at
-all (a run stopped while the calls were looked up).
+    Esiti   Generazione finita · svil_20261110-143005   [Riprova i 3 non riusciti] [Apri cartella]
+    ( Generazione non partita: … )                       <- a refusal, warn banner
+    ( Genero su svil…                         12 di 56 ) <- while running, with the bar
+    (Tutti 22) (✓ 15 generati) (○ 3 senza chiamata) (✕ 4 non riusciti)
+    +--------------------------------------------------------------------+
+    | Template key | Esito | Cartella | Tipo | Durata | Motivo           |
+    +--------------------------------------------------------------------+
 
-**After.** "12 generati · 1 non riuscito · in svil_20261110-143005",
-[Riprova i N non riusciti] (only when there is one), [Apri cartella], and the
-"Solo non riusciti" filter. A refusal before anything started is the same
-line in the ``warn`` tone (:meth:`GeneraResults.show_message`).
+**Before the first run** the table's place holds what will happen (an icon,
+"Gli esiti compaiono qui…", the plan: what, from which logs, where the files
+go — ``GeneraViews.plan_lines``). **Live, then the truth**: while a run goes
+the rows arrive in completion order (:meth:`GeneraResults.add_live`) and the
+chips count them; the final ``BatchReport`` replaces them in call order
+(:meth:`GeneraResults.show_report`), also when no event came at all.
+
+**Rows** (``genera_outcomes``): double click or Enter opens a saved document;
+the row menu (:meth:`GeneraResults.menu_for_row`) opens the document or its
+folder and copies the key or the reason. The pane emits what was asked; the
+page does it through ``ExtractApi``.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from pathlib import Path
+
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QCheckBox,
+    QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
+    QMenu,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
-    QStyledItemDelegate,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from qtrequestory.ui import strings, theme
 from qtrequestory.ui.contracts import BatchReport, Outcome
-from qtrequestory.ui.pages.genera_retry import RETRY_STATUSES
+from qtrequestory.ui.pages.genera_chips import OutcomeChips, statuses_of
+from qtrequestory.ui.pages.genera_outcomes import COLUMNS, OutcomeTable, status_counts
+from qtrequestory.ui.pages.search_icons import ThemedIcons
+from qtrequestory.ui.pages.search_states import EmptyState
 
-__all__ = ["COLUMNS", "STATUS_LOOK", "GeneraResults", "outcome_cells", "report_summary"]
+__all__ = ["COLUMNS", "GeneraResults"]
 
-COL_KEY, COL_FOLDER, COL_STATUS, COL_TYPE, COL_DURATION, COL_REASON = range(6)
-COLUMNS = (strings.GENERA_COL_KEY, strings.GENERA_COL_FOLDER, strings.GENERA_COL_STATUS,
-           strings.GENERA_COL_TYPE, strings.GENERA_COL_DURATION, strings.GENERA_COL_REASON)
-#: status -> (glyph, word, tone); tone is a ``Tokens`` field ("muted" for the quiet ones).
-STATUS_LOOK = {
-    "ok": (strings.GENERA_GLYPH_OK, strings.GENERA_STATUS_OK, "ok"),
-    "html_skipped": (strings.GENERA_GLYPH_HTML, strings.GENERA_STATUS_HTML, "muted"),
-    "no_call": (strings.GENERA_GLYPH_NO_CALL, strings.GENERA_STATUS_NO_CALL, "warn"),
-    "failed": (strings.GENERA_GLYPH_FAILED, strings.GENERA_STATUS_FAILED, "warn"),
-    "cancelled": (strings.GENERA_GLYPH_CANCELLED, strings.GENERA_STATUS_CANCELLED, "muted"),
-}
-#: The status role of an outcome cell (for the re-tint).
-STATUS_ROLE = Qt.ItemDataRole.UserRole + 1
-#: Enough for a few rows before the page has to scroll.
-MIN_TABLE_HEIGHT = 168
+MARGIN = theme.SPACE[3] + theme.SPACE[0]
 
 
-def _duration(outcome: Outcome) -> str:
-    if not outcome.duration_ms and outcome.status not in ("ok", "failed"):
-        return ""
-    seconds = f"{outcome.duration_ms / 1000:.1f}".replace(".", ",")
-    return strings.GENERA_DURATION.format(seconds=seconds)
-
-
-def outcome_cells(outcome: Outcome) -> tuple[str, ...]:
-    """The six texts of a row, as shown."""
-    glyph, word, _tone = STATUS_LOOK.get(outcome.status, ("", outcome.status, "muted"))
-    key = outcome.key or (outcome.fdi or "")
-    return (key, strings.GENERA_FOLDERS_SEPARATOR.join(outcome.folders),
-            strings.GENERA_STATUS_CELL.format(glyph=glyph, word=word),
-            (outcome.doc_type or "").upper(), _duration(outcome), outcome.reason)
-
-
-def _part(n: int, one: str, many: str) -> str:
-    return one if n == 1 else many.format(n=n)
-
-
-def report_summary(report: BatchReport, *, with_folder: bool = True) -> str:
-    """"3 generati · 1 non riuscito · 2 saltati (HTML) · in svil_…"."""
-    counts: dict[str, int] = {}
-    for outcome in report.outcomes:
-        counts[outcome.status] = counts.get(outcome.status, 0) + 1
-    if not report.outcomes:
-        return strings.GENERA_SUM_NOTHING
-    parts = [_part(counts[status], one, many) for status, one, many in (
-        ("ok", strings.GENERA_SUM_OK_ONE, strings.GENERA_SUM_OK),
-        ("failed", strings.GENERA_SUM_FAILED_ONE, strings.GENERA_SUM_FAILED),
-        ("no_call", strings.GENERA_SUM_NO_CALL_ONE, strings.GENERA_SUM_NO_CALL),
-        ("html_skipped", strings.GENERA_SUM_HTML_ONE, strings.GENERA_SUM_HTML),
-        ("cancelled", strings.GENERA_SUM_CANCELLED_ONE, strings.GENERA_SUM_CANCELLED),
-    ) if counts.get(status)]
-    if report.zips:
-        parts.append(_part(len(report.zips), strings.GENERA_SUM_ZIP_ONE, strings.GENERA_SUM_ZIPS))
-    if with_folder:
-        parts.append(strings.GENERA_SUM_FOLDER.format(name=report.run_dir.name))
-    return strings.GENERA_SUM_SEPARATOR.join(parts)
-
-
-class _MiddleElide(QStyledItemDelegate):
-    """A template key or an FDI: elided in the middle, not at the end."""
-
-    def initStyleOption(self, option, index) -> None:  # noqa: N802 - Qt naming
-        super().initStyleOption(option, index)
-        option.textElideMode = Qt.TextElideMode.ElideMiddle
+def _banner(kind: str) -> tuple[QFrame, QLabel]:
+    frame = QFrame()
+    frame.setProperty("banner", kind)
+    label = QLabel()
+    label.setWordWrap(True)
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(theme.SPACE[2] + theme.SPACE[0], theme.SPACE[1] + theme.SPACE[0],
+                              theme.SPACE[2] + theme.SPACE[0], theme.SPACE[1] + theme.SPACE[0])
+    layout.addWidget(label, 1)
+    frame.setVisible(False)
+    return frame, label
 
 
 class GeneraResults(QWidget):
-    """Summary + actions over the results table (module docstring)."""
+    """The results pane (module docstring)."""
 
     retry_requested = Signal()
+    #: [Apri cartella]: the run's folder.
     open_requested = Signal()
+    open_file_requested = Signal(Path)
+    open_folder_requested = Signal(Path)
+    #: A row's text to copy (key or reason).
+    copy_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._outcomes: list[Outcome] = []
         self._actions: tuple[int, bool] = (0, False)  # (retry count, folder) of the report shown
+        icons = ThemedIcons(self)
+
+        title = QLabel(strings.GENERA_RESULTS)
+        theme.set_role(title, "section")
         self.summary = QLabel()
-        self.summary.setWordWrap(True)
-        self.only_failed = QCheckBox(strings.GENERA_ONLY_FAILED)
+        theme.set_role(self.summary, "muted")
+        # clipped on a narrow pane rather than widening the window (its tooltip is the folder)
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.retry_button = QPushButton(strings.GENERA_RETRY_ONE)
         self.retry_button.setToolTip(strings.GENERA_RETRY_TIP)
+        icons.set(self.retry_button, "arrow-sync")
         self.open_folder_button = QPushButton(strings.BTN_OPEN_FOLDER)
+        icons.set(self.open_folder_button, "folder-open")
+        head = QHBoxLayout()
+        head.setSpacing(theme.SPACE[2])
+        head.addWidget(title)
+        head.addWidget(self.summary, 1)
+        head.addWidget(self.retry_button)
+        head.addWidget(self.open_folder_button)
 
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(list(COLUMNS))
-        self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(False)
-        self.table.setMinimumHeight(MIN_TABLE_HEIGHT)
-        theme.set_table_look(self.table)
-        self._elide = _MiddleElide(self.table)
-        self.table.setItemDelegateForColumn(COL_KEY, self._elide)
-        self.table.setItemDelegateForColumn(COL_FOLDER, self._elide)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(COL_REASON, QHeaderView.ResizeMode.Stretch)
-        for column, width in ((COL_KEY, 300), (COL_FOLDER, 170), (COL_STATUS, 150),
-                              (COL_TYPE, 56), (COL_DURATION, 72)):
-            self.table.setColumnWidth(column, width)
-        self.empty = QLabel(strings.GENERA_RESULTS_EMPTY)
-        # right under the button, not centred far below it where a short window cuts it off
-        self.empty.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        theme.set_role(self.empty, "muted")
+        self.message_banner, self.message = _banner("warn")
+        self.progress = self._progress_strip()
+        self.chips = OutcomeChips()
+
+        self.empty = EmptyState("document-multiple")
+        self.empty.set_text(strings.GENERA_RESULTS_EMPTY_TITLE, [strings.GENERA_PLAN_NOT_READY])
+        self.waiting = EmptyState()
+        self.waiting.set_text(strings.GENERA_RESULTS_WAITING)
+        self.table = OutcomeTable()
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.empty)
-        self.stack.addWidget(self.table)
+        for widget in (self.empty, self.waiting, self.table):
+            self.stack.addWidget(widget)
 
-        bar = QHBoxLayout()
-        bar.setContentsMargins(0, 0, 0, 0)
-        bar.setSpacing(theme.SPACE[2])
-        bar.addWidget(self.summary, 1)
-        bar.addWidget(self.only_failed)
-        bar.addWidget(self.retry_button)
-        bar.addWidget(self.open_folder_button)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(theme.SPACE[1])
-        layout.addLayout(bar)
+        layout.setContentsMargins(MARGIN, MARGIN - theme.SPACE[0], MARGIN, MARGIN)
+        layout.setSpacing(theme.SPACE[2])
+        layout.addLayout(head)
+        layout.addWidget(self.message_banner)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.chips)
         layout.addWidget(self.stack, 1)
-        self.stack.setMinimumHeight(MIN_TABLE_HEIGHT)
 
-        self.only_failed.toggled.connect(lambda _on: self._apply_filter())
+        self.chips.changed.connect(self._on_chip)
+        self.table.activated_row.connect(self._activated)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         self.retry_button.clicked.connect(lambda _c=False: self.retry_requested.emit())
         self.open_folder_button.clicked.connect(lambda _c=False: self.open_requested.emit())
-        theme.signals.changed.connect(self._tint)
         self._set_actions(retry=0, folder=False)
-        self.only_failed.setVisible(False)
+        self.chips.setVisible(False)
         self._say("")
+
+    def _progress_strip(self) -> QFrame:
+        """"Genero su svil…  12 di 56" over a thin bar, in the progress tone."""
+        strip = QFrame()
+        strip.setProperty("banner", "progress")
+        self.progress_label = QLabel()
+        self.progress_count = QLabel()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        line = QHBoxLayout()
+        line.setSpacing(theme.SPACE[2])
+        line.addWidget(self.progress_label, 1)
+        line.addWidget(self.progress_count)
+        column = QVBoxLayout(strip)
+        column.setContentsMargins(theme.SPACE[2] + theme.SPACE[0], theme.SPACE[1] + theme.SPACE[0],
+                                  theme.SPACE[2] + theme.SPACE[0], theme.SPACE[2])
+        column.setSpacing(theme.SPACE[1] + theme.SPACE[0])
+        column.addLayout(line)
+        column.addWidget(self.progress_bar)
+        strip.setVisible(False)
+        return strip
+
+    # -- before any run ---------------------------------------------------------------
+
+    def show_plan(self, lines: list[str]) -> None:
+        """What the empty pane says (``GeneraViews.plan_lines``)."""
+        self.empty.set_text(strings.GENERA_RESULTS_EMPTY_TITLE, lines)
 
     # -- a run -----------------------------------------------------------------------
 
     def clear_for_run(self) -> None:
-        """A new run: no rows, no summary, no actions (the filter stays)."""
+        """A new run: no rows, no summary, no actions; every row is shown as it
+        arrives, and the filter chosen comes back with the report if the new
+        rows still have some for it (``genera_chips``)."""
         self._outcomes = []
         self._actions = (0, False)
-        self.table.setRowCount(0)
-        self.stack.setCurrentWidget(self.empty)
-        self.only_failed.setVisible(False)
+        self.table.clear_rows()
+        self.chips.begin_run()
+        self.chips.set_counts({})
+        self.chips.setVisible(False)
+        self.stack.setCurrentWidget(self.waiting)
+        self.message_banner.setVisible(False)
         self._say("")
         self._set_actions(retry=0, folder=False)
 
     def add_live(self, outcome: Outcome) -> None:
         self._outcomes.append(outcome)
-        self._append(outcome)
+        self._show_rows()
+        self.table.append(outcome)
 
     def show_report(self, report: BatchReport, retry: int) -> None:
-        """The truth: every outcome in call order, the summary, the actions."""
+        """The truth: every outcome in call order, the heading, the actions."""
         self._outcomes = list(report.outcomes)
-        self.table.setRowCount(0)
+        self.table.clear_rows()
         for outcome in self._outcomes:
-            self._append(outcome)
-        self.stack.setCurrentWidget(self.table if self._outcomes else self.empty)
-        self.only_failed.setVisible(bool(self._outcomes))
-        self._say(report_summary(report))
+            self.table.append(outcome)
+        self._show_rows(final=True)
+        if not self._outcomes:
+            self.stack.setCurrentWidget(self.empty)
+        title = strings.GENERA_STOPPED_TITLE if report.cancelled else strings.GENERA_DONE_TITLE
+        self._say(strings.GENERA_DONE_LINE.format(title=title, name=report.run_dir.name))
         self.summary.setToolTip(str(report.run_dir))
         self._actions = (retry, True)
         self._set_actions(retry=retry, folder=True)
         self.open_folder_button.setToolTip(str(report.run_dir))
 
     def show_message(self, text: str) -> None:
-        """A run that did not start: the reason, in the warn tone."""
-        self._say(text, tone="warn")
+        """A run that did not start, a folder that is gone: the reason, warn banner."""
+        self.message.setText(text)
+        self.message_banner.setVisible(bool(text))
+
+    def set_running(self, running: bool, status: str = "") -> None:
+        """The progress strip (``status`` while the total is unknown); the actions
+        of the previous run hide meanwhile and come back when it ends without a
+        new report (the count stopped, a refusal)."""
+        self.progress.setVisible(running)
+        if running:
+            self.message_banner.setVisible(False)
+            self.progress_bar.setRange(0, 0)  # indeterminate until BatchStarted
+            self.progress_label.setText(status)
+            self.progress_count.setText("")
+        retry, folder = (0, False) if running else self._actions
+        self._set_actions(retry=retry, folder=folder)
+
+    def show_progress(self, status: str, done: int, total: int, *, label: bool = True) -> None:
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(done)
+        if label:
+            self.progress_label.setText(status)
+            self.progress_count.setText(strings.GENERA_PROGRESS.format(done=done, total=total))
 
     # -- reading back ------------------------------------------------------------------
 
     def row_texts(self) -> list[tuple[str, ...]]:
-        return [tuple(self.table.item(r, c).text() for c in range(len(COLUMNS)))
-                for r in range(self.table.rowCount())]
+        return self.table.row_texts()
 
     def visible_rows(self) -> list[tuple[str, ...]]:
-        rows = self.row_texts()
-        return [row for r, row in enumerate(rows) if not self.table.isRowHidden(r)]
+        return [row for r, row in enumerate(self.row_texts()) if not self.table.isRowHidden(r)]
 
     def outcomes(self) -> list[Outcome]:
         return list(self._outcomes)
 
+    # -- rows ---------------------------------------------------------------------------
+
+    def menu_for_row(self, row: int) -> QMenu:
+        """The row menu, built and not shown (the right click shows it)."""
+        outcome = self._outcomes[row]
+        document = outcome.files[0] if outcome.files else None
+        menu = QMenu(self)
+        open_ = menu.addAction(strings.GENERA_ROW_OPEN)
+        open_.setShortcut(QKeySequence(Qt.Key.Key_Return))
+        open_.setShortcutVisibleInContextMenu(True)
+        open_.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)  # display only
+        folder = menu.addAction(strings.GENERA_ROW_FOLDER)
+        menu.addSeparator()
+        key = menu.addAction(strings.GENERA_ROW_COPY_KEY)
+        reason = menu.addAction(strings.GENERA_ROW_COPY_REASON)
+        open_.setEnabled(document is not None)
+        folder.setEnabled(document is not None)
+        reason.setEnabled(bool(outcome.reason))
+        if document is not None:
+            open_.triggered.connect(lambda _c=False: self.open_file_requested.emit(document))
+            folder.triggered.connect(lambda _c=False: self.open_folder_requested.emit(document.parent))
+        key.triggered.connect(lambda _c=False: self.copy_requested.emit(outcome.key or outcome.fdi or ""))
+        reason.triggered.connect(lambda _c=False: self.copy_requested.emit(outcome.reason))
+        return menu
+
+    def _context_menu(self, pos: QPoint) -> None:
+        index = self.table.indexAt(pos)
+        if not index.isValid() or index.row() >= len(self._outcomes):
+            return
+        self.table.selectRow(index.row())
+        menu = self.menu_for_row(index.row())
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+        menu.deleteLater()
+
+    def _activated(self, row: int) -> None:
+        if 0 <= row < len(self._outcomes) and self._outcomes[row].files:
+            self.open_file_requested.emit(self._outcomes[row].files[0])
+
     # -- internals ------------------------------------------------------------------------
 
-    def _append(self, outcome: Outcome) -> None:
+    def _show_rows(self, *, final: bool = False) -> None:
         self.stack.setCurrentWidget(self.table)
-        self.only_failed.setVisible(True)  # a filter over nothing is noise
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        texts = outcome_cells(outcome)
-        for column, text in enumerate(texts):
-            item = QTableWidgetItem(text)
-            item.setToolTip(text)
-            if column == COL_KEY:
-                item.setFont(theme.mono_font())
-            if column == COL_DURATION:
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            if column == COL_STATUS:
-                item.setData(STATUS_ROLE, outcome.status)
-            self.table.setItem(row, column, item)
-        self._tint_row(row)
-        self.table.setRowHidden(row, self._hidden(outcome))
+        self.chips.set_counts(status_counts(self._outcomes), final=final)
+        self.chips.setVisible(bool(self._outcomes))
 
-    def _hidden(self, outcome: Outcome) -> bool:
-        return self.only_failed.isChecked() and outcome.status not in RETRY_STATUSES
+    def _on_chip(self, key: str | None) -> None:
+        self.table.set_filter(statuses_of(key))
 
-    def _apply_filter(self) -> None:
-        for row, outcome in enumerate(self._outcomes[: self.table.rowCount()]):
-            self.table.setRowHidden(row, self._hidden(outcome))
-
-    def _tint(self) -> None:
-        for row in range(self.table.rowCount()):
-            self._tint_row(row)
-
-    def _tint_row(self, row: int) -> None:
-        item = self.table.item(row, COL_STATUS)
-        if item is None:
-            return
-        _g, _w, tone = STATUS_LOOK.get(item.data(STATUS_ROLE), ("", "", "muted"))
-        item.setForeground(QBrush(QColor(getattr(theme.tokens(), tone))))
-
-    def _say(self, text: str, tone: str = "") -> None:
+    def _say(self, text: str) -> None:
         self.summary.setText(text)
         self.summary.setVisible(bool(text))
-        if (self.summary.property("dot") or "") != tone:
-            self.summary.setProperty("dot", tone or None)
-            theme.repolish(self.summary)
 
     def _set_actions(self, *, retry: int, folder: bool) -> None:
         self.retry_button.setText(strings.GENERA_RETRY_ONE if retry == 1
                                   else strings.GENERA_RETRY.format(n=retry))
         self.retry_button.setVisible(retry > 0)
         self.open_folder_button.setVisible(folder)
-
-    def set_running(self, running: bool) -> None:
-        """While a run (or its count) goes the actions of the previous one are
-        hidden; they come back when it ends without a new report (the count
-        stopped, a refusal)."""
-        retry, folder = (0, False) if running else self._actions
-        self._set_actions(retry=retry, folder=folder)

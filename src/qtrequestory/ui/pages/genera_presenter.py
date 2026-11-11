@@ -9,7 +9,7 @@ views and the words (button, confirmation, notes) are in ``genera_views``.
   the Quadient list (only the ticked packages) or whole FDIs. A list loaded
   in "Elenco" also gives the typed keys their package folders (spec: "Se un
   elenco è caricato la cartella è il package dell'elenco").
-* **Where**: the enabled generators; "Chiamate da" follows the generator's
+* **Where**: the enabled generators; "Chiamate dai log di" follows the generator's
   name until the user picks another environment (picking the generator's
   name again makes it follow again); the destination folder.
 * **Headers**: the whole table that is sent, starting from
@@ -27,6 +27,7 @@ views and the words (button, confirmation, notes) are in ``genera_views``.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -281,10 +282,19 @@ class GeneraPresenter(QObject, GeneraViews):
             header_rows=tuple(self._headers), destination=self._destination or Path(),
             save_html=self._save_html, make_zip=self._make_zip)
 
-    def retry_request(self, report: BatchReport) -> BatchRequest:
+    def retry_request(self, report: BatchReport, previous: BatchRequest | None = None) -> BatchRequest:
         """The rows of ``report`` that did not end well (``genera_retry``),
-        with the choices of NOW."""
-        return self.build_request(self.retry_targets(report))
+        with the choices of NOW — the generator the tab shows included, also
+        for the exact calls of Ricerca's "Genera documento". ``previous`` is
+        the request that made ``report``: such a retry sends those same calls
+        and keeps what belongs to them, the logs they come from and "HTML
+        always saved, no zip"."""
+        request = self.build_request(self.retry_targets(report))
+        if previous is not None and any(t.kind == "call" for t in request.targets):
+            request = dataclasses.replace(
+                request, source_env=previous.source_env,
+                save_html=previous.save_html, make_zip=previous.make_zip)
+        return request
 
     @staticmethod
     def retry_targets(report: BatchReport) -> tuple[Target, ...]:
@@ -318,7 +328,7 @@ class GeneraPresenter(QObject, GeneraViews):
         self._follow()
 
     def _follow(self) -> None:
-        """"Chiamate da" takes the generator's name unless the user chose."""
+        """"Chiamate dai log di" takes the generator's name unless the user chose."""
         if self._source_chosen and self._source_env in self._envs:
             return
         self._source_chosen = False

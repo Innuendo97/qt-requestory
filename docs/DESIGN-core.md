@@ -67,7 +67,7 @@ src/qtrequestory/
 │   ├── index/builder.py   IndexBuilder
 │   ├── index/search.py    SearchQuery, SearchHit, search, read_body, coverage, list_template_keys
 │   ├── extract.py         pretty_json, output_name, write_temp_file, housekeeping
-│   ├── opener.py          find_editor, open_in_editor
+│   ├── opener.py          find_editor, open_in_editor, open_folder, open_file
 │   ├── scheduler.py       TaskSpec, build_task_xml, register/unregister/status/run_now, detect_legacy_task
 │   ├── jobs.py            run_sync_job, run_index_job
 │   └── facade.py          Config/Sync/Scheduler/Index/Extract/ArchiveService, ArchiveBusy: what the UI calls
@@ -96,7 +96,7 @@ src/qtrequestory/
 │   │   ├── model.py       Target, BatchRequest, Call, Outcome, BatchReport, BatchStarted/BatchItemDone
 │   │   ├── elenco.py      the Quadient CSV list: load_elenco, Elenco, NO_PACKAGE
 │   │   ├── headers.py     AUTOMATIC, default_rows, build_headers
-│   │   ├── resolve.py     parse_keys, targets_from_*, resolve (targets -> calls)
+│   │   ├── resolve.py     parse_keys, targets_from_* (keys, packages, FDIs, hits), resolve (targets -> calls)
 │   │   ├── memory.py      HtmlMemory: the keys known to answer HTML
 │   │   ├── output.py      Writer, run_dir_name, write_esito, zip_folders
 │   │   └── runner.py      run_batch (3 workers)
@@ -665,6 +665,8 @@ def housekeeping(out_dir, retention_hours, *, protected=None) -> int
 def save_as(path, text) -> None             # utf-8, no BOM
 def find_editor(configured: Path|None) -> Path|None   # configured → Notepad++ standard paths → PATH
 def open_in_editor(paths: list[Path], editor: Path|None) -> str   # Popen(editor, *paths) else os.startfile each; returns label
+def open_folder(path) -> None                                     # os.startfile: Explorer
+def open_file(path) -> None                                       # os.startfile: the document's default application (a generated PDF/HTML; ExtractApi.open_file)
 ```
 Output contract (non-negotiable): the file content is the pure body, starts with
 `{\n    "documents": [`, no wrapper, no comments, UTF-8 without BOM, accents intact.
@@ -1730,7 +1732,7 @@ reuses `generator.send`/`sniff`, `delivery.safe_component`, `fsutil.replace_with
 | `model.py` | frozen dataclasses: `Target`, `BatchRequest`, `Call`, `Outcome`, `BatchReport`, and the events `BatchStarted`/`BatchItemDone` (core `Event` subclasses, timestamp out of `==`) |
 | `elenco.py` | the CSV list: `load_elenco` → `Elenco` (packages, keys, dropped rows), `NO_PACKAGE = "_senza_pacchetto"`, `ElencoError` |
 | `headers.py` | `AUTOMATIC`, `default_rows`, `build_headers` |
-| `resolve.py` | `parse_keys`, the `targets_from_*` builders, `resolve` (targets → calls) |
+| `resolve.py` | `parse_keys`, the `targets_from_*` builders (`targets_from_hits` for exact calls), `exact_call`, `resolve` (targets → calls) |
 | `memory.py` | `HtmlMemory`, the keys known to answer HTML |
 | `output.py` | `Writer` (`reserve`/`write_reserved`), `run_dir_name`, `make_run_dir`, `write_esito`, `zip_folders` |
 | `runner.py` | `run_batch`, `count_calls` |
@@ -1765,6 +1767,20 @@ log": there is **no fallback** to another environment, because silently generati
 different environment's payload would be wrong in a way nobody would notice. A key in several
 packages is ONE call written into several folders (one request, not N). `source_env` is
 separate from the generator so that a coll payload can be sent to svil.
+
+**Exact calls** (Ricerca's "Genera documento", README §Genera). `Target("call", key,
+folders, hit=hit)` — built by `targets_from_hits(hits)`, one per distinct `SearchHit`, in
+order — is THAT logged call: `resolve` turns it into `Call(..., hit=hit, exact=True)` without
+looking anything up (`source_env` plays no part; a "call" target without its hit is a
+`ValueError`), never the newest call of its key. Its folder is the call's FDI, or
+`_senza_pacchetto` when it has none; two exact calls of one key in one folder get the usual
+`_2`. A call logged with an empty template key is not sent (`Call.sendable`): like an
+empty key on the key path it is "nessuna chiamata", not counted, no `template_key: ""`
+header ever leaves, and its row keeps the call. Everything else is `run_batch`'s: refusals, naming, `esito.csv`, cancellation (a call
+target never resolved is reported `cancelled` with its call), the pre-send generator check,
+the logs. Its `Outcome.exact_hit` is the call (`None` for every other kind), so the UI's
+retry re-sends the very same call. The UI sends these requests with `save_html=True` and
+`make_zip=False`.
 
 **Order of `run_batch`** (everything that can refuse does so before anything is created or
 sent, always as an Italian `ValueError`):
@@ -1822,7 +1838,7 @@ row before any call goes out.
 **HTML memory** (`memory.py`, `AppPaths.genera_html_file` = `genera-html.json` next to
 `config.json`, so it follows `--config`). The type of a document is known only from the
 answer, and an email template answers HTML on every call; to avoid re-calling them every
-time, a key that answered HTML is remembered while "Salva anche gli HTML" is off and is
+time, a key that answered HTML is remembered while "Salva anche le email (HTML)" is off and is
 skipped next time. With the option on every key is called and the memory follows the
 answers (HTML adds, PDF forgets). The file is `{"html_keys": [...]}` written atomically
 and is a cache: missing or corrupt means empty, a failed save is logged and the change kept
@@ -1836,7 +1852,8 @@ template keys, not about one run.
 (DESIGN-ui §Genera tab). `failed` carries the reason and, when a call was made, HTTP status
 and duration. "Retry" is a UI concern: it re-submits `failed`, `no_call` and `cancelled`;
 a row that came from an FDI is retried as that FDI narrowed to its failed keys
-(`Target.keys`), so it takes the same FDI's call again and lands in the FDI's folder.
+(`Target.keys`), so it takes the same FDI's call again and lands in the FDI's folder; a row
+of an exact call (`Outcome.exact_hit`) is retried as that call (`Target("call")`).
 
 **File naming** (`output.py`). Layout:
 `<run>\<folder>\<TK>.<ext>`, `<run>\<folder>.zip`, `<run>\esito.csv`, with `<folder>` = the

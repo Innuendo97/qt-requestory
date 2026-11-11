@@ -860,6 +860,11 @@ class FakeExtractApi:
         self._config_source = config_source
         self.opened: list[list[Path]] = []
         self.folders: list[Path] = []
+        #: The documents ``open_file`` was asked to open (nothing is launched).
+        self.files: list[Path] = []
+        #: Set it to make ``open_file`` fail as Windows can ("no application
+        #: for this type", a file moved away): recorded, then raised.
+        self.open_file_error: OSError | None = None
         self.editor: Path | None = None
 
     def pretty_json(self, raw: bytes) -> str:
@@ -886,6 +891,11 @@ class FakeExtractApi:
 
     def open_folder(self, path: Path) -> None:
         self.folders.append(Path(path))
+
+    def open_file(self, path: Path) -> None:
+        self.files.append(Path(path))
+        if self.open_file_error is not None:
+            raise self.open_file_error
 
     def output_dir(self) -> Path:
         return self._out_dir

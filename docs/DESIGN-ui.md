@@ -107,6 +107,7 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 | Ctrl+S | Ricerca | Salva con nome… |
 | Ctrl+O | Ricerca | open in the editor |
 | Ctrl+Shift+O | Ricerca | write the file and open its folder |
+| Ctrl+G | Ricerca | Genera documento of the selected calls (with several generators: the menu of generators) |
 | Ctrl+F | preview | find bar (Enter next; Esc closes) |
 | Space | omnibox | turn the typed token into a chip |
 | Backspace (empty) | omnibox | remove the last chip |
@@ -119,6 +120,10 @@ user's choice). The width goes to the pages; the sync state sits where it is see
 | F / T / V | Officina list or viewer | segna fatta / tollera / non è una variabile (toggles), then the next row |
 | Ctrl+Z | Officina case | undo the last review action of this case |
 | Ctrl+Enter | Genera | Genera (only when the button is enabled and no run is going) |
+| Enter | Genera button (focused) | press it (Genera, or Interrompi during a run) |
+| Space / click on the row | Genera package list | tick / untick the package |
+| Enter / double-click | Genera results table | open the saved document of the row |
+| Tab / Space | Genera outcome chips | reach a chip / show only that outcome (again: all) |
 | click / double-click / right-click | Officina highlight | select + mini-bar / segna fatta / action menu |
 | Ctrl+wheel | Officina viewer | zoom (the other viewer follows while in sync) |
 
@@ -427,9 +432,43 @@ compact read of the same state, not a second implementation of it.
     what README promises); otherwise the newest call.
   - **Drag out**: dragging a call hands out a real `.json` file (written on drag start,
     busy cursor meanwhile; an identical file already in the output folder is reused).
+  - **Selection**: several calls (Ctrl/Shift+click, `ExtendedSelection`); the preview
+    shows the current one (`ResultsView.selected_hit`), `selected_hits()` lists them all in
+    screen order. Group rows stay unselectable: clicking one makes it current with nothing
+    selected, and `group_hits(index)` gives its calls. Collapsing a group deselects its
+    calls (`ResultsView._deselect_children`): what "Genera documento" sends and counts is
+    exactly what is seen selected, never a call hidden in a closed group (Ctrl+A already
+    takes only the rows on screen).
 - **Row context menu** (icons + shortcuts shown): Apri in Notepad++ / Apri nell'editor ·
   Salva con nome… · Copia JSON · — · Copia FDI · Copia template key · Cerca solo questo
-  FDI · Cerca solo questa template key · — · Apri cartella del log del giorno.
+  FDI · Cerca solo questa template key · — · Apri cartella del log del giorno · — ·
+  Aggiungi all'Officina… · Genera documento (Ctrl+G). A right click on a call inside a
+  multiple selection keeps it ("Genera 3 documenti"); an FDI group row's menu is that one
+  entry, for its calls (`search_actions.context_menu_at` builds the menu without showing it).
+- **Genera documento** (`search_generate.SearchGenerate`, strings in
+  `ui/strings/genera_chiamate.py`): the document of the selected calls, from THOSE calls as
+  logged (`Target("call")`, DESIGN-core §Genera "Exact calls"). Entry points: a button in
+  the meta line before [Raggruppa per FDI] (`MetaLine.add_action`; icon `document-multiple`,
+  enabled with at least one call selected or a group row current, "Genera documento" /
+  "Genera N documenti"), the row menu entry and Ctrl+G. More than one enabled generator → a
+  small menu "su coll" / "su svil" (button menu, submenu in the row menu, popped up by
+  Ctrl+G with the default active): the calls' own environment first when it is a generator,
+  else the Genera tab's generator (`genera_calls.generator_order`). One generator: no menu.
+  No generator (or no Genera tab): the button is hidden, the menu entry disabled with the
+  reason as tooltip. The run is the Genera tab's (`GeneraPage.generate_calls`, see §Genera
+  tab): while a Genera run goes the entry points are disabled, tooltip "Genera sta già
+  generando…" (`GeneraPage.running_changed` keeps them current). While the Genera tab's
+  headers differ from Impostazioni (they are sent with these calls too) the enabled
+  button's tooltip ends with that warning (`GeneraPage.headers_note`), re-read whenever the
+  page is shown again (the headers are edited on the Genera tab, so coming back is when it
+  changes). Its links to the long-lived runner and Genera page are bound methods of the
+  `SearchGenerate` QObject, never lambdas: they go with it. Above 20 calls the
+  confirmation is Genera's own ("Genera 56 documenti" / "Annulla"). A refusal before sending
+  (no destination, a bad header, a run going) is a `warn` toast with [Apri Genera]. At the
+  end a toast: one document → opened with its default application
+  (`ExtractApi.open_file`), "Salvato <file> in <cartella>" · [Apri cartella]; several →
+  the counts · [Apri cartella] · [Vedi esiti] (the Genera tab); nothing generated → the
+  reason · [Vedi esiti]. A toast can carry two actions (`Toast.show_message(actions=…)`).
 - **States** (`search_states.py`, an icon, a title, left-aligned hints, optional buttons;
   never a modal; the preview half is hidden while one shows):
   - *start*: "Incolla un FDI, una template key o un nome file .json", what can be
@@ -1036,43 +1075,88 @@ destination is kept as text, and the default headers and the remembered list are
 Genera pays nothing for it, and a list file gone bad cannot break the start-up: restoring
 it never raises (it is dropped quietly, the preference kept).
 
-**Structure.** A `QScrollArea` with the form, and under it, **outside** the scroll area, the
-pinned action bar (`genera_actions.GeneraActionBar`, a `QFrame#generaActionBar` with a top
-border from `theme_qss`): the button is on screen at any window height and whatever has been
-scrolled. In the scroll area, top to bottom:
+**Structure: two panes** (redesign after 1.5.0). The first version was one scrolling column
+with the results at its bottom: at 1366×768 a run's outcome was below the fold, and the
+user scrolled to see what the button had done. Now nothing scrolls the page itself:
 
-1. the title;
-2. **Cosa generare** (`genera_source.py`): segments *Template key · Elenco · FDI*, and only
-   the current source is shown (hidden, not stacked: a `QStackedWidget` is as tall as its
-   tallest page, and the list is tall). Each source keeps its own text while the app runs;
-3. **Dove** (`genera_form.py`): *Genera su* (enabled generators), *Chiamate da* (log
-   environments, follows the generator until the user picks another), *Salva in*;
-4. **Header** (`genera_form.py`, `genera_headers.py`): one collapsed line, "Header · 7 inviati
-   · 1 modificato", opening the full table. It is Impostazioni's `HeaderTable` subclassed
-   to draw "automatico" (muted italic, drawn by a delegate, never stored) in the empty value
-   of an automatic name; Impostazioni's own profile table must keep showing an empty value
-   as empty, hence a subclass and not a change. This is the one place in the tab where
-   header values appear on screen;
-5. the results (`genera_results.py`), scrolled into view (never upwards) when a run starts
-   and when its report arrives.
+```
++-- setup (genera_setup) ---------+-- results (genera_results) -----------------+
+| Cosa generare [TK|Elenco|FDI]   | Esiti  Generazione finita · svil_… [Riprova][Apri cartella]
+|  the current source             | (Genero su svil…              12 di 56)     |
+|  ─── Dove ───                   | (Tutti 5) (✓ 3 generati) (✕ 2 non riusciti) |
+|  ─── ▸ Header 7 inviati ───     | rows — or, before a run, what will happen   |
+| (Header: 1 modificato  Mostra Ripristina)                                     |
+| [x] email (HTML)  [ ] zip       |                                             |
+| [     Genera 16 documenti     ] |                                             |
++---------------------------------+---------------------------------------------+
+```
 
-In the pinned bar: the two options (zip, HTML) and **the** button, with the first problem in
-plain Italian under it while it cannot be pressed; its text says what it will do ("Genera 12
-documenti", "Genera i documenti di 2 FDI"); during a run it is *Interrompi*, next to a
-progress bar ("Cerco le chiamate nei log di coll…" until the total is known, then "n di m").
-A double click on it is swallowed by an event filter (`MouseButtonDblClick` never reaches
-the button), so it starts one run and *Interrompi*, which takes the button's place at once,
-is not pressed by the second half of the double click; a deliberate click on *Interrompi*
-right after the start still works (a time window would have blocked it). The end-of-run
-toast sits in the bar's empty right half, beside the button, not over table rows.
+* **Setup** (`genera_setup.GeneraSetup`, `QFrame#generaSetup`): a comfortable fixed width
+  (`setup_width`: a third of the page within 400–480 px), the steps in the order they are
+  taken. The segments are pinned at the top, the footer (`genera_actions.GeneraActionBar`)
+  at the bottom; only the steps between scroll, and only when they must (Elenco, or the
+  header table open, on a 768 px screen).
+* **Results** (`genera_results.GeneraResults`): the rest of the width, always on screen, so
+  the outcome of a run never needs a scroll.
+* **Narrow window**: when the two panes do not fit side by side (below `WIDE_MIN = 1000` px,
+  or below the two panes' minimums) they stack, setup on top (3:2 of the height), the
+  button still pinned at the setup's bottom. The panes' layout never sets the page's
+  minimum width (`SetNoConstraint`; chips that wrap, a summary that clips): otherwise the
+  sum of the two panes would stop the window from ever getting narrow enough to stack.
+
+The steps:
+
+1. **Cosa generare** (`genera_source.py`): segments *Template key · Elenco · FDI*; only the
+   current source is shown (hidden, not stacked: a `QStackedWidget` is as tall as its
+   tallest page). The key and FDI fields ASK for four lines and take whatever height is
+   free (the scroll area sizes its content by height-for-width, i.e. by preferred heights:
+   a plain `QPlainTextEdit` prefers ~190 px and pushed "Dove" and "Header" off a 768 px
+   screen). The Elenco list (`genera_packages.PackageList`) has 30 px rows ticked by a
+   click anywhere on the row or Space (a double click ticks once: its second release is
+   skipped, and the next press forgets that even when the release slipped off the rows),
+   the key count right-aligned and muted, a filter,
+   *Tutti*/*Nessuno* on the rows shown, and the running total under it;
+2. **Dove** (`genera_form.WhereStep`): *Genera su* and *Chiamate dai log di* side by side,
+   labels above. When the logs are not the generator's own a note says so in place ("I
+   payload vengono dai log di coll e vanno al generatore svil.") with *Usa i log di svil*;
+   then *Salva in*;
+3. **Header** (`genera_form.HeadersStep`, `genera_headers.py`): one line, "▸ Header  7
+   inviati". When the table differs from Impostazioni a warn pill ("1 modificato") and
+   *Ripristina* appear on that same line, closed or open: the edit also changes Ricerca's
+   "Genera documento", so it must be visible and undone in one click without opening
+   anything. When that line is scrolled out of view (Elenco on a short screen) the footer
+   recalls it: "Header: 1 modificato  Mostra  Ripristina" (`GeneraSetup._sync_reminder`).
+   Opened, the table is Impostazioni's `HeaderTable` subclassed to draw "automatico" (muted
+   italic, drawn by a delegate, never stored) in the empty value of an automatic name. It
+   is exactly as tall as its rows, up to 8, and beyond that scrolls a whole row at a time:
+   the old fixed 200 px always cut the last row in half. *Aggiungi* appends a row, scrolls
+   it into view and opens its name cell for typing (`GeneraHeaderTable.add_and_edit`).
+   A cell still open in edit mode commits only when it closes, so every way of starting a
+   run — Genera, Ctrl+Invio from inside the cell, *Riprova*, Ricerca's `generate_calls` —
+   first commits it (`GeneraHeaderTable.commit_editing`): what is sent is what the cell
+   shows, never the value it had before.
+   This is the one place in the tab where header values appear on screen.
+
+The footer: the reminder above, the two options (*Salva anche le email (HTML)*, *Crea anche
+gli zip*) and **the** button, as wide as the pane, with the first problem in plain Italian
+under it while it cannot be pressed; its text says what it will do ("Genera 12 documenti",
+"Genera i documenti di 2 FDI"); during a run it is *Interrompi*. Enter on the focused button
+presses it. A double click on it is swallowed by an event filter (`MouseButtonDblClick` never
+reaches the button), so it starts one run and *Interrompi*, which takes the button's place at
+once, is not pressed by the second half of the double click; a deliberate click on
+*Interrompi* right after the start still works (a time window would have blocked it).
 
 Without an enabled generator the form is replaced by an `EmptyState` pointing to
 Impostazioni › Officina — but never while a run (or its count) goes, nor while a finished
 run's results are on screen: a generator disabled meanwhile becomes the problem line under
 the button, and the engine itself stops sending to it (DESIGN-core §Genera, step 4).
-The code is split: `genera_page.py` builds and renders, `genera_run.py` (`GeneraRun` mixin)
-holds the start/count/confirm/stop flow, `genera_views.py` the presenter's read-only views
-and wording.
+The code is split: `genera_page.py` builds the two panes, arranges them and renders;
+`genera_setup.py`, `genera_source.py`, `genera_packages.py`, `genera_form.py`,
+`genera_headers.py` and `genera_actions.py` are the setup pane; `genera_results.py`,
+`genera_chips.py` and `genera_outcomes.py` the results pane; `genera_run.py` (`GeneraRun`
+mixin) holds the start/count/confirm/stop flow, `genera_views.py` the presenter's read-only
+views and wording (the button, the plan, the notes); the pane's QSS is
+`theme_qss_genera.py`.
 
 **Presenter.** `genera_presenter.py` is a `QObject` with one signal, `changed`: it holds
 every choice, validates, and builds the `BatchRequest`; the page re-renders from it and the
@@ -1082,7 +1166,10 @@ without a window (`tests/ui/test_genera_presenter.py`). `problems()` lists in sc
 so the line under the button names the first thing to fix. The estimate before the lookup is
 the number of distinct keys, of the ticked packages' keys, or of FDIs. Above
 `CONFIRM_ABOVE = 20` **calls** the run is confirmed first, naming the count and both
-environments. With FDIs the number of calls is known only from the logs, so the page first
+environments, with buttons that say what they do — *Genera 56 documenti* / *Annulla*, the
+safe one the default and the Esc button (`officina_dialogs.confirm(…, yes=, no=)`;
+`confirm_box` builds it, a plain `confirm` says *Sì* / *No*: never Qt's English
+Yes/No). With FDIs the number of calls is known only from the logs, so the page first
 runs a short job under the same exclusive name, `batch_count` (reads only), with the same
 "Cerco le chiamate…" and the same *Interrompi*; the question then says "Partono 37 chiamate
 (2 FDI)…". A stop or a window closing during the count starts nothing; the run itself is
@@ -1095,30 +1182,72 @@ one job per call: the engine already runs three at once, and a per-call job woul
 hundreds of jobs on the runner and made "stop" and "report" the page's problem. The events
 (`BatchStarted`, `BatchItemDone`) arrive on `signals.progress`, a live preview of rows in
 completion order; the `BatchReport` on `signals.result` is the truth and replaces them in
-call order. A `ValueError` from the job is the core's Italian refusal and is said inline
-under the button, never in a dialog; any other exception is shown as a generic line (`GENERA_CRASHED`: its
-text was not written for the user). While a run goes the
-sources, "Dove", the headers and the options are disabled. At the end a toast gives the
-counts (tone `warn` if something is unfinished); no payload, header value or link reaches a
-status line or toast. Interrompi cancels the job's token: calls already on the wire finish
+call order. A `ValueError` from the job is the core's Italian refusal and is said inline in
+a warn banner at the top of the results, never in a dialog; any other exception is shown as a
+generic line (`GENERA_CRASHED`: its text was not written for the user). While a run goes the
+sources, "Dove", the headers and the options are disabled, and the progress strip sits at
+the top of the results ("Cerco le chiamate nei log di coll…" until the total is known, then
+"Genero su svil…  n di m" over a bar). At the end the results' heading says "Generazione
+finita · <run folder>"; a toast with the counts (tone `warn` if something is unfinished) and
+*Vedi esiti* comes only when the tab is NOT on screen — on screen, the results already say
+it where the eyes are. No payload, header value or link reaches a status line or toast. Interrompi cancels the job's token: calls already on the wire finish
 and are saved, the rest become "annullato". Ctrl+Enter generates when the button can.
 **Riprova i non riusciti** (`genera_retry.py`) re-submits the `failed`, `no_call` and
 `cancelled` rows as new targets, with the choices of *now* (generator, headers, folder), not
-those of the failed run. Rows from an FDI are grouped into that FDI narrowed to its failed
+those of the failed run — a run of exact calls (below) too: its retry sends those same calls
+to the generator the tab shows now (the button says "con le scelte di ora"), keeping only
+what belongs to the calls, the logs they come from and "HTML always, no zip". Rows from an FDI are grouped into that FDI narrowed to its failed
 keys (`Target("fdi", fdi, keys=…)`): the same FDI's calls, into the FDI's folder, never the
 newest call of the key from some other pratica. An outcome with no key (an FDI with no call
 at all) retries the whole FDI. The button's count is the number of calls sent (a whole FDI
 counts one). *Apri cartella* checks the folder first: a run stopped during the lookup made
 none, and a folder moved away says so inline.
 
-**Results.** Template key (monospace, elided in the middle: both ends of a key matter, full
-text in the tooltip) · Cartella · Esito · Tipo · Durata · Motivo. The outcome is a glyph AND
-a word, colour only a third channel (`ok` green; failed and no-call `warn`, because
-DESIGN-ui's `bad` is kept for loss; skipped and cancelled muted), re-tinted on a theme
-change. The UI's words (*generato*, *saltato: HTML*, *nessuna chiamata*, *non riuscito*,
-*annullato*) are shorter than `esito.csv`'s fixed vocabulary on purpose and live in
-`ui/strings/genera.py`. A summary ("1 generato · 1 non riuscito · in svil_…"), *Apri cartella*
-and the *Solo non riusciti* filter sit above the table.
+**Results.** Before the first run the table's place holds an empty state that says what
+will happen: "Gli esiti compaiono qui, una riga per documento", then the plan
+(`GeneraViews.plan_lines`: what, on which generator, from which logs; where the files go,
+`<destination>\svil_<data-ora>\<package>`; how to open a document) — or, while something
+is missing, "Scegli cosa generare e dove…". The table: Template key (monospace, elided in
+the middle: both ends of a key matter, full text in the tooltip) · Esito · Cartella · Tipo ·
+Durata · Motivo. The outcome is a glyph AND a word, colour only a third channel (`ok` green;
+failed and no-call `warn`, because DESIGN-ui's `bad` is kept for loss; skipped e-mails and
+cancelled muted), re-tinted on a theme change. The UI's words (*generato*, *email saltata*,
+*nessuna chiamata*, *non riuscito*, *annullato*) are shorter than `esito.csv`'s fixed
+vocabulary on purpose and live in `ui/strings/genera.py`. Over the table, the **outcome
+chips** (`genera_chips.OutcomeChips`): "Tutti 22" and one chip per outcome that occurred
+("✓ 15 generati", "○ 3 senza chiamata", "✕ 4 non riusciti"…), tinted by tone, exclusive,
+each a filter (a second click, or *Tutti*, shows everything). The last chip, "↻ 5 da
+riprovare" (`genera_chips.RETRY`), is every row *Riprova* sends again (`RETRY_STATUSES`:
+failed, no call, cancelled together — the old "Solo non riusciti" view): the glyph of the
+button's icon, the button named in its tooltip, shown only when those rows are of more than
+one kind (with one kind it would repeat that kind's chip). **The filter survives a new run**
+or a retry: while the run goes every row is shown as it arrives (a chip picked meanwhile is
+the new choice); with the report the choice comes back if the new rows still have some for
+it (the retry chip's by its single kind's chip when only one kind is left), otherwise the
+filter falls back to *Tutti* and the choice is forgotten. They wrap on a narrow pane. A
+current row a filter hides moves to the first row still shown (or none), so Enter never
+opens a row that is off screen. **Rows**: a
+double click or Enter on a row whose document was saved opens it (`ExtractApi.open_file`);
+the row menu offers *Apri il documento*, *Apri la cartella del documento*, *Copia template
+key*, *Copia motivo* (the copy says "Copiato negli appunti"). *Riprova i n non riusciti*
+and *Apri cartella* sit in the results' heading.
+
+**Exact calls from Ricerca** (`genera_calls.py`, the `GeneraCalls` mixin of the page).
+`GeneraPage.generate_calls(hits, generator, *, parent=None, notify=None) -> (started,
+reason)` sends those calls as logged (`targets_from_hits`) through the tab's own `_run`:
+the same exclusive `GENERA_JOB`, results table, progress and retry, and the same
+confirmation above `CONFIRM_ABOVE` calls (shown over `parent`, Ricerca). It takes from the
+tab the header rows on screen (edits included; `presenter.activate()` first, so a tab never
+shown still has them) and the destination; it never takes the HTML or zip options: HTML is
+always saved (the memory follows the answers) and there is no zip. `calls_problems` refuses
+before anything starts: a generator that is not enabled, no absolute destination, a bad
+header row. `notify(report, "")` — or `notify(None, reason)` for a refusal of the core — is
+called once at the end *instead of* the tab's toast (the caller says it); a retry started
+from the tab is the tab's own run again, to the tab's generator of now. `running_changed(bool)` is emitted whenever a run
+(or a count) starts or ends. `calls_generators(hits)` gives the generator order for the
+Ricerca menu. `headers_note()` is what Ricerca appends to its button's tooltip while the
+tab's headers differ from Impostazioni ("Attenzione: gli header della scheda Genera sono
+modificati (1) e valgono anche qui.").
 
 **Preferences** (`ui/prefs.py`, through `actions.user_settings()`; `genera_prefs.py`):
 `genera/mode`, `genera/generator`, `genera/source_env` (empty = follows the generator),
@@ -1136,8 +1265,11 @@ override would outlive its reason: "Ripristina" always goes back to Impostazioni
 saved in Impostazioni refreshes the header table too, unless the user has edited it (their
 edits win). The remembered list's ticks start empty on every load.
 
-**Screenshots.** `scripts/dev/shoot.py` scenes `genera-vuota`, `genera-elenco` and
-`genera-esiti` (synthetic data: a fake generator, a made-up list, a mixed run).
+**Screenshots.** `scripts/dev/shoot.py` scenes `genera-vuota`, `genera-pronta`,
+`genera-elenco`, `genera-fdi`, `genera-header-aperti`, `genera-header-promemoria`,
+`genera-conferma`, `genera-in-corso`, `genera-esiti`, `genera-esiti-filtro`,
+`genera-stretta` and `ricerca-genera` (synthetic data: a fake generator, a made-up list, a
+mixed run, a held run).
 
 ## Impostazioni page
 
@@ -1159,7 +1291,10 @@ tooltip) + [Sfoglia…] + an [Apri cartella] icon — picked, not typed.
    folder picker, then the dialog); while the saved log folder is unusable the row says
    why and both buttons are off. Indice: "{files} file · {entries} richieste · fino al
    {last}" + [Ricostruisci indice] (confirmation, then job `index` with
-   `full_rebuild=True`).
+   `full_rebuild=True`). That question and the one after a new log folder ("Indicizza ora" /
+   "Non ora") go through `officina_dialogs.confirm`: Italian buttons that say what they do,
+   the safe one the default and the Esc button (Qt's standard Yes/No were English and
+   defaulted to Yes).
 3. **Ambienti** — the table [Attivo | Nome | URL] with Aggiungi / Rimuovi / Importa da
    file… / [Verifica] (probes the rows on screen, not what is on disk — see the wizard) and
    the VPN note.
@@ -1420,6 +1555,16 @@ to copy qtkit's style. The look is our own — not qtkit's either.
   downloaded): the calendar square, the badge and chip dot, the `syncBannerBad` banner and
   the Ricerca `banner="bad"` warning — and, in the Officina, for **regressions** and the
   struck target text of a difference (§Officina).
+- **Check indicators**: the same QSS indicator (a 1 px `muted` border on `surface`, the
+  accent fill when ticked) styles `QCheckBox`, `QTableView`, `QListView` and `QTreeView`
+  indicators. Before, item views kept Fusion's own box, drawn from palette roles that are
+  almost the surface colour in dark mode: an unticked package in Genera's list was
+  invisible (1.2:1 against the surface; now above 5:1 in both themes,
+  `tests/ui/test_genera_redesign.py`). A disabled `role="link"` button stays transparent,
+  in `muted` (the generic disabled button background made it a dark chip).
+- Genera's own rules (the setup pane and its footer, the package rows, the outcome chips
+  with `outcomeChip="all|ok|warn|muted"`) are in `ui/theme_qss_genera.py`, appended to the
+  template like `theme_qss_officina.py`.
 - Icon tint and the JSON highlighter read `theme.tokens()` and re-derive on
   `theme.signals.changed`; `theme.apply` clears the icon cache.
 - Fonts: UI Segoe UI Variable Text → Segoe UI; monospace only through `theme.mono_font()`

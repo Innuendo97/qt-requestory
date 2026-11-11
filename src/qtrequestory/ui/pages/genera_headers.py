@@ -9,6 +9,14 @@ delegate, never stored, so it is not sent and not counted as a change.
 A subclass rather than a change to ``HeaderTable``: Impostazioni's profile
 has no automatic rows and must keep showing an empty value as empty. This is
 the only place in the tab where header VALUES are shown.
+
+**Whole rows only.** The table is exactly as tall as its rows (header + rows
++ frame), up to :data:`MAX_ROWS`; beyond that it scrolls one row at a time
+and its height stays a whole number of rows — the old fixed 200 px always cut
+the last visible row in half. :meth:`GeneraHeaderTable.add_and_edit`
+("Aggiungi") appends a row, brings it into view and opens its name cell for
+typing; :meth:`GeneraHeaderTable.commit_editing` closes a cell still open, so
+a run started from inside it sends what it shows.
 """
 from __future__ import annotations
 
@@ -17,8 +25,11 @@ from collections.abc import Sequence
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
+    QAbstractItemView,
     QApplication,
     QLineEdit,
+    QSizePolicy,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -32,8 +43,10 @@ from qtrequestory.ui.pages.settings_officina_tables import HeaderTable
 __all__ = ["GeneraHeaderTable", "headers_summary", "is_automatic", "modified_count"]
 
 _AUTOMATIC = frozenset(name.casefold() for name in AUTOMATIC_HEADERS)
-#: A header, five rows and a little air: the profile rarely holds more.
-TABLE_HEIGHT = 200
+#: The most rows shown at once; more scroll, a whole row at a time.
+MAX_ROWS = 8
+#: The fewest: an empty table still reads as a table.
+MIN_ROWS = 2
 
 
 def is_automatic(name: str) -> bool:
@@ -107,9 +120,16 @@ class GeneraHeaderTable(HeaderTable):
         super().__init__(parent)
         self._value_delegate = _AutomaticValueDelegate(self)
         self.setItemDelegateForColumn(self.COL_VALUE, self._value_delegate)
-        self.setFixedHeight(TABLE_HEIGHT)
+        self.setMinimumHeight(0)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerItem)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         # a rename in the name column changes how the value cell reads
         self.itemChanged.connect(lambda _item: self.viewport().update())
+        model = self.model()
+        model.rowsInserted.connect(lambda *_a: self.fit_height())
+        model.rowsRemoved.connect(lambda *_a: self.fit_height())
+        self.fit_height()
 
     def set_pairs(self, rows: Sequence[tuple[str, str]]) -> None:
         """Replace the rows, in order (a load: ``changed`` is not emitted).
@@ -119,6 +139,53 @@ class GeneraHeaderTable(HeaderTable):
         for name, value in rows:
             self._new_row([QTableWidgetItem(name), QTableWidgetItem(value)])
         self.show_problems({})
+
+    # -- whole rows (module docstring) ----------------------------------------------------
+
+    def fit_height(self) -> None:
+        """As tall as the first :data:`MAX_ROWS` rows (at least :data:`MIN_ROWS`):
+        never a row cut in half, never empty space under the last one."""
+        heights = [self.rowHeight(r) for r in range(min(self.rowCount(), MAX_ROWS))]
+        default = self.verticalHeader().defaultSectionSize()
+        heights += [default] * max(MIN_ROWS - len(heights), 0)
+        # isHidden, not isVisible: the table is fitted while its panel is still closed
+        header = 0 if self.horizontalHeader().isHidden() else self.horizontalHeader().sizeHint().height()
+        height = sum(heights) + header + 2 * self.frameWidth()
+        if self.height() != height or self.minimumHeight() != height:
+            self.setFixedHeight(height)
+
+    def show_problems(self, by_row) -> None:
+        super().show_problems(by_row)  # resizes the rows to their (wrapped) problems
+        self.fit_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self.fit_height()
+
+    def add_and_edit(self) -> int:
+        """"Aggiungi": a new row, on screen, its name cell open for typing."""
+        row = self.add_row()
+        self.fit_height()
+        item = self.item(row, self.COL_NAME)
+        self.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtBottom)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.setCurrentCell(row, self.COL_NAME)
+        self.editItem(item)
+        return row
+
+    def commit_editing(self) -> bool:
+        """The cell open in edit mode, if any, into the table now (``changed``
+        follows, as for any edit), and closed: a run built right after sends
+        what the cell shows (Ctrl+Invio from inside it, Riprova, Ricerca's
+        calls) — the editor would commit only once it lost the focus."""
+        if self.state() != QAbstractItemView.State.EditingState:
+            return False
+        editor = self.indexWidget(self.currentIndex())
+        if editor is None:
+            return False
+        self.commitData(editor)
+        self.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+        return True
 
     def shown_value(self, row: int) -> str:
         """What the value cell reads: the value, or "automatico"."""

@@ -74,6 +74,11 @@ class MetaLine(QWidget):
         self.layout_.addWidget(self.group_button)
         self._update_separator()
 
+    def add_action(self, widget: QWidget) -> None:
+        """An action on the results (e.g. [Genera documento]), right before
+        [Raggruppa per FDI]."""
+        self.layout_.insertWidget(self.layout_.indexOf(self.group_button), widget)
+
     def set_summary(self, text: str) -> None:
         self.summary_label.setText(text)
         self._update_separator()

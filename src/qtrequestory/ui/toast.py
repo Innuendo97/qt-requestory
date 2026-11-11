@@ -12,7 +12,8 @@ resize. It is never wider than the parent minus both margins: a longer message
 ("Salvato: <full path>") is elided in the middle, where a path is least useful.
 It ignores the mouse, so it never covers a click meant for the table
 underneath — except a toast carrying an **action** ("Segnata fatta «…» ·
-Annulla (Ctrl+Z)", Officina): its button takes the click, and it stays up
+Annulla (Ctrl+Z)", Officina), or two ("Apri cartella" · "Vedi esiti",
+Ricerca's "Genera documento"): its buttons take the click, and it stays up
 longer (:data:`ACTION_MS`). It fades in and out unless motion is reduced —
 the application property ``reduce_motion`` or the system's own animation switch.
 """
@@ -30,11 +31,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from qtrequestory.ui import theme
 
-__all__ = ["ACTION_MS", "DEFAULT_MS", "MARGIN", "Toast"]
+__all__ = ["ACTION_MS", "DEFAULT_MS", "MARGIN", "MAX_ACTIONS", "Toast"]
 
 #: Distance from the parent's right and bottom edges.
 MARGIN = 16
@@ -45,6 +46,8 @@ FADE_MS = 150
 TONES = ("ok", "warn", "bad", "neutral")
 #: The leading mark per tone; tinted by the theme (``QLabel#toastMark``).
 MARKS = {"ok": "✓", "warn": "!", "bad": "✕", "neutral": "•"}
+#: At most this many action buttons on one toast.
+MAX_ACTIONS = 2
 
 
 class Toast(QFrame):
@@ -62,22 +65,30 @@ class Toast(QFrame):
         self._mark.setObjectName("toastMark")
         self._label = QLabel()
         self._text = ""
-        #: The optional action: "·", the button, the key that does the same.
-        self._sep = QLabel("·")
-        self.action_button = QPushButton()
-        self.action_button.setObjectName("toastAction")
-        self.action_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        # a click must not pull the focus out of the page (F, T, Ctrl+Z keep working)
-        self.action_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.action_button.clicked.connect(self._on_action)
+        #: The optional actions: "·" and a button each, then the key that does the same.
+        self._seps: list[QLabel] = []
+        self._buttons: list[QPushButton] = []
+        for i in range(MAX_ACTIONS):
+            self._seps.append(QLabel("·"))
+            button = QPushButton()
+            button.setObjectName("toastAction")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            # a click must not pull the focus out of the page (F, T, Ctrl+Z keep working)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda _checked=False, i=i: self._on_action(i))
+            self._buttons.append(button)
+        self.action_button = self._buttons[0]
         self._hint = QLabel()
         self._hint.setObjectName("toastHint")
-        self._action: Callable[[], None] | None = None
+        self._actions: list[Callable[[], None] | None] = [None] * MAX_ACTIONS
         layout.addWidget(self._mark)
         layout.addWidget(self._label)
-        for widget in (self._sep, self.action_button, self._hint):
-            layout.addWidget(widget)
-            widget.setVisible(False)
+        for sep, button in zip(self._seps, self._buttons):
+            for widget in (sep, button):
+                layout.addWidget(widget)
+                widget.setVisible(False)
+        layout.addWidget(self._hint)
+        self._hint.setVisible(False)
 
         self._effect = QGraphicsOpacityEffect(self)
         self._effect.setOpacity(1.0)
@@ -96,21 +107,26 @@ class Toast(QFrame):
 
     def show_message(self, text: str, tone: str = "neutral", ms: int = DEFAULT_MS,
                      action: tuple[str, Callable[[], None]] | None = None,
-                     hint: str = "") -> None:
+                     hint: str = "",
+                     actions: Sequence[tuple[str, Callable[[], None]]] | None = None) -> None:
         """Show ``text`` for ``ms`` milliseconds, replacing whatever is up.
         ``action`` = ``(button text, callback)``: a button after the text
         (the toast then takes clicks, and stays at least :data:`ACTION_MS`);
-        ``hint`` follows it ("(Ctrl+Z)")."""
+        ``actions``: up to :data:`MAX_ACTIONS` of them, in order, instead of
+        ``action``; ``hint`` follows them ("(Ctrl+Z)")."""
         tone = tone if tone in TONES else "neutral"
         self._text = text
-        self._action = action[1] if action is not None else None
-        self.action_button.setText(action[0] if action is not None else "")
+        wanted = list(actions or ([action] if action is not None else []))[:MAX_ACTIONS]
+        for i, (sep, button) in enumerate(zip(self._seps, self._buttons)):
+            label, callback = wanted[i] if i < len(wanted) else ("", None)
+            self._actions[i] = callback
+            button.setText(label)
+            sep.setVisible(i < len(wanted))
+            button.setVisible(i < len(wanted))
         self._hint.setText(hint)
-        for widget in (self._sep, self.action_button):
-            widget.setVisible(action is not None)
-        self._hint.setVisible(action is not None and bool(hint))
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
-        if action is not None:
+        self._hint.setVisible(bool(wanted) and bool(hint))
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, not wanted)
+        if wanted:
             ms = max(ms, ACTION_MS)
         self._mark.setText(MARKS[tone])
         self.setProperty("tone", tone)
@@ -131,6 +147,10 @@ class Toast(QFrame):
     def text(self) -> str:
         """The whole message, even when the label shows it elided."""
         return self._text
+
+    def action_buttons(self) -> tuple[QPushButton, ...]:
+        """The action buttons, shown or not, in order."""
+        return tuple(self._buttons)
 
     def dismiss(self) -> None:
         """Hide now (fading out when motion is allowed)."""
@@ -170,7 +190,7 @@ class Toast(QFrame):
         margins = self.layout().contentsMargins()
         spacing = self.layout().spacing()
         chrome = margins.left() + margins.right() + spacing + self._mark.sizeHint().width()
-        for widget in (self._sep, self.action_button, self._hint):
+        for widget in (*self._seps, *self._buttons, self._hint):
             if not widget.isHidden():
                 chrome += spacing + widget.sizeHint().width()
         self._label.setText(QFontMetrics(self._label.font()).elidedText(
@@ -179,8 +199,9 @@ class Toast(QFrame):
         self.move(parent.width() - self.width() - MARGIN,
                   parent.height() - self.height() - MARGIN)
 
-    def _on_action(self) -> None:
-        action, self._action = self._action, None
+    def _on_action(self, i: int = 0) -> None:
+        action = self._actions[i]
+        self._actions = [None] * MAX_ACTIONS
         self.dismiss()
         if action is not None:
             action()

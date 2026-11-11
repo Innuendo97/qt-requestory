@@ -102,6 +102,10 @@ ENV_IMPORT_ERROR = "Impossibile leggere il file degli ambienti: {error}"
 # -- generic buttons ---------------------------------------------------------
 
 BTN_CANCEL = "Annulla"
+BTN_OK = "OK"
+#: A yes/no question whose caller did not name its buttons (Qt's own are in English).
+BTN_YES = "Sì"
+BTN_NO = "No"
 BTN_SAVE = "Salva"
 BTN_SAVE_AS = "Salva con nome…"
 BTN_BROWSE = "Sfoglia…"

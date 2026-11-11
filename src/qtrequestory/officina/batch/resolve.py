@@ -11,6 +11,12 @@
   → for each of those keys, the newest call OF THAT FDI (never the newest
   call of the key in another FDI), in the order of ``keys``; a key the FDI
   has no call for is a call without a hit.
+- One exact call (``Target.kind == "call"``, Ricerca's "Genera documento")
+  → that very call, as logged: nothing is looked up (``source_env`` plays no
+  part), never the newest call of its key. The folder is its FDI, or
+  ``NO_PACKAGE`` for a call without one. A call logged with an empty
+  template key is not sent: like an empty key on the key path it ends as
+  "nessuna chiamata" (``Call.sendable``), and its row keeps the call.
 - Nothing found → a call without a hit ("nessuna chiamata nei log"), never a
   fallback to another environment.
 
@@ -74,6 +80,20 @@ def targets_from_fdis(fdis: Sequence[str]) -> tuple[Target, ...]:
     return tuple(Target("fdi", fdi, ()) for fdi in _unique(fdis))
 
 
+def targets_from_hits(hits: Sequence[SearchHit]) -> tuple[Target, ...]:
+    """One exact ``"call"`` target per distinct call in ``hits`` (the same
+    call twice is sent once), in order; its folder is the call's FDI, or
+    ``NO_PACKAGE``."""
+    targets: list[Target] = []
+    seen: set[SearchHit] = set()
+    for hit in hits:
+        if hit in seen:
+            continue
+        seen.add(hit)
+        targets.append(Target("call", hit.template_key, (hit.fdi or NO_PACKAGE,), hit=hit))
+    return tuple(targets)
+
+
 def resolve(
     targets: Sequence[Target],
     *,
@@ -93,9 +113,21 @@ def resolve(
             calls.append(_key_call(value, target.folders, index, source_env))
         elif target.kind == "fdi":
             calls.extend(_fdi_calls(value, index, source_env, target.keys))
+        elif target.kind == "call":
+            calls.append(exact_call(target))
         else:
             raise ValueError(f"unknown target kind {target.kind!r}")
     return calls
+
+
+def exact_call(target: Target) -> Call:
+    """The call of an exact ``"call"`` target; ``ValueError`` without its hit."""
+    hit = target.hit
+    if hit is None:
+        raise ValueError("una chiamata esatta senza la sua chiamata nei log")
+    folders = target.folders or (hit.fdi or NO_PACKAGE,)
+    key = hit.template_key if hit.template_key.strip() else ""  # no key: not sendable (Call.sendable)
+    return Call(key=key, folders=folders, fdi=hit.fdi, hit=hit, exact=True)
 
 
 def _key_call(key: str, folders: tuple[str, ...], index: CallIndex, env: str) -> Call:

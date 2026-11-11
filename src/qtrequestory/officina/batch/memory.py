@@ -1,6 +1,6 @@
 """The template keys known to answer HTML (spec "HTML").
 
-With "Salva anche gli HTML" off, an HTML answer is not saved and its key is
+With "Salva anche le email (HTML)" off, an HTML answer is not saved and its key is
 remembered here; later runs skip the remembered keys without calling them.
 With the option on every key is called and the memory follows the answers:
 an HTML answer adds the key, a PDF answer removes it.

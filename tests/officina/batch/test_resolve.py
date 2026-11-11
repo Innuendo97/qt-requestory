@@ -9,6 +9,7 @@ Synthetic data only (this repository is public).
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import date
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from qtrequestory.officina.batch.resolve import (
     parse_keys,
     resolve,
     targets_from_fdis,
+    targets_from_hits,
     targets_from_keys,
     targets_from_packages,
 )
@@ -257,3 +259,32 @@ def test_resolve_cancelled_before_start_runs_nothing(index):
     with pytest.raises(Cancelled):
         resolve(targets_from_fdis([FDI_A]), index=index, source_env="coll", cancel=token)
     assert index.queries == []
+
+
+# ------------------------------------------------------------- exact calls ---
+
+def _hits(index, fdi: str) -> list[SearchHit]:
+    return index.search(SearchQuery("coll", fdi_prefix=fdi, limit=100))
+
+
+def test_targets_from_hits_one_exact_target_per_call(index):
+    older, newer = sorted((h for h in _hits(index, FDI_A) if h.template_key == KEY_A and h.fdi == FDI_A),
+                          key=lambda h: h.day)
+    no_fdi = dataclasses.replace(older, fdi=None)
+    assert targets_from_hits([newer, older, newer, no_fdi]) == (
+        Target("call", KEY_A, (FDI_A,), hit=newer),
+        Target("call", KEY_A, (FDI_A,), hit=older),
+        Target("call", KEY_A, (NO_PACKAGE,), hit=no_fdi),
+    )
+
+
+def test_exact_call_is_that_call_without_looking_anything_up(index):
+    older = next(h for h in _hits(index, FDI_A) if h.template_key == KEY_A and h.day == OLD)
+    (call,) = resolve(targets_from_hits([older]), index=index, source_env="svil")
+    assert call == Call(key=KEY_A, folders=(FDI_A,), fdi=FDI_A, hit=older, exact=True)
+    assert len(index.queries) == 1  # only the lookup of this test: resolve searched nothing
+
+
+def test_exact_call_without_hit_is_refused(index):
+    with pytest.raises(ValueError):
+        resolve([Target("call", KEY_A, (FDI_A,))], index=index, source_env="coll")

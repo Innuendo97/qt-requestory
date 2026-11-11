@@ -17,7 +17,8 @@ promises), otherwise the newest call.
 
 Row actions, shortcuts and drag-out live in ``search_actions``; core calls in
 ``search_presenter``; the empty states in ``search_states``; the preview slot
-in ``search_slot``.
+in ``search_slot``; "Genera documento" (button, Ctrl+G, the menus' entry) in
+``search_generate``.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, QSettings, Qt
+from PySide6.QtCore import QModelIndex, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QSplitter, QStackedLayout, QVBoxLayout, QWidget
 
@@ -36,6 +37,7 @@ from qtrequestory.ui.pages.import_banner import ImportBanner
 from qtrequestory.ui.pages.mirror_banner import MirrorRootBanner
 from qtrequestory.ui.pages.preview_pane import PreviewPane
 from qtrequestory.ui.pages.search_form import SearchForm
+from qtrequestory.ui.pages.search_generate import GENERATE_SHORTCUT, SearchGenerate
 from qtrequestory.ui.pages.search_meta import (
     GapBanner,
     MetaLine,
@@ -151,6 +153,8 @@ class SearchPage(QWidget):
         self.view.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.view.header().sortIndicatorChanged.connect(lambda *_a: self._update_summary())
         self.shortcuts.update(search_actions.install_shortcuts(self))
+        self.generate = SearchGenerate(self)
+        self.shortcuts[GENERATE_SHORTCUT] = self.generate.shortcut
 
     def _load_config(self) -> None:
         """Environments and the remembered choice, then the env load.
@@ -180,7 +184,9 @@ class SearchPage(QWidget):
 
     def on_config_changed(self, _cfg: object) -> None:
         """Impostazioni was saved: environments and Ricerca's preferences may
-        have moved; the period and the results stay."""
+        have moved; the period and the results stay. The generators of
+        "Genera documento" are read again once every page has reloaded."""
+        QTimer.singleShot(0, self.generate.refresh)
         stored = self._settings()
         self.form.set_key_mode(str(stored.value(prefs.KEY_MODE_KEY, self.form.key_mode())),
                                persist=False)
@@ -220,9 +226,8 @@ class SearchPage(QWidget):
         return self.view.selected_hit()
 
     def selected_entries(self) -> list[SearchHit]:
-        """DESIGN-ui §Navigation: what a future page would act on."""
-        hit = self.selected_hit()
-        return [hit] if hit is not None else []
+        """DESIGN-ui §Navigation: what a future page would act on (every selected call)."""
+        return self.view.selected_hits()
 
     def current_state(self) -> str:
         return STATES[self.results_stack.currentIndex()]

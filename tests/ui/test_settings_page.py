@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import Environment
 from qtrequestory.ui.env_table import EnvTable
+from qtrequestory.ui.pages import officina_dialogs
 from qtrequestory.ui.pages.settings_page import SettingsPage
 from qtrequestory.ui.pages.settings_presenter import form_of, normalised
 
@@ -49,16 +50,32 @@ def page(qtbot, fake_core, runner, window):
     return widget
 
 
-def _answer(monkeypatch, button: QMessageBox.StandardButton) -> list[tuple]:
-    """Make every ``QMessageBox.question`` answer ``button`` and record the call."""
-    asked: list[tuple] = []
+def _answer(monkeypatch, yes: bool) -> list[dict]:
+    """Make every question of the page (``officina_dialogs.confirm``, Italian
+    buttons) answer ``yes`` and record what was asked."""
+    asked: list[dict] = []
 
-    def question(*args, **kwargs):
-        asked.append(args)
-        return button
+    def confirm(_parent, title, text, **kwargs):
+        asked.append(dict(kwargs, title=title, text=text))
+        return yes
 
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    monkeypatch.setattr(officina_dialogs, "confirm", confirm)
     return asked
+
+
+def _boxes(monkeypatch) -> list[tuple[set[str], str, bool]]:
+    """The real question boxes, never shown (answered "no"), recorded as
+    ``(button texts, default button's text, Esc is the default)``."""
+    built: list[tuple[set[str], str, bool]] = []
+
+    def exec_(box: QMessageBox) -> int:
+        default = box.defaultButton()
+        built.append(({b.text() for b in box.buttons()}, default.text() if default else "",
+                      box.escapeButton() is default))
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_)
+    return built
 
 
 # -- loading -----------------------------------------------------------------
@@ -166,7 +183,7 @@ def test_saving_keeps_the_fields_the_page_does_not_edit(page, fake_core, tmp_pat
 # -- the reindex question ----------------------------------------------------
 
 def test_a_new_mirror_folder_offers_to_index_it(page, fake_core, tmp_path, monkeypatch, qtbot):
-    _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    _answer(monkeypatch, True)
     page.mirror_path.setText(str(tmp_path / "nuovi-log"))
 
     page.save_button.click()
@@ -178,7 +195,7 @@ def test_a_new_mirror_folder_offers_to_index_it(page, fake_core, tmp_path, monke
 def test_declining_the_reindex_question_starts_nothing(
     page, fake_core, tmp_path, monkeypatch, qtbot
 ):
-    asked = _answer(monkeypatch, QMessageBox.StandardButton.No)
+    asked = _answer(monkeypatch, False)
     page.mirror_path.setText(str(tmp_path / "nuovi-log"))
 
     page.save_button.click()
@@ -189,7 +206,7 @@ def test_declining_the_reindex_question_starts_nothing(
 
 
 def test_saving_without_moving_the_mirror_asks_nothing(page, fake_core, monkeypatch, qtbot):
-    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    asked = _answer(monkeypatch, True)
     page.set_window_days(90)
 
     page.save_button.click()
@@ -461,7 +478,7 @@ def test_rileva_says_so_when_nothing_is_found(page, fake_core, window):
 # -- Avanzate ----------------------------------------------------------------
 
 def test_ricostruisci_indice_asks_first_then_rebuilds(page, fake_core, monkeypatch, qtbot):
-    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    asked = _answer(monkeypatch, True)
 
     page.rebuild_button.click()
 
@@ -470,8 +487,26 @@ def test_ricostruisci_indice_asks_first_then_rebuilds(page, fake_core, monkeypat
     assert fake_core.index.updates[-1]["full_rebuild"] is True
 
 
+def test_the_index_questions_are_italian_and_default_to_the_safe_button(
+    page, fake_core, tmp_path, monkeypatch, qtbot
+):
+    """Qt's standard Yes/No were English and defaulted to Yes: Enter started
+    a full rebuild. The buttons now say what they do; the safe one is default."""
+    boxes = _boxes(monkeypatch)
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(
+        lambda *_a, **_k: pytest.fail("Qt's standard question: English Yes/No, Yes the default")))
+    page.rebuild_button.click()
+    page.mirror_path.setText(str(tmp_path / "nuovi-log"))
+    page.save_button.click()
+    qtbot.wait(150)
+    assert boxes == [({strings.SETTINGS_REBUILD_YES, strings.BTN_CANCEL}, strings.BTN_CANCEL, True),
+                     ({strings.SETTINGS_REINDEX_YES, strings.SETTINGS_REINDEX_NO},
+                      strings.SETTINGS_REINDEX_NO, True)]
+    assert fake_core.index.updates == []  # both answered with the default: nothing started
+
+
 def test_a_refused_rebuild_does_nothing(page, fake_core, monkeypatch, qtbot):
-    _answer(monkeypatch, QMessageBox.StandardButton.No)
+    _answer(monkeypatch, False)
     page.rebuild_button.click()
     qtbot.wait(150)
     assert fake_core.index.updates == []
@@ -582,7 +617,7 @@ def test_ricostruisci_indice_refuses_an_invalid_log_folder(qtbot, fake_core, run
     fake_core.config.config = dataclasses.replace(fake_core.config.config, mirror_root=Path(""))
     page = SettingsPage(fake_core, runner, window)
     qtbot.addWidget(page)
-    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    asked = _answer(monkeypatch, True)
 
     page.rebuild_button.click()
     qtbot.wait(150)

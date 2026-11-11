@@ -29,7 +29,7 @@ from qtrequestory.officina.batch.elenco import NO_PACKAGE, Elenco, ElencoRow
 from qtrequestory.officina.batch.headers import default_rows
 from qtrequestory.officina.batch.memory import HtmlMemory
 from qtrequestory.officina.batch.model import BatchItemDone, BatchRequest, BatchStarted, Target
-from qtrequestory.officina.batch.resolve import targets_from_fdis, targets_from_keys
+from qtrequestory.officina.batch.resolve import targets_from_fdis, targets_from_hits, targets_from_keys
 from qtrequestory.officina.batch.runner import WORKERS, count_calls, reason_generator_gone, run_batch
 from qtrequestory.officina.generator import REASON_NOT_A_DOCUMENT
 from tests.conftest import FDI_A, FDI_B, entry_name, make_daily_file, synthetic_body
@@ -625,3 +625,98 @@ def test_nothing_sensitive_reaches_logs_events_or_esito(env: Env, caplog):
              (env.run_dir / "esito.csv").read_text(encoding="utf-8-sig")]
     for text in leaks:  # ...but nowhere else
         assert SECRET not in text and SIG not in text and "SEGRETO_HEADER" not in text
+
+
+# ------------------------------------------------------------- exact calls ---
+
+def _logged(env: Env, fdi: str, key: str) -> SearchHit:
+    return next(h for h in env.index.search(SearchQuery("coll", fdi_prefix=fdi, limit=100))
+                if h.template_key == key)
+
+
+@pytest.fixture
+def twice(tmp_path: Path) -> RealIndex:
+    """KEY_A logged twice (FDI_A on the 3rd, FDI_B on the 9th), two bodies."""
+    root = tmp_path / "mirror2"
+    make_daily_file(root, "coll", date(2026, 11, 3),
+                    [(entry_name(FDI_A, KEY_A, "0d0d0d0d00000001"), synthetic_body(FDI_A, KEY_A))])
+    make_daily_file(root, "coll", date(2026, 11, 9),
+                    [(entry_name(FDI_B, KEY_A, "0d0d0d0d00000002"), synthetic_body(FDI_B, KEY_A))])
+    conn = open_index(":memory:")
+    IndexBuilder(conn, root, null_sink).update(["coll"])
+    yield RealIndex(conn, root)
+    conn.close()
+
+
+def test_exact_call_sends_that_call_not_the_newest_of_its_key(env: Env, twice: RealIndex):
+    hits = twice.search(SearchQuery("coll", template_key=KEY_A, key_mode="exact"))
+    older = next(h for h in hits if h.fdi == FDI_A)
+    (o,) = env.run(targets_from_hits([older]), index=twice).outcomes
+    ((headers, body),) = env.server.requests
+    assert json.loads(body) == json.loads(read_body(older))  # the payload of THAT call
+    assert _header(headers, "template_key") == KEY_A
+    assert (o.status, o.key, o.fdi, o.folders) == ("ok", KEY_A, FDI_A, (FDI_A,))
+    assert o.files == (env.run_dir / FDI_A / f"{KEY_A}.pdf",) and o.exact_hit == older
+
+
+def test_exact_call_without_fdi_goes_to_no_package(env: Env):
+    hit = dataclasses.replace(_logged(env, FDI_A, KEY_A), fdi=None)
+    (o,) = env.run(targets_from_hits([hit])).outcomes
+    assert o.status == "ok" and o.files == (env.run_dir / NO_PACKAGE / f"{KEY_A}.pdf",)
+    assert esito_rows(env.run_dir)[0][:4] == [KEY_A, NO_PACKAGE, "", "ok"]
+
+
+def test_two_exact_calls_of_one_key_in_one_folder_get_a_suffix(env: Env):
+    hit = _logged(env, FDI_A, KEY_A)
+    other = dataclasses.replace(hit, seq=hit.seq + 100)  # another logged call, same key, same FDI
+    report = env.run(targets_from_hits([hit, other]))
+    assert [o.files for o in report.outcomes] == [
+        (env.run_dir / FDI_A / f"{KEY_A}.pdf",), (env.run_dir / FDI_A / f"{KEY_A}_2.pdf",)]
+    assert len(env.server.requests) == 2
+
+
+def test_exact_calls_are_counted_without_any_lookup(env: Env):
+    class NoSearch(RealIndex):
+        def search(self, query):
+            raise AssertionError("an exact call is never looked up")
+
+    hits = [_logged(env, FDI_A, KEY_A), _logged(env, FDI_B, KEY_D)]
+    blind = NoSearch(env.index.conn, env.index.root)
+    assert count_calls(env.request(targets_from_hits(hits)), index=blind, settings=env.settings,
+                       memory=env.memory) == 2
+    report = env.run(targets_from_hits(hits), index=blind)
+    assert [o.status for o in report.outcomes] == ["ok", "ok"]
+
+
+def test_exact_call_html_is_saved_and_remembered_when_asked(env: Env):
+    env.server.route = by_key(**{KEY_A: Canned(body=HTML)})
+    (o,) = env.run(targets_from_hits([_logged(env, FDI_A, KEY_A)]), save_html=True).outcomes
+    assert o.status == "ok" and o.files == (env.run_dir / FDI_A / f"{KEY_A}.html",)
+    assert env.memory.is_html(KEY_A)
+
+
+def test_exact_calls_cancelled_before_sending_keep_their_call(env: Env):
+    hits = [_logged(env, FDI_A, KEY_A), _logged(env, FDI_A, KEY_B)]
+    cancel = CancelToken()
+    cancel.cancel()
+    report = env.run(targets_from_hits(hits), cancel=cancel)
+    assert report.cancelled and env.server.requests == []
+    assert [(o.key, o.folders, o.status, o.exact_hit) for o in report.outcomes] == [
+        (KEY_A, (FDI_A,), "cancelled", hits[0]), (KEY_B, (FDI_A,), "cancelled", hits[1])]
+
+
+def test_an_exact_call_without_a_template_key_is_no_call(env: Env):
+    """As on the key path, an empty key is "nessuna chiamata": nothing is sent
+    (never a request with an empty ``template_key`` header), nothing counted,
+    and the row still remembers its call (its retry is that call, not its FDI)."""
+    hit = dataclasses.replace(_logged(env, FDI_A, KEY_A), template_key="  ")
+    (o,) = env.run(targets_from_hits([hit])).outcomes
+    assert env.server.requests == []
+    assert env.count(targets_from_hits([hit])) == 0
+    assert (o.status, o.key, o.files, o.exact_hit) == ("no_call", "", (), hit)
+    assert o.reason.startswith("nessuna chiamata")
+
+
+def test_only_exact_calls_carry_their_hit(env: Env):
+    report = env.run(keys(KEY_A) + targets_from_hits([_logged(env, FDI_A, KEY_B)]))
+    assert [o.exact_hit is not None for o in report.outcomes] == [False, True]

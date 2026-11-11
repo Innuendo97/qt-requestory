@@ -219,6 +219,14 @@ Descritta in README §Genera, DESIGN-core §Genera e DESIGN-ui §Genera tab. Lim
   (le intestazioni devono stare nella prima riga).
 - **Con la finestra bassa gli esiti si leggono scorrendo**: il pulsante resta sempre in vista
   in basso, ma la tabella non ha un'area fissa sua.
+- **«Genera documento» dalla Ricerca** (chiamate esatte, `Target("call")`): la cartella di
+  destinazione e gli header si scelgono solo nella scheda Genera (la Ricerca non ha un suo
+  modulo); la tabella degli esiti della scheda Genera viene sostituita dalla corsa partita
+  dalla Ricerca. Una chiamata scelta in Ricerca resta legata alla riga dell'indice che la
+  Ricerca mostrava: se nel frattempo quella chiamata sparisce dal file del giorno, la riga
+  finisce «non riuscito: payload non leggibile» (non si cerca un'altra chiamata al suo posto).
+  `ui/pages/search_page.py` era già sopra le ~400 righe (433) e ne ha prese 5 in più per
+  agganciare `search_generate.py`: da dividere.
 
 ## Codici di uscita e CLI
 

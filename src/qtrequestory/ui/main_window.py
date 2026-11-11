@@ -154,10 +154,12 @@ class MainWindow(WindowActionsMixin, QMainWindow):
         self.statusBar().showMessage(text, ms)
 
     def show_toast(self, text: str, tone: str = "neutral", ms: int = TOAST_MS,
-                   action: tuple[str, Callable[[], None]] | None = None, hint: str = "") -> None:
+                   action: tuple[str, Callable[[], None]] | None = None, hint: str = "",
+                   actions: Sequence[tuple[str, Callable[[], None]]] | None = None) -> None:
         """A confirmation over the content ("JSON copiato · 157 KB"); see ``ui/toast``.
-        ``action`` = ``(button text, callback)`` adds a button ("Annulla")."""
-        self.toast.show_message(text, tone, ms, action=action, hint=hint)
+        ``action`` = ``(button text, callback)`` adds a button ("Annulla");
+        ``actions``, up to two ("Apri cartella" · "Vedi esiti")."""
+        self.toast.show_message(text, tone, ms, action=action, hint=hint, actions=actions)
 
     def set_sync_state(self, items: Sequence[tuple]) -> None:
         """The app-bar chip: ``(env, tone, text[, note])`` per environment."""

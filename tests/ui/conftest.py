@@ -90,6 +90,36 @@ def isolated_qsettings(tmp_path: Path):
             QSettings.setPath(ini, scope, root)
 
 
+@pytest.fixture(autouse=True)
+def released_modifiers():
+    """Let no test leave a modifier key held for the next one.
+
+    ``qtbot.keyClick(w, key, ControlModifier)`` leaves
+    ``QGuiApplication.keyboardModifiers()`` at Ctrl afterwards, and a later
+    ``view.setCurrentIndex`` then acts like a Ctrl+click — it keeps the selection
+    instead of replacing it — so a test passes alone and fails after another
+    file. Releasing whatever is still held puts the state back.
+    """
+    yield
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    if QApplication.instance() is None:
+        return
+    Mod = Qt.KeyboardModifier
+    held = QGuiApplication.keyboardModifiers()
+    if held == Mod.NoModifier:
+        return
+    sink = QWidget()
+    for modifier, key in ((Mod.ControlModifier, Qt.Key.Key_Control), (Mod.ShiftModifier, Qt.Key.Key_Shift),
+                          (Mod.AltModifier, Qt.Key.Key_Alt), (Mod.MetaModifier, Qt.Key.Key_Meta)):
+        if held & modifier:
+            QTest.keyRelease(sink, key)
+    sink.deleteLater()
+
+
 def _ini_root(fmt, scope) -> str:
     """The directory ``QSettings`` currently writes INI files into."""
     from PySide6.QtCore import QSettings

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from qtrequestory.core.config import ScheduleSettings, parse_hhmm, sanitised_schedule
+from qtrequestory.core.opener import child_env, clean_dll_directory
 from qtrequestory.core.paths import executable_path
 
 log = logging.getLogger(__name__)
@@ -120,13 +121,15 @@ NOT_REGISTERED = TaskStatus(
 
 def run_schtasks(args: list[str]) -> subprocess.CompletedProcess:
     """Run ``schtasks`` hidden (the GUI is a windowed exe) and decode its OEM output leniently."""
-    return subprocess.run(
-        ["schtasks", *args],
-        capture_output=True,
-        encoding="oem",
-        errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    with clean_dll_directory():
+        return subprocess.run(
+            ["schtasks", *args],
+            capture_output=True,
+            encoding="oem",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=child_env(),
+        )
 
 
 def _output(result: subprocess.CompletedProcess) -> str:

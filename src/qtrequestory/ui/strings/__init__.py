@@ -28,6 +28,7 @@ others. One module per page means each task owns a file:
 ``officina_pannello.py``     Officina 2.5: the side panel (types, zones, legend, rail)
 ``officina_filtri.py``       Officina 2.5: the "Filtri del confronto" dialog
 ``genera.py``                Genera: documents from template keys, the list or FDIs
+``genera_chiamate.py``       Genera of the calls selected in Ricerca ("Genera documento")
 ===========================  ===================================================
 
 Usage — always through the package, never the submodule::
@@ -59,6 +60,7 @@ from .eliminazioni import *  # noqa: F401,F403
 from .officina_pannello import *  # noqa: F401,F403
 from .officina_filtri import *  # noqa: F401,F403
 from .genera import *  # noqa: F401,F403
+from .genera_chiamate import *  # noqa: F401,F403
 
 
 def lower_first(sentence: str) -> str:

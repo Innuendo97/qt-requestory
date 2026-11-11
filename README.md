@@ -135,7 +135,9 @@ non si apre nient'altro.
   La template key si confronta in modo **esatto**; passa a «contiene» per
   cercarne solo una parte. Dai risultati apri l'anteprima del body, copialo
   (`Ctrl+C`), salvalo (`Ctrl+S`), aprilo nell'editor (`Invio` o doppio clic)
-  oppure trascina la riga dove ti serve il file.
+  oppure trascina la riga dove ti serve il file. Con **Genera documento**
+  (`Ctrl+G`) generi il PDF (o l'email) proprio delle chiamate selezionate: vedi
+  [Genera](#generare-dalla-ricerca-una-chiamata-precisa).
 
 Un FDI identifica **una pratica**, che fa **più chiamate** al document generator
 (una per template principale). I risultati sono raggruppati per FDI (si può
@@ -787,6 +789,14 @@ per esempio tutti i moduli di un package dopo un aggiornamento, o i documenti
 di una pratica (un FDI). Non confronta nulla e non cambia i payload: ogni
 chiamata parte com'è nei log.
 
+La scheda ha due parti affiancate: a sinistra le scelte, nell'ordine in cui le
+fai (*Cosa generare*, *Dove*, *Header*), con le opzioni e il pulsante
+**Genera** fermi in fondo; a destra gli **esiti**, sempre in vista. Prima di
+generare, al posto degli esiti trovi cosa succederà («Genera 16 documenti su
+svil, con i payload dei log di coll», e in che cartella finiscono). Se la
+finestra è stretta le due parti si mettono una sopra l'altra, con il pulsante
+sempre in vista.
+
 ### Cosa generare
 
 Tre sorgenti, a segmenti in alto (**Template key · Elenco · FDI**); ognuna
@@ -798,9 +808,11 @@ ricorda il proprio testo finché non chiudi il programma:
 - **Elenco** — l'elenco CSV di Quadient (colonne «Template key» e «package
   name», separate da `;`). Si sceglie con *Sfoglia…* e viene ricordato; accetta
   UTF-8 o il vecchio cp1252. Compare la lista dei package, ognuno con la
-  spunta e il numero di template key; *Filtra i package* restringe la lista e
-  *Tutti* / *Nessuno* agiscono sui package mostrati. Si genera solo ciò che è
-  spuntato. Le righe senza template key sono scartate (e contate sotto la
+  spunta e il numero di template key; un clic in qualunque punto della riga (o
+  `Spazio`) mette o toglie la spunta, e sotto la lista il totale dice quanti
+  package e quante template key hai scelto. *Filtra i package* restringe la
+  lista e *Tutti* / *Nessuno* agiscono sui package mostrati. Si genera solo ciò
+  che è spuntato. Le righe senza template key sono scartate (e contate sotto la
   lista); un package vuoto diventa `_senza_pacchetto`. Una template key che
   sta in più package si genera **una volta** e il file viene scritto in ogni
   cartella. Un file che non è un elenco CSV (per esempio un `.xlsx`, o un CSV
@@ -817,11 +829,13 @@ cartella del loro package; se non sono nell'elenco, in `_senza_pacchetto`.
 - **Genera su** — il generatore di documenti (svil o coll), tra quelli attivi in
   Impostazioni › Officina. Se non ce n'è nessuno la scheda lo dice e rimanda
   alle Impostazioni.
-- **Chiamate da** — l'ambiente dei log da cui si prendono i payload. Di serie è
-  lo stesso del generatore e lo segue finché non lo cambi tu: così puoi anche
-  inviare a svil un payload preso da coll. Per ogni template key si usa la
-  chiamata **più recente** di quell'ambiente; se non c'è, la riga resta
-  «nessuna chiamata» e non si ripiega su un altro ambiente.
+- **Chiamate dai log di** — l'ambiente dei log da cui si prendono i payload. Di
+  serie è lo stesso del generatore e lo segue finché non lo cambi tu: così puoi
+  anche inviare a svil un payload preso da coll. Quando i due sono diversi, una
+  nota sotto lo dice («I payload vengono dai log di coll e vanno al generatore
+  svil.») con *Usa i log di svil* per tornare in un clic. Per ogni template key
+  si usa la chiamata **più recente** di quell'ambiente; se non c'è, la riga
+  resta «nessuna chiamata» e non si ripiega su un altro ambiente.
 - **Salva in** — la cartella di destinazione, con *Sfoglia…*.
 
 **PROD non si può chiamare**: Genera usa solo i generatori attivi in
@@ -830,48 +844,60 @@ rifiuta un generatore con `prod` nel nome o nell'URL.
 
 ### Header
 
-La sezione **Header** è chiusa e riassume la situazione («Header · 7 inviati»,
-con «· 1 modificato» quando differisce dalle Impostazioni). Aprila per vedere la
-tabella completa di **ciò che viene inviato**:
+La sezione **Header** è una riga chiusa («▸ Header  7 inviati»). Quando la
+tabella differisce dalle Impostazioni, sulla stessa riga compaiono un'etichetta
+gialla («1 modificato») e *Ripristina*: lo vedi e lo annulli senza aprire nulla.
+Se la riga è fuori vista (per esempio con un elenco lungo su uno schermo
+basso), lo stesso promemoria compare sopra il pulsante, con *Mostra* e
+*Ripristina*. Aprila per vedere la tabella completa di **ciò che viene
+inviato**:
 
 - parte dagli header automatici (`template_key`, `current_timestamp`,
   `correlation_id`, `Postman-Token`) e dal profilo di Impostazioni › Officina;
 - **«automatico»** vuol dire che il valore è calcolato a ogni chiamata (la
   template key della riga, l'ora, un nuovo `correlation_id` per ogni chiamata,
   il token); se scrivi un valore, viene usato quello;
-- puoi cambiare un valore, *Aggiungere* una riga (per esempio `IMEL: active`) o
-  *Rimuovere* una riga: **una riga rimossa è un header che non viene inviato**,
+- puoi cambiare un valore, *Aggiungere* una riga (la nuova riga compare in
+  vista con il nome già pronto da scrivere, per esempio `IMEL`, poi `Tab` per il
+  valore) o *Rimuovere* una riga: **una riga rimossa è un header che non viene inviato**,
   anche se è uno di quelli automatici (senza `Postman-Token` la chiamata finisce
   nei log nginx);
 - *Ripristina* torna al profilo delle Impostazioni;
-- le modifiche valgono **finché il programma resta aperto**: non vengono salvate
-  e alla prossima apertura si riparte dalle Impostazioni.
+- le modifiche valgono **finché il programma resta aperto** e anche per
+  *Genera documento* in Ricerca (il suo suggerimento lo ricorda): non vengono
+  salvate e alla prossima apertura si riparte dalle Impostazioni.
 
-Un header non valido blocca il pulsante e dice quale.
+Un header non valido blocca il pulsante e dice quale. Se fai partire la
+generazione mentre una cella è ancora aperta (per esempio `Ctrl+Invio` mentre
+scrivi un valore), vale quello che hai scritto.
 
 ### Opzioni
 
-- **Crea anche lo zip (uno per cartella)** — accanto a ogni cartella si crea
-  `<cartella>.zip`; la cartella resta. Se interrompi la generazione lo zip non
-  si crea.
-- **Salva anche gli HTML** — il tipo di documento si conosce solo dalla
+Sopra il pulsante:
+
+- **Salva anche le email (HTML)** — il tipo di documento si conosce solo dalla
   risposta. Con l'opzione spenta, una template key che risponde con un HTML
-  (un'email) non viene salvata, risulta «saltato: HTML» e **viene ricordata**:
+  (un'email) non viene salvata, risulta «email saltata» e **viene ricordata**:
   alle generazioni successive non viene più chiamata. Con l'opzione accesa si
   chiamano tutte e la memoria si aggiorna (una key che ora risponde con un PDF
   esce dalla memoria). La memoria è un file accanto a `config.json`
   (`genera-html.json`).
+- **Crea anche gli zip** — accanto a ogni cartella si crea `<cartella>.zip`
+  (uno per cartella); la cartella resta. Se interrompi la generazione lo zip
+  non si crea.
 
 ### Generare
 
-Il pulsante sta sempre in basso, fermo, anche quando la pagina scorre. Dice
-cosa farà («Genera 12 documenti») e, finché non si può premere, la riga sotto
-dice il primo motivo (manca una template key, la cartella…). `Ctrl+Invio` fa
-lo stesso; un doppio clic genera una volta sola. Le chiamate partono **tre
-alla volta**.
+Il pulsante sta sempre in basso a sinistra, fermo, anche quando le scelte
+scorrono. Dice cosa farà («Genera 12 documenti») e, finché non si può premere,
+la riga sotto dice il primo motivo (manca una template key, la cartella…).
+`Ctrl+Invio` fa lo stesso, e così `Invio` sul pulsante; un doppio clic genera
+una volta sola. Le chiamate partono **tre alla volta**; l'avanzamento («Genero
+su svil… 12 di 56») compare in cima agli esiti e le righe arrivano man mano.
 
 - **Oltre 20 chiamate** il programma chiede conferma, con il numero e
-  l'ambiente. Con gli FDI prima cerca le chiamate nei log («Cerco le
+  l'ambiente; i pulsanti dicono cosa fanno (*Genera 56 documenti* /
+  *Annulla*) e quello già scelto è *Annulla*. Con gli FDI prima cerca le chiamate nei log («Cerco le
   chiamate…», si può interrompere) e poi chiede con il numero vero
   («Partono 37 chiamate (2 FDI)…»).
 - **Interrompi** (il pulsante cambia nome durante il lavoro): le chiamate già
@@ -879,10 +905,47 @@ alla volta**.
   interrompi mentre cerca le chiamate non si crea nessuna cartella.
 - Se la generazione non può partire (generatore non valido, header non valido,
   ricerca nei log impossibile, cartella di destinazione che non si può
-  creare…) lo dice in linea, senza creare nulla e senza inviare nulla.
+  creare…) lo dice in cima agli esiti, senza creare nulla e senza inviare nulla.
 - Se durante la generazione disattivi o cambi il generatore in Impostazioni,
   le chiamate non ancora partite non vengono inviate e risultano «non
   riuscito» con il motivo; gli esiti restano sullo schermo.
+
+### Generare dalla Ricerca una chiamata precisa
+
+Quando hai davanti, in **Ricerca**, proprio la chiamata che ti interessa (non
+la più recente della sua template key), puoi generarne il documento da lì:
+selezionala e premi **Genera documento** (il pulsante nella riga sopra i
+risultati, accanto a *Raggruppa per FDI*), oppure scegli *Genera documento*
+dal menu del tasto destro, oppure premi `Ctrl+G`.
+
+- Parte **esattamente quella chiamata**, con il payload com'è nei log.
+- Puoi selezionarne più d'una (`Ctrl`+clic, `Maiusc`+clic): il pulsante dice
+  «Genera 3 documenti» e si generano tutte. Il tasto destro su un FDI (la riga
+  del gruppo), o un clic su quella riga, vuol dire tutte le chiamate di quel
+  gruppo che vedi nei risultati. Se chiudi un gruppo, le sue chiamate non sono
+  più selezionate: parte solo quello che vedi selezionato.
+- Se in Impostazioni › Officina sono attivi più generatori, scegli dove da un
+  piccolo menu («su coll», «su svil»): il primo è l'ambiente da cui viene la
+  chiamata, se è un generatore, altrimenti quello scelto nella scheda Genera.
+  Con un solo generatore non c'è nessun menu.
+- Si usano gli **header** della scheda Genera così come sono adesso (con le
+  modifiche fatte in questa sessione) e la sua **cartella di destinazione**;
+  se la cartella non è scelta, te lo dice e non invia nulla. Gli **HTML** (le
+  email) si salvano sempre, anche con *Salva anche le email (HTML)* spento, e la
+  memoria degli HTML si aggiorna; lo zip non si crea.
+- I documenti finiscono nella cartella dell'FDI della chiamata (o in
+  `_senza_pacchetto` se non ne ha); due chiamate della stessa template key
+  nella stessa cartella diventano `<TK>.pdf` e `<TK>_2.pdf`.
+- Valgono le stesse regole: conferma oltre le 20 chiamate, mai PROD, una sola
+  generazione alla volta (mentre Genera lavora, il pulsante è spento e lo dice).
+- Avanzamento ed esiti si vedono nella scheda **Genera**, che li mostra come
+  una sua generazione; lì *Riprova i non riusciti* rimanda **le stesse
+  chiamate**, come ogni riprova al generatore che la scheda mostra in quel
+  momento (gli HTML si salvano sempre, lo zip non si crea).
+- In Ricerca, alla fine, un avviso: con un solo documento il file si apre
+  da solo con il programma predefinito («Salvato … in …», con *Apri
+  cartella*); con più chiamate il riepilogo, con *Apri cartella* e *Vedi
+  esiti*; se non si è generato nulla, il motivo e *Vedi esiti*.
 
 ### Dove finiscono i file
 
@@ -895,7 +958,8 @@ Ogni generazione crea una cartella sua dentro la destinazione:
     esito.csv
 ```
 
-`<cartella>` è il package name, l'FDI (modalità FDI) o `_senza_pacchetto`. I
+`<cartella>` è il package name, l'FDI (modalità FDI, o la chiamata scelta in
+Ricerca) o `_senza_pacchetto`. I
 nomi sono ripuliti dai caratteri non ammessi da Windows; due nomi che diventano
 uguali nella stessa cartella non si sovrascrivono (il secondo diventa `_2`, poi
 `_3`…). I nomi si decidono **prima** di chiamare, nell'ordine delle chiamate:
@@ -914,14 +978,26 @@ Nessun errore ferma il lotto. Ogni riga della tabella ha un glifo e una parola:
 | Nella tabella | In `esito.csv` | Significa |
 |---|---|---|
 | ✓ generato | `ok` | il documento è stato salvato |
-| ⊘ saltato: HTML | `saltato: HTML` | ha risposto un HTML che non hai chiesto (o la key è già nota come HTML): non salvato |
-| ○ nessuna chiamata | `nessuna chiamata nei log` | non c'è una chiamata di quella template key nei log di «Chiamate da» |
+| ⊘ email saltata | `saltato: HTML` | ha risposto un'email (HTML) che non hai chiesto (o la key è già nota come email): non salvata |
+| ○ nessuna chiamata | `nessuna chiamata nei log` | non c'è una chiamata di quella template key nei log di «Chiamate dai log di» |
 | ✕ non riuscito | `non riuscito` | errore, con il **motivo**: risposta HTTP di errore, risposta che non è né PDF né HTML, tempo scaduto, payload illeggibile, scrittura su disco non riuscita… |
 | – annullato | `annullato` | non è partita perché hai interrotto |
 
-Alla fine compaiono il riepilogo («1 generato · 1 non riuscito · in
-svil_AAAAMMGG-HHMMSS») e un avviso; *Apri cartella* apre la cartella della
-generazione e *Solo non riusciti* filtra la tabella.
+Alla fine il titolo degli esiti dice «Generazione finita · svil_AAAAMMGG-HHMMSS»
+(un avviso compare solo se intanto eri su un'altra scheda, con *Vedi esiti*).
+Sopra la tabella, un'etichetta colorata per ogni esito avvenuto, con il numero
+(«Tutti 5», «✓ 3 generati», «✕ 2 non riusciti»…): un clic mostra solo quelle
+righe, un altro clic (o *Tutti*) le mostra tutte. Quando ci sono righe da
+riprovare di più tipi (non riuscite, senza chiamata, annullate), l'ultima
+etichetta, «↻ 4 da riprovare», mostra proprio quelle che *Riprova* invia di
+nuovo. Il filtro scelto resta anche dopo una nuova generazione o un *Riprova*,
+se ci sono ancora righe del suo tipo (durante il lavoro le righe si vedono
+tutte); altrimenti si torna a *Tutti*. *Apri cartella* apre la cartella della
+generazione.
+
+Sulle righe: **doppio clic** (o `Invio`) su un documento generato lo apre con il
+programma predefinito (`Invio` solo su una riga che il filtro lascia vedere); il **tasto destro** offre *Apri il documento*, *Apri la
+cartella del documento*, *Copia template key* e *Copia motivo*.
 
 **Riprova i non riusciti** richiama, con le scelte di adesso (generatore,
 header, cartella…), le sole righe non riuscite, senza chiamata o annullate,

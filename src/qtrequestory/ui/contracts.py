@@ -102,7 +102,13 @@ from qtrequestory.core.sync import EnvResult, SyncReport
 from qtrequestory.officina.batch.elenco import NO_PACKAGE, Elenco, ElencoError
 from qtrequestory.officina.batch.headers import AUTOMATIC as AUTOMATIC_HEADERS
 from qtrequestory.officina.batch.model import BatchItemDone, BatchReport, BatchRequest, BatchStarted, Outcome, Target
-from qtrequestory.officina.batch.resolve import parse_keys, targets_from_fdis, targets_from_keys, targets_from_packages
+from qtrequestory.officina.batch.resolve import (
+    parse_keys,
+    targets_from_fdis,
+    targets_from_hits,
+    targets_from_keys,
+    targets_from_packages,
+)
 from qtrequestory.officina.compare.extract_pdf import DocText
 from qtrequestory.officina.compare.filter_model import (
     CONTROL_STATES,
@@ -187,7 +193,7 @@ __all__ = [
     # Genera (officina.batch: the CSV list, the request, its outcomes and events; the pure target builders)
     "Elenco", "ElencoError", "NO_PACKAGE", "AUTOMATIC_HEADERS", "Target", "BatchRequest", "Outcome",
     "BatchReport", "BatchStarted", "BatchItemDone",
-    "parse_keys", "targets_from_keys", "targets_from_packages", "targets_from_fdis",
+    "parse_keys", "targets_from_keys", "targets_from_packages", "targets_from_fdis", "targets_from_hits",
     # archive import (core/archive.py, core/importer.py)
     "ArchiveBusy", "ArchiveReport", "FoundLog", "ImportResult", "VerifiedOriginal", "IGNORE_FOLDER",
     "IMPORTABLE", "DUPLICATE", "NEEDS_ENV", "CONFLICT", "IGNORED",
@@ -478,6 +484,12 @@ class ExtractApi(Protocol):
         ...
 
     def open_folder(self, path: Path) -> None:
+        ...
+
+    def open_file(self, path: Path) -> None:
+        """Open a document (a generated PDF or HTML) with the application
+        Windows associates with it, not the text editor. ``OSError`` when it
+        cannot be opened."""
         ...
 
     def output_dir(self) -> Path:
@@ -812,7 +824,10 @@ class OfficinaApi(Protocol):
         none. Never raises; never an error."""
         ...
 
-    # -- Genera: documents from template keys, a CSV list or FDIs ----------
+    # -- Genera: documents from template keys, a CSV list, FDIs or exact ---
+    # calls (``Target("call")``, ``targets_from_hits``: Ricerca's "Genera
+    # documento" sends those calls as logged; their outcomes carry
+    # ``exact_hit`` so a retry re-sends them).
     # (spec "Genera"; the engine is ``officina.batch``, the real service
     # ``officina.service_batch``). Nothing here touches the Officina folder.
 

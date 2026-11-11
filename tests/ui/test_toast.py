@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
 from qtrequestory.ui.main_window import MainWindow
@@ -104,3 +105,34 @@ def test_an_unknown_tone_is_neutral(qtbot):
     toast = Toast(host)
     toast.show_message("x", tone="fuchsia")
     assert toast.property("tone") == "neutral"
+
+
+def test_a_toast_can_offer_two_actions(qtbot):
+    """"Apri cartella" and "Vedi esiti" after a "Genera documento" of several calls."""
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.resize(600, 300)
+    host.show()
+    toast = Toast(host)
+    done: list[str] = []
+    toast.show_message("3 generati", "ok", actions=[("Apri cartella", lambda: done.append("cartella")),
+                                                   ("Vedi esiti", lambda: done.append("esiti"))])
+    first, second = toast.action_buttons()
+    assert (first.text(), second.text()) == ("Apri cartella", "Vedi esiti")
+    assert first.isVisible() and second.isVisible()
+    assert not toast.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    second.click()
+    assert done == ["esiti"]
+    qtbot.waitUntil(lambda: not toast.isVisible(), timeout=2000)
+
+    toast.show_message("JSON copiato")  # a plain toast again: no buttons left over
+    assert not any(b.isVisible() for b in toast.action_buttons())
+    toast.show_message("Annullato", action=("Annulla", lambda: done.append("annulla")))
+    assert [b.isVisible() for b in toast.action_buttons()] == [True, False]
+    assert toast.action_button.text() == "Annulla"
+
+
+def test_the_window_passes_the_actions_on(window):
+    window.show_toast("2 generati", "ok", actions=[("Apri cartella", lambda: None),
+                                                  ("Vedi esiti", lambda: None)])
+    assert [b.text() for b in window.toast.action_buttons()] == ["Apri cartella", "Vedi esiti"]

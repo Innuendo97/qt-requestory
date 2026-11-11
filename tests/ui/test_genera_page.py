@@ -21,6 +21,7 @@ from PySide6.QtTest import QTest
 from qtrequestory.ui import strings
 from qtrequestory.ui.contracts import NO_PACKAGE, BatchReport, Outcome
 from qtrequestory.ui.pages import officina_dialogs
+from qtrequestory.ui.pages.genera_outcomes import COL_FOLDER, COL_KEY, COL_REASON, COL_STATUS
 from qtrequestory.ui.pages.genera_page import GeneraPage
 from qtrequestory.ui.workers import GENERA_JOB
 from tests.conftest import FDI_A, FDI_B, KEY_CTE, KEY_EMAIL, KEY_SINT
@@ -102,13 +103,15 @@ def test_generate_single_key_fills_results_and_writes_pdf(qtbot, page, fake_core
     assert report.run_dir.parent == dest
     assert [r.template_key for r in fake_core.officina.requests] == [KEY_SINT]
     (row,) = page.results.row_texts()
-    assert row[0] == KEY_SINT and row[1] == NO_PACKAGE
-    assert row[2] == strings.GENERA_STATUS_CELL.format(glyph=strings.GENERA_GLYPH_OK,
-                                                       word=strings.GENERA_STATUS_OK)
-    assert strings.GENERA_SUM_OK_ONE in page.results.summary.text()
+    assert row[COL_KEY] == KEY_SINT and row[COL_FOLDER] == NO_PACKAGE
+    assert row[COL_STATUS] == strings.GENERA_STATUS_CELL.format(glyph=strings.GENERA_GLYPH_OK,
+                                                                word=strings.GENERA_STATUS_OK)
+    assert page.results.summary.text() == strings.GENERA_DONE_LINE.format(
+        title=strings.GENERA_DONE_TITLE, name=report.run_dir.name)
+    assert page.results.chips.chip("ok").text().endswith(strings.GENERA_SUM_OK_ONE)
     assert page.results.open_folder_button.isVisible()
     assert not page.results.retry_button.isVisible()  # nothing to retry
-    assert window.toasts and window.toasts[-1][1] == "ok"
+    assert not window.toasts  # the tab is on screen: its results say it
     qtbot.mouseClick(page.results.open_folder_button, Qt.MouseButton.LeftButton)
     assert fake_core.extract.folders == [report.run_dir]
 
@@ -127,7 +130,7 @@ def test_over_twenty_calls_asks_confirmation(qtbot, page, monkeypatch, runner):
     asked: list[tuple[str, str]] = []
     answer = {"yes": False}
 
-    def confirm(_parent, title, text):
+    def confirm(_parent, title, text, **_kw):
         asked.append((title, text))
         return answer["yes"]
 
@@ -145,7 +148,7 @@ def test_over_twenty_calls_asks_confirmation(qtbot, page, monkeypatch, runner):
 
 
 def test_twenty_calls_or_fewer_ask_nothing(qtbot, page, monkeypatch):
-    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a: pytest.fail("no question under 21"))
+    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a, **_k: pytest.fail("no question under 21"))
     _type_keys(qtbot, page, " ".join(f"MOD_TEST_{i:02d}" for i in range(20)))
     assert len(_generate(qtbot, page).outcomes) == 20
 
@@ -261,7 +264,7 @@ def test_fdi_mode_confirms_the_real_number_of_calls(qtbot, page, fake_core, monk
     asked: list[tuple[str, str]] = []
     answer = {"yes": False}
 
-    def confirm(_parent, title, text):
+    def confirm(_parent, title, text, **_kw):
         asked.append((title, text))
         return answer["yes"]
 
@@ -295,7 +298,7 @@ def test_stop_during_the_count_sends_nothing(qtbot, page, fake_core, monkeypatch
         raise Cancelled()
 
     monkeypatch.setattr(fake_core.officina, "batch_count", slow_count)
-    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a: pytest.fail("no question"))
+    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a, **_k: pytest.fail("no question"))
     qtbot.mouseClick(page.source.mode_buttons["fdi"], Qt.MouseButton.LeftButton)
     page.source.fdi_edit.setPlainText(FDI_A)
     qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
@@ -313,7 +316,8 @@ def test_open_folder_of_a_run_that_made_none_is_said_inline(qtbot, page, fake_co
     page.results.show_report(page.report, 1)
     qtbot.mouseClick(page.results.open_folder_button, Qt.MouseButton.LeftButton)
     assert fake_core.extract.folders == []
-    assert page.results.summary.text() == strings.GENERA_FOLDER_MISSING.format(name="svil_mai_creata")
+    assert page.results.message.text() == strings.GENERA_FOLDER_MISSING.format(name="svil_mai_creata")
+    assert page.results.message_banner.isVisible()
 
 
 def test_cancel_during_lookup_fills_the_table_from_the_report(qtbot, page, fake_core, monkeypatch, dest):
@@ -335,8 +339,9 @@ def test_cancel_during_lookup_fills_the_table_from_the_report(qtbot, page, fake_
     assert page.progress_bar.maximum() == 0  # indeterminate: no total yet
     qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
     _finish(qtbot, page)
-    assert [r[0] for r in page.results.row_texts()] == [KEY_SINT, KEY_EMAIL]
-    assert strings.GENERA_SUM_CANCELLED.format(n=2) in page.results.summary.text()
+    assert [r[COL_KEY] for r in page.results.row_texts()] == [KEY_SINT, KEY_EMAIL]
+    assert page.results.summary.text().startswith(strings.GENERA_STOPPED_TITLE)
+    assert page.results.chips.chip("cancelled").text().endswith(strings.GENERA_SUM_CANCELLED.format(n=2))
 
 
 def test_a_refusal_is_said_inline_not_in_a_dialog(qtbot, page, fake_core, monkeypatch, window):
@@ -344,13 +349,13 @@ def test_a_refusal_is_said_inline_not_in_a_dialog(qtbot, page, fake_core, monkey
         raise ValueError("ricerca non disponibile: impossibile trovare le chiamate da generare")
 
     monkeypatch.setattr(fake_core.officina, "batch_run", refuse)
-    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a: pytest.fail("no dialog"))
+    monkeypatch.setattr(officina_dialogs, "confirm", lambda *_a, **_k: pytest.fail("no dialog"))
     _type_keys(qtbot, page, KEY_SINT)
     qtbot.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: not page.is_running() and bool(page.results.summary.text()), timeout=WAIT_MS)
-    assert page.results.summary.text() == strings.GENERA_REFUSED.format(
+    qtbot.waitUntil(lambda: not page.is_running() and bool(page.results.message.text()), timeout=WAIT_MS)
+    assert page.results.message.text() == strings.GENERA_REFUSED.format(
         reason="ricerca non disponibile: impossibile trovare le chiamate da generare")
-    assert page.results.summary.isVisible() and page.start_button.isEnabled()
+    assert page.results.message_banner.isVisible() and page.start_button.isEnabled()
     assert page.report is None and not window.toasts
 
 
@@ -360,9 +365,9 @@ def test_retry_runs_only_failed(qtbot, page, fake_core):
     first = _generate(qtbot, page)
     assert [o.status for o in first.outcomes] == ["ok", "failed"]
     row = page.results.row_texts()[1]
-    assert row[2] == strings.GENERA_STATUS_CELL.format(glyph=strings.GENERA_GLYPH_FAILED,
-                                                       word=strings.GENERA_STATUS_FAILED)
-    assert "500" in row[5]
+    assert row[COL_STATUS] == strings.GENERA_STATUS_CELL.format(glyph=strings.GENERA_GLYPH_FAILED,
+                                                                word=strings.GENERA_STATUS_FAILED)
+    assert "500" in row[COL_REASON]
     assert page.results.retry_button.isVisible()
     assert page.results.retry_button.text() == strings.GENERA_RETRY_ONE
     fake_core.officina.set_response_for(KEY_EMAIL, None)
@@ -377,14 +382,17 @@ def test_retry_runs_only_failed(qtbot, page, fake_core):
     assert second.run_dir != first.run_dir
 
 
-def test_only_failed_filter_hides_ok_rows(qtbot, page, fake_core):
+def test_an_outcome_chip_hides_the_other_rows(qtbot, page, fake_core):
     fake_core.officina.set_response_for(KEY_EMAIL, b"guasto", 500)
     _type_keys(qtbot, page, f"{KEY_SINT} {KEY_EMAIL} MOD_TEST_ASSENTE")
     _generate(qtbot, page)
+    chips = page.results.chips
     assert len(page.results.visible_rows()) == 3
-    page.results.only_failed.setChecked(True)
-    assert [r[0] for r in page.results.visible_rows()] == [KEY_EMAIL, "MOD_TEST_ASSENTE"]
-    page.results.only_failed.setChecked(False)
+    qtbot.mouseClick(chips.chip("failed"), Qt.MouseButton.LeftButton)
+    assert [r[COL_KEY] for r in page.results.visible_rows()] == [KEY_EMAIL]
+    qtbot.mouseClick(chips.chip("no_call"), Qt.MouseButton.LeftButton)
+    assert [r[COL_KEY] for r in page.results.visible_rows()] == ["MOD_TEST_ASSENTE"]
+    qtbot.mouseClick(chips.chip("all"), Qt.MouseButton.LeftButton)
     assert len(page.results.visible_rows()) == 3
 
 
@@ -399,8 +407,10 @@ def test_remove_header_row_not_sent(qtbot, page, fake_core):
     assert table.shown_value(names.index("correlation_id")) == strings.GENERA_HEADER_AUTOMATIC
     table.selectRow(names.index("Postman-Token"))
     qtbot.mouseClick(page.remove_header_button, Qt.MouseButton.LeftButton)
-    assert page.headers_toggle.text() == strings.GENERA_HEADERS_SUMMARY_MODIFIED_ONE.format(
-        n=len(names) - 1)
+    state = page.setup.headers
+    assert state.sent.text() == strings.GENERA_HEADERS_SENT.format(n=len(names) - 1)
+    assert state.modified_pill.isVisible()
+    assert state.modified_pill.text() == strings.GENERA_HEADERS_MODIFIED_ONE
     _type_keys(qtbot, page, KEY_SINT)
     _generate(qtbot, page)
     (sent,) = fake_core.officina.requests
@@ -452,16 +462,23 @@ def test_fdi_mode_generates_every_key_of_the_fdi(qtbot, page, fake_core):
 
 
 def _on_screen(page: GeneraPage, widget) -> bool:
-    """``widget`` is shown AND inside the page's visible area (not scrolled away)."""
+    """``widget`` is shown and wholly inside the page and every scroll area
+    that holds it: nothing to scroll to find it."""
     from PySide6.QtCore import QPoint, QRect
 
-    top_left = widget.mapTo(page, QPoint(0, 0))
-    viewport = page._scroll.viewport()
-    if page._scroll.isAncestorOf(widget):  # in the scrolling part: within its viewport
-        area = QRect(viewport.mapTo(page, QPoint(0, 0)), viewport.size())
-    else:
-        area = page.rect()
-    return widget.isVisible() and area.contains(QRect(top_left, widget.size()))
+    if not widget.isVisible():
+        return False
+    rect = QRect(widget.mapTo(page, QPoint(0, 0)), widget.size())
+    if not page.rect().contains(rect):
+        return False
+    parent = widget.parentWidget()
+    while parent is not None and parent is not page:
+        if parent.objectName() == "qt_scrollarea_viewport":
+            area = QRect(parent.mapTo(page, QPoint(0, 0)), parent.size())
+            if not area.contains(rect):
+                return False
+        parent = parent.parentWidget()
+    return True
 
 
 @pytest.mark.parametrize("mode", ["keys", "elenco", "fdi"])
@@ -477,7 +494,7 @@ def test_the_button_is_always_on_screen(qtbot, page, tmp_path, mode):
     qtbot.wait(50)
     for widget in (page.start_button, page.zip_box, page.html_box):
         assert _on_screen(page, widget), widget
-    assert not page._scroll.isAncestorOf(page.start_button)  # pinned, outside what scrolls
+    assert not page.setup.scroll.isAncestorOf(page.start_button)  # pinned, outside what scrolls
 
 
 def test_the_results_come_into_view_when_a_run_starts(qtbot, page):
