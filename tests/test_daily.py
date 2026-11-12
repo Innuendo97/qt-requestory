@@ -153,6 +153,20 @@ UPPER_FDI = FDI_A.upper()
     (FDI_A, (None, FDI_A, None, False)),
     # correlationId_vuoto without id
     ("correlationId_vuoto_MOD_TEST_R", (None, "MOD_TEST_R", None, False)),
+    # a correlation_id that ends with the key ("test-<KEY>"): the key holds
+    # underscores, so the first underscore is NOT the split
+    ("test-MOD_TEST_SIM_DUAL_MOD_TEST_SIM_DUAL_10c6017b000004c2",
+     ("test-mod_test_sim_dual", "MOD_TEST_SIM_DUAL", "10c6017b000004c2", False)),
+    ("test-2_1_0_PROPOSTA_X_2_1_0_PROPOSTA_X_10c6017b000004c2",
+     ("test-2_1_0_proposta_x", "2_1_0_PROPOSTA_X", "10c6017b000004c2", False)),
+    ("test-MOD RIC_MOD RIC_10c6017b00000106", ("test-mod ric", "MOD RIC", "10c6017b00000106", False)),
+    ("test-RICHIESTA_SOMME_RICHIESTA_SOMME", ("test-richiesta_somme", "RICHIESTA_SOMME", None, False)),
+    # a key with no underscore was already split right
+    ("test-MODX_MODX_10c6017b00000106", ("test-modx", "MODX", "10c6017b00000106", False)),
+    # a token that merely ends like the key after an underscore is not a correlation id
+    ("abc_X_X_10c6017b00000106", ("abc", "X_X", "10c6017b00000106", False)),
+    # a UUID FDI is never second-guessed, even when the key repeats
+    (f"{FDI_A}_MOD_A_MOD_A_{CALL_ID}", (FDI_A, "MOD_A_MOD_A", CALL_ID, True)),
 ])
 def test_parse_entry_name(raw, expected):
     fdi, key, call_id, well_formed = expected

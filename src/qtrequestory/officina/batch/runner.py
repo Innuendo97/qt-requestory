@@ -44,6 +44,7 @@ Stdlib + core only, Qt-free.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import threading
@@ -55,6 +56,7 @@ from typing import Any
 
 from qtrequestory.core.config import OfficinaSettings
 from qtrequestory.core.events import Cancelled, CancelToken
+from qtrequestory.core.index.search import SearchHit
 from qtrequestory.officina.batch.elenco import NO_PACKAGE
 from qtrequestory.officina.batch.headers import build_headers
 from qtrequestory.officina.batch.memory import HtmlMemory
@@ -93,6 +95,17 @@ _TRIAL_UUID = "00000000-0000-4000-8000-000000000000"
 
 def reason_no_call(source_env: str) -> str:
     return f"nessuna chiamata nei log di {source_env}"
+
+
+def reason_tried(n: int) -> str:
+    """The tail of the reason of a row that failed with every logged call it tried."""
+    return f"provate {n} chiamate dei log, tutte rifiutate"
+
+
+def reason_fallback(hit: SearchHit, attempt: int) -> str:
+    """The note of a row made by an alternate call, not by the newest one."""
+    tail = ": le più recenti sono state rifiutate" if attempt > 1 else ""
+    return f"payload dai log di {hit.env} del {hit.day:%d/%m/%Y} (tentativo {attempt}){tail}"
 
 
 def reason_generator_gone(generator: str) -> str:
@@ -216,45 +229,77 @@ class _Lane:
             return _outcome(call, "no_call", reason_no_call(request.source_env))
         if not request.save_html and self._memory.is_html(call.key):
             return _outcome(call, "html_skipped", REASON_HTML_KNOWN, doc_type="html")
-        payload = self._payload(call)
+        # the call, then its alternates (older days, other environments: resolve)
+        first_failure: Outcome | None = None
+        sent = 0  # calls actually sent for this row
+        for hit in (call.hit, *call.alternates):
+            if self._cancelled():
+                break
+            outcome, retry = self._attempt(call, slot, hit, sent)
+            if outcome.used_hit is not None:  # set only once the payload went out
+                sent += 1
+            if outcome.status != "failed":
+                return dataclasses.replace(outcome, attempts=sent)
+            first_failure = first_failure or outcome
+            if not retry:
+                break
+        if first_failure is None:  # cancelled before the first send
+            return _outcome(call, "cancelled", REASON_CANCELLED)
+        reason = first_failure.reason
+        if sent > 1:
+            reason = f"{reason} ({reason_tried(sent)})"
+        return dataclasses.replace(first_failure, attempts=sent, reason=mask_text(reason))
+
+    def _attempt(self, call: Call, slot: Slot, hit: SearchHit, sent_before: int) -> tuple[Outcome, bool]:
+        """Send ``hit``'s payload for ``call`` once. The flag says whether
+        another logged call is worth trying after this one: only after an
+        answer of the generator that refused THIS payload (an HTTP error, a
+        200 that is not a document) or a payload that cannot be read — never
+        after a timeout or a network error (the generator is the problem), a
+        header or settings problem, or a disk that cannot be written."""
+        request = self._request
+        payload = self._payload(hit)
         if payload is None:
-            return _outcome(call, "failed", REASON_BAD_PAYLOAD)
+            return _outcome(call, "failed", REASON_BAD_PAYLOAD), True
         # the settings of NOW: a generator disabled in Impostazioni during the run gets nothing more
         settings = self._settings()
         endpoint, problem = _endpoint(settings, request.generator)
         if problem:
-            return _outcome(call, "failed", reason_generator_gone(request.generator))
+            return _outcome(call, "failed", reason_generator_gone(request.generator)), False
         now = _local(self._clock())
         try:
-            headers = build_headers(request.header_rows, key=call.key,
+            headers = build_headers(request.header_rows, key=hit.template_key.strip() or call.key,
                                     now_ms=int(now.timestamp() * 1000), new_uuid=self._new_uuid,
                                     postman_token=settings.postman_token)
         except HeaderError as exc:
-            return _outcome(call, "failed", str(exc))
+            return _outcome(call, "failed", str(exc)), False
         if self._cancelled():
-            return _outcome(call, "cancelled", REASON_CANCELLED)
+            return _outcome(call, "cancelled", REASON_CANCELLED), False
 
         result = send(endpoint.url, payload, headers, timeout_s=settings.timeout_s,
                       opener=self._opener)
         del payload, headers
         sent = dict(doc_type=result.doc_type, duration_ms=result.duration_ms,
-                    http_status=result.status)
+                    http_status=result.status, used_hit=hit)
         if not result.ok or result.doc_type is None:
-            return _outcome(call, "failed", result.reason, **sent)  # never result.content
+            # never result.content; no answer at all (timeout, network) → stop here
+            return _outcome(call, "failed", result.reason, **sent), result.status is not None
         self._memory.record(call.key, result.doc_type)
         if result.doc_type == "html" and not request.save_html:
-            return _outcome(call, "html_skipped", REASON_HTML_NOT_WANTED, **sent)
+            return _outcome(call, "html_skipped", REASON_HTML_NOT_WANTED, **sent), False
         try:
             files = self._writer.write_reserved(slot, result.doc_type, result.content)
         except OSError as exc:
-            return _outcome(call, "failed", f"scrittura non riuscita: {exc}", **sent)
-        return _outcome(call, "ok", "", files=files, **sent)
+            return _outcome(call, "failed", f"scrittura non riuscita: {exc}", **sent), False
+        fallback = sent_before or hit.env.casefold() != request.source_env.casefold()
+        note = reason_fallback(hit, sent_before + 1) if fallback else ""
+        return _outcome(call, "ok", note, files=files, **sent), False
 
-    def _payload(self, call: Call) -> dict | None:
-        """The body of the call as a JSON object, or None (never raises)."""
+    def _payload(self, hit: SearchHit) -> dict | None:
+        """The body of a logged call as a JSON object, or None (never raises)."""
         try:
             with self._index_lock:
-                raw = self._index.read_body(call.hit)
+                raw = self._index.read_body(hit)
             data = json.loads(bytes(raw).decode("utf-8-sig"))
         except Exception:  # noqa: BLE001 - stale index, file gone, not UTF-8, not JSON...
             return None
@@ -301,7 +346,7 @@ def _resolve(request: BatchRequest, index: Any,
     for i, target in enumerate(targets):
         try:
             calls.extend(resolve([target], index=index, source_env=request.source_env,
-                                 cancel=cancel))
+                                 cancel=cancel, fallback_envs=request.fallback_envs))
         except Cancelled:
             return calls, targets[i:]
         except ValueError:
@@ -336,11 +381,13 @@ def _finish(request: BatchRequest, run_dir: Path, outcomes: list[Outcome], *,
 
 def _outcome(call: Call, status: Status, reason: str = "", *, doc_type=None,
              files: tuple[Path, ...] = (), duration_ms: int = 0,
-             http_status: int | None = None) -> Outcome:
+             http_status: int | None = None, used_hit: SearchHit | None = None,
+             attempts: int = 0) -> Outcome:
     return Outcome(key=call.key, folders=call.folders, fdi=call.fdi, status=status,
                    doc_type=doc_type, files=tuple(files), duration_ms=int(duration_ms or 0),
                    http_status=http_status, reason=mask_text(reason),
-                   exact_hit=call.hit if call.exact else None)
+                   exact_hit=call.hit if call.exact else None,
+                   used_hit=used_hit, attempts=attempts)
 
 
 def _target_cancelled(target: Target) -> list[Outcome]:

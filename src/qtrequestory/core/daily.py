@@ -193,6 +193,25 @@ def classify_days(
 
 # -------------------------------------------------------- entry name parse ---
 
+def _repeated_key_split(remainder: str) -> tuple[str, str] | None:
+    """``(fdi, key)`` when ``remainder`` is ``<token><KEY>_<KEY>`` with a
+    non-UUID ``<token><KEY>`` (rule 3 of :func:`parse_entry_name`), else None.
+    The first underscore that works wins, i.e. the longest key."""
+    first = remainder.split("_", 1)[0]
+    if _uuid.match(first.lower()) is not None:
+        return None
+    for i, ch in enumerate(remainder):
+        if ch != "_":
+            continue
+        left, key = remainder[:i], remainder[i + 1:]
+        if not key or len(key) >= len(left) or not left.endswith(key):
+            continue
+        if left[-len(key) - 1] == "_":  # "abc_X" + "X": the key would start a new token
+            continue
+        return left, key
+    return None
+
+
 @dataclass(frozen=True)
 class EntryName:
     raw: str
@@ -209,10 +228,16 @@ def parse_entry_name(raw: str) -> EntryName:
     1. a trailing ``_<16 lowercase hex>`` is the ``call_id`` and is stripped;
     2. a remainder starting with ``correlationId_vuoto_`` has no FDI, the rest
        is the key;
-    3. otherwise split on the FIRST underscore: left (lowercased) is the FDI,
+    3. a correlation id that ENDS WITH the key (``test-<KEY>_<KEY>``, the
+       shape of a mass test that used ``"test-" + key`` as correlation_id):
+       the FDI is ``test-<KEY>`` and the key is the repeated tail, also when
+       the key holds underscores. Only for a token that is not a UUID, and
+       only when the key starts the FDI token's last part (not right after an
+       underscore): ``abc_X_X`` stays ``abc`` / ``X_X``;
+    4. otherwise split on the FIRST underscore: left (lowercased) is the FDI,
        right is the key — template keys may contain underscores and even start
        with digits (``2_SOME_KEY_...``), the FDI token never contains one;
-    4. no underscore at all: no FDI, the whole remainder is the key.
+    5. no underscore at all: no FDI, the whole remainder is the key.
 
     ``well_formed`` is True only for a canonical UUID FDI plus a call id.
     Test-suffixed FDIs (``<uuid>-t15``) keep their token but are not canonical.
@@ -228,6 +253,9 @@ def parse_entry_name(raw: str) -> EntryName:
     if remainder.startswith(_NO_FDI_PREFIX):
         fdi = None
         template_key = remainder[len(_NO_FDI_PREFIX):]
+    elif (split := _repeated_key_split(remainder)) is not None:
+        left, template_key = split
+        fdi = left.lower()
     elif "_" in remainder:
         left, template_key = remainder.split("_", 1)
         fdi = left.lower()

@@ -92,7 +92,9 @@ def test_riprova_with_an_open_header_cell_sends_what_it_shows(qtbot, page, fake_
     page.retry()
     qtbot.waitUntil(lambda: page.report is not None and page.report is not first
                     and not page.is_running(), timeout=WAIT_MS)
-    assert _sent(fake_core, "X-Prova") == [None, None, "riprova"]
+    sent = _sent(fake_core, "X-Prova")
+    # the first run tried every logged call of the failing key (fallback), none with the header
+    assert sent[-1] == "riprova" and len(sent) >= 3 and set(sent[:-1]) == {None}
 
 
 def test_ricerca_calls_with_an_open_header_cell_send_what_it_shows(qtbot, page, fake_core):

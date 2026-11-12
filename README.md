@@ -834,8 +834,38 @@ cartella del loro package; se non sono nell'elenco, in `_senza_pacchetto`.
   anche inviare a svil un payload preso da coll. Quando i due sono diversi, una
   nota sotto lo dice («I payload vengono dai log di coll e vanno al generatore
   svil.») con *Usa i log di svil* per tornare in un clic. Per ogni template key
-  si usa la chiamata **più recente** di quell'ambiente; se non c'è, la riga
-  resta «nessuna chiamata» e non si ripiega su un altro ambiente.
+  si usa la chiamata **più recente** di quell'ambiente. Se il generatore la
+  rifiuta, o se in quell'ambiente non c'è, Genera **ripiega** da solo (vedi
+  [Il ripiego](#il-ripiego)).
+
+### Il ripiego
+
+La chiamata più recente non sempre va bene per il generatore scelto: tipico
+il payload di coll che nomina un listino Energy che svil non ha ancora
+(«Spooling on IPS has failed», HTTP 400). Per una **template key** (non per un
+FDI né per una chiamata scelta in Ricerca, che partono sempre così come sono)
+Genera allora prova altre chiamate della stessa key, in quest'ordine:
+
+1. chiamate **più vecchie** dell'ambiente «Chiamate dai log di», distanziate
+   nel tempo: la più recente, poi una di almeno 1 giorno prima, poi 3, 7, 15,
+   31… giorni prima (un listino resta in vigore settimane: la chiamata del
+   giorno prima verrebbe rifiutata allo stesso modo);
+2. le chiamate degli **altri ambienti** dei log, con lo stesso criterio:
+   prima quello del generatore (i suoi payload gli somigliano di più), poi gli
+   altri.
+
+Al massimo 8 chiamate per ambiente e 16 in tutto. Si passa alla successiva
+solo quando il generatore ha **risposto** rifiutando il payload (un errore
+HTTP, o una risposta che non è un documento) o il payload non si legge; dopo
+un tempo scaduto o un errore di rete ci si ferma (il problema è il
+generatore, non il payload). Una key che non ha chiamate nell'ambiente scelto
+ma ne ha in un altro viene generata con quelle.
+
+Il documento generato con un ripiego lo dice nel **motivo** («payload dai log
+di coll del 10/10/2026 (tentativo 6): le più recenti sono state rifiutate»);
+una riga che fallisce con tutte dice quante ne ha provate («… (provate 4
+chiamate dei log, tutte rifiutate)»). In `esito.csv` le colonne `payload_da`
+e `tentativi` dicono quale chiamata è stata usata e quante ne sono partite.
 - **Salva in** — la cartella di destinazione, con *Sfoglia…*.
 
 **PROD non si può chiamare**: Genera usa solo i generatori attivi in
@@ -968,7 +998,9 @@ assente: non restano file a metà.
 
 `esito.csv` (separatore `;`, UTF-8 con BOM, si apre con Excel) ha una riga per
 chiamata: `template_key`, `cartella`, `fdi`, `esito`, `tipo`, `file`,
-`durata_ms`, `stato_http`, `motivo`. Non contiene payload, header né link
+`durata_ms`, `stato_http`, `motivo`, `payload_da` (ambiente e giorno della
+chiamata dei log usata, es. `coll 10/10/2026`), `tentativi` (quante chiamate
+sono partite per quella riga). Non contiene payload, header né link
 firmati.
 
 ### Gli esiti
@@ -979,7 +1011,7 @@ Nessun errore ferma il lotto. Ogni riga della tabella ha un glifo e una parola:
 |---|---|---|
 | ✓ generato | `ok` | il documento è stato salvato |
 | ⊘ email saltata | `saltato: HTML` | ha risposto un'email (HTML) che non hai chiesto (o la key è già nota come email): non salvata |
-| ○ nessuna chiamata | `nessuna chiamata nei log` | non c'è una chiamata di quella template key nei log di «Chiamate dai log di» |
+| ○ nessuna chiamata | `nessuna chiamata nei log` | non c'è una chiamata di quella template key in nessuno degli ambienti dei log |
 | ✕ non riuscito | `non riuscito` | errore, con il **motivo**: risposta HTTP di errore, risposta che non è né PDF né HTML, tempo scaduto, payload illeggibile, scrittura su disco non riuscita… |
 | – annullato | `annullato` | non è partita perché hai interrotto |
 
@@ -1002,8 +1034,8 @@ cartella del documento*, *Copia template key* e *Copia motivo*.
 **Riprova i non riusciti** richiama, con le scelte di adesso (generatore,
 header, cartella…), le sole righe non riuscite, senza chiamata o annullate,
 senza dover impostare di nuovo nulla. Una riga di un FDI viene ripresa dalla
-chiamata **di quello stesso FDI** e torna nella sua cartella. Non c'è alcun
-ritentativo automatico.
+chiamata **di quello stesso FDI** e torna nella sua cartella. Oltre al
+[ripiego](#il-ripiego) delle template key non c'è alcun ritentativo automatico.
 
 ### Cosa ricorda
 

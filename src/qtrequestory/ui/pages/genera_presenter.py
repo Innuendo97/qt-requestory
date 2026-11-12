@@ -280,7 +280,16 @@ class GeneraPresenter(QObject, GeneraViews):
             generator=self._generator, source_env=self._source_env,
             targets=tuple(self.targets() if targets is None else targets),
             header_rows=tuple(self._headers), destination=self._destination or Path(),
-            save_html=self._save_html, make_zip=self._make_zip)
+            save_html=self._save_html, make_zip=self._make_zip,
+            fallback_envs=self.fallback_envs())
+
+    def fallback_envs(self) -> tuple[str, ...]:
+        """The other log environments a key may fall back to (``resolve``):
+        the generator's own logs first (their payloads suit that generator
+        best), then the others in Impostazioni order; never the source."""
+        others = [e for e in self._envs if e != self._source_env]
+        others.sort(key=lambda e: e != self._generator)  # stable: the generator's env first
+        return tuple(others)
 
     def retry_request(self, report: BatchReport, previous: BatchRequest | None = None) -> BatchRequest:
         """The rows of ``report`` that did not end well (``genera_retry``),

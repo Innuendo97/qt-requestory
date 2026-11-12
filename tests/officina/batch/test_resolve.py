@@ -22,6 +22,7 @@ from qtrequestory.core.index.search import SearchHit, SearchQuery, search
 from qtrequestory.officina.batch.elenco import NO_PACKAGE, Elenco, ElencoRow
 from qtrequestory.officina.batch.model import Call, Target
 from qtrequestory.officina.batch.resolve import (
+    KEY_LOOKUP_LIMIT,
     parse_keys,
     resolve,
     targets_from_fdis,
@@ -143,7 +144,58 @@ def test_key_takes_newest_hit(index):
     assert (call.hit.day, call.hit.fdi, call.hit.call_id) == (NEW, FDI_B, "0b0b0b0b00000002")
     assert call.key == KEY_A
     assert call.folders == (NO_PACKAGE,)
-    assert index.queries == [SearchQuery("coll", template_key=KEY_A, key_mode="exact", limit=1)]
+    assert index.queries == [SearchQuery("coll", template_key=KEY_A, key_mode="exact",
+                                         limit=KEY_LOOKUP_LIMIT)]
+    # the newest call of each OLDER day stays behind it, in case it is refused
+    assert [(h.day, h.fdi) for h in call.alternates] == [(OLD, FDI_A)]
+
+
+def test_key_never_leaves_source_env_without_fallback_envs(index):
+    [call] = resolve(targets_from_keys([KEY_C], None), index=index, source_env="coll")
+    assert call.hit is not None and call.hit.env == "coll"  # the -t15 FDI has it in coll
+    assert call.alternates == ()
+    [none] = resolve(targets_from_keys(["MOD_TEST_SOLO_SVIL"], None), index=index, source_env="coll")
+    assert none.hit is None
+
+
+def test_key_alternates_then_fallback_env(index):
+    [call] = resolve(targets_from_keys([KEY_C], None), index=index, source_env="coll",
+                     fallback_envs=["svil", "coll"])  # the source env itself is ignored
+    assert (call.hit.env, call.hit.day) == ("coll", NEW)
+    assert [(h.env, h.day, h.fdi) for h in call.alternates] == [("svil", NEW, FDI_A)]
+    assert [q.env for q in index.queries] == ["coll", "svil"]
+
+
+def test_key_missing_in_source_takes_fallback_env(index):
+    [call] = resolve(targets_from_keys([KEY_B], None), index=index, source_env="svil",
+                     fallback_envs=["coll"])
+    assert (call.hit.env, call.hit.day, call.hit.fdi) == ("coll", OLD, FDI_A)
+    assert call.fdi == FDI_A and call.sendable
+
+
+def test_key_candidates_are_capped(tmp_path, monkeypatch):
+    from qtrequestory.officina.batch import resolve as resolve_mod
+    monkeypatch.setattr(resolve_mod, "MAX_PER_ENV", 2)
+    monkeypatch.setattr(resolve_mod, "MAX_CANDIDATES", 3)
+    root = tmp_path / "mirror"
+    for env in ("coll", "svil"):
+        for d in (1, 2, 3):
+            make_daily_file(root, env, date(2026, 11, d), [
+                (entry_name(FDI_A, KEY_A, f"0a0a0a0a0000000{d}"), synthetic_body(FDI_A, KEY_A))])
+    conn = open_index(":memory:")
+    IndexBuilder(conn, root, null_sink).update(["coll", "svil"])
+    try:
+        [call] = resolve(targets_from_keys([KEY_A], None), index=RealIndex(conn, root),
+                         source_env="coll", fallback_envs=["svil"])
+    finally:
+        conn.close()
+    got = [(h.env, h.day.day) for h in (call.hit, *call.alternates)]
+    assert got == [("coll", 3), ("coll", 2), ("svil", 3)]
+
+
+def test_fdi_and_exact_calls_get_no_alternates(index):
+    calls = resolve(targets_from_fdis([FDI_A]), index=index, source_env="coll", fallback_envs=["svil"])
+    assert calls and all(c.alternates == () for c in calls)
 
 
 def test_key_lookup_ignores_case(index):
@@ -288,3 +340,19 @@ def test_exact_call_is_that_call_without_looking_anything_up(index):
 def test_exact_call_without_hit_is_refused(index):
     with pytest.raises(ValueError):
         resolve([Target("call", KEY_A, (FDI_A,))], index=index, source_env="coll")
+
+
+def test_alternates_are_spread_back_in_time(tmp_path):
+    root = tmp_path / "mirror"
+    days = [date(2026, 11, d) for d in (12, 11, 10, 9, 8, 5, 4, 1)]
+    for i, day in enumerate(days):
+        make_daily_file(root, "coll", day, [
+            (entry_name(FDI_A, KEY_A, f"0a0a0a0a000000{i:02d}"), synthetic_body(FDI_A, KEY_A))])
+    conn = open_index(":memory:")
+    IndexBuilder(conn, root, null_sink).update(["coll"])
+    try:
+        [call] = resolve(targets_from_keys([KEY_A], None), index=RealIndex(conn, root), source_env="coll")
+    finally:
+        conn.close()
+    # 0, then >= 1, >= 3, >= 7 days older than the 12th
+    assert [h.day.day for h in (call.hit, *call.alternates)] == [12, 11, 9, 5]

@@ -58,6 +58,11 @@ class BatchRequest:
     destination: Path
     save_html: bool
     make_zip: bool
+    #: Other log environments a template key may fall back to, in order, when
+    #: ``source_env`` has no call of it or every call of it fails (``resolve``).
+    #: ``()`` = never leave ``source_env``. Keys only: an FDI or an exact call
+    #: is never replaced by another one.
+    fallback_envs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,10 @@ class Call:
     fdi: str | None             # the FDI target, or the FDI of the source call of a key
     hit: SearchHit | None
     exact: bool = False
+    #: Other logged calls of the same key to try, in order, when ``hit`` gets
+    #: an error answer (an older day, then the fallback environments). Only a
+    #: key target has them; ``()`` = ``hit`` alone.
+    alternates: tuple[SearchHit, ...] = ()
 
     @property
     def sendable(self) -> bool:
@@ -93,6 +102,11 @@ class Outcome:
     http_status: int | None
     reason: str                 # Italian, masked; "" when ok
     exact_hit: SearchHit | None = None
+    #: The logged call whose payload was sent last (the one that made the
+    #: document, when ``ok``); ``None`` when nothing was sent.
+    used_hit: SearchHit | None = None
+    #: How many logged calls were sent for this row (more than 1 = fallback).
+    attempts: int = 0
 
 
 @dataclass(frozen=True)

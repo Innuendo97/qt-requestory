@@ -164,10 +164,11 @@ def test_esito_columns_bom_and_semicolons(tmp_path: Path):
     assert raw.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(raw.decode("utf-8-sig").splitlines(), delimiter=";"))
     assert rows[0] == ["template_key", "cartella", "fdi", "esito", "tipo", "file", "durata_ms",
-                       "stato_http", "motivo"]
+                       "stato_http", "motivo", "payload_da", "tentativi"]
+    # an Outcome made without a logged call (as here) leaves the last two empty
     assert rows[1] == ["MOD_TEST_A", "111_PKG | 222_PKG", FDI_A, "ok", "pdf",
                        f"{Path('111_PKG') / 'MOD_TEST_A.pdf'} | {Path('222_PKG') / 'MOD_TEST_A.pdf'}",
-                       "120", "200", ""]
+                       "120", "200", "", "", ""]
     assert [r[3] for r in rows[1:]] == ["ok", "saltato: HTML", "nessuna chiamata nei log",
                                         "non riuscito", "annullato"]
     assert rows[3][7] == "" and rows[4][8] == "il generatore ha risposto HTTP 500; dettaglio"

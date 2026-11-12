@@ -53,7 +53,7 @@ ESITO_NAME = "esito.csv"
 #: Most ``<run>_n`` folders tried when two runs start in the same second.
 _RUN_DIR_ATTEMPTS = 100
 ESITO_COLUMNS = ("template_key", "cartella", "fdi", "esito", "tipo", "file", "durata_ms",
-                 "stato_http", "motivo")
+                 "stato_http", "motivo", "payload_da", "tentativi")
 #: The Italian word of each status in ``esito.csv`` (and in the UI).
 ESITO_LABELS: dict[Status, str] = {
     "ok": "ok",
@@ -225,12 +225,20 @@ def write_esito(run_dir: Path, outcomes: Sequence[Outcome]) -> Path:
             str(int(o.duration_ms)),
             "" if o.http_status is None else str(o.http_status),
             mask_text(o.reason or ""),
+            _payload_from(o),
+            str(int(o.attempts)) if o.attempts else "",
         ])
     data = buffer.getvalue().encode("utf-8-sig")
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / ESITO_NAME
     _atomic_write(path, lambda tmp: _write_bytes(tmp, data))
     return path
+
+
+def _payload_from(o: Outcome) -> str:
+    """``"<env> <gg/mm/aaaa>"`` of the logged call last sent for ``o`` ("" if none)."""
+    hit = o.used_hit
+    return f"{hit.env} {hit.day:%d/%m/%Y}" if hit is not None else ""
 
 
 def zip_folders(run_dir: Path) -> tuple[Path, ...]:

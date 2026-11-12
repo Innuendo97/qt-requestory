@@ -720,3 +720,90 @@ def test_an_exact_call_without_a_template_key_is_no_call(env: Env):
 def test_only_exact_calls_carry_their_hit(env: Env):
     report = env.run(keys(KEY_A) + targets_from_hits([_logged(env, FDI_A, KEY_B)]))
     assert [o.exact_hit is not None for o in report.outcomes] == [False, True]
+
+
+# ------------------------------------------------------------------ fallback ---
+
+KEY_FB = "MOD_TEST_FALLBACK"
+DAY_NEW, DAY_MID, DAY_OLD = date(2026, 11, 9), date(2026, 11, 6), date(2026, 11, 2)
+
+
+@pytest.fixture
+def fb_index(tmp_path: Path):
+    """KEY_FB on three coll days (FDI_A newest, FDI_B, FDI_A oldest) and one svil day."""
+    root = tmp_path / "fbmirror"
+    fdis = {DAY_NEW: FDI_A, DAY_MID: FDI_B, DAY_OLD: FDI_A}
+    for i, (day, fdi) in enumerate(fdis.items()):
+        make_daily_file(root, "coll", day, [(entry_name(fdi, KEY_FB, f"0d0d0d0d0000000{i}"),
+                                             synthetic_body(fdi, KEY_FB, dossier_number=f"DA{day:%m%d}"))])
+    make_daily_file(root, "svil", DAY_OLD, [(entry_name(FDI_B, KEY_FB, "0e0e0e0e00000001"),
+                                             synthetic_body(FDI_B, KEY_FB, dossier_number="DASVIL"))])
+    conn = open_index(":memory:")
+    IndexBuilder(conn, root, null_sink).update(["coll", "svil"])
+    yield RealIndex(conn, root)
+    conn.close()
+
+
+def refuse_dossiers(*numbers: str, status: int = 400):
+    """A route refusing the payloads of those dossier numbers (PDF otherwise)."""
+    def route(headers: dict[str, str], body: bytes) -> Canned:
+        if any(n.encode() in body for n in numbers):
+            return Canned(status=status, body=b"Spooling on IPS has failed.")
+        return Canned()
+    return route
+
+
+def test_refused_newest_call_falls_back_to_an_older_day(env: Env, fb_index):
+    env.server.route = refuse_dossiers("DA1109")
+    report = env.run(keys(KEY_FB), index=fb_index)
+    [o] = report.outcomes
+    assert o.status == "ok" and o.attempts == 2
+    assert (o.used_hit.env, o.used_hit.day) == ("coll", DAY_MID)
+    assert "tentativo 2" in o.reason and "coll" in o.reason
+    assert (report.run_dir / NO_PACKAGE / f"{KEY_FB}.pdf").read_bytes() == PDF
+    assert len(env.server.requests) == 2
+    [row] = esito_rows(report.run_dir)
+    assert row[3] == "ok" and row[-2:] == ["coll 06/11/2026", "2"]
+
+
+def test_every_coll_call_refused_then_the_fallback_env(env: Env, fb_index):
+    env.server.route = refuse_dossiers("DA1109", "DA1106", "DA1102")
+    [o] = env.run(keys(KEY_FB), index=fb_index, fallback_envs=("svil",)).outcomes
+    assert o.status == "ok" and o.attempts == 4 and o.used_hit.env == "svil"
+
+
+def test_every_call_refused_reports_the_newest_and_the_count(env: Env, fb_index):
+    env.server.route = refuse_dossiers("DA")
+    report = env.run(keys(KEY_FB), index=fb_index, fallback_envs=("svil",))
+    [o] = report.outcomes
+    assert o.status == "failed" and o.http_status == 400 and o.attempts == 4
+    assert o.used_hit.day == DAY_NEW
+    assert "provate 4 chiamate" in o.reason
+    assert not (report.run_dir / NO_PACKAGE / f"{KEY_FB}.pdf").exists()
+
+
+def test_without_fallback_envs_the_source_env_is_never_left(env: Env, fb_index):
+    env.server.route = refuse_dossiers("DA")
+    [o] = env.run(keys(KEY_FB), index=fb_index).outcomes
+    assert o.status == "failed" and o.attempts == 3
+    assert all(b"DASVIL" not in body for _, body in env.server.requests)
+
+
+def test_key_only_in_the_fallback_env_is_generated(env: Env, fb_index):
+    [o] = env.run(keys(KEY_FB), index=fb_index, source_env="qa", fallback_envs=("svil",)).outcomes
+    assert o.status == "ok" and o.attempts == 1 and o.used_hit.env == "svil"
+    assert "dai log di svil" in o.reason
+
+
+def test_no_answer_does_not_try_another_call(env: Env, fb_index):
+    env.settings = dataclasses.replace(env.settings, timeout_s=0.3)
+    env.server.route = lambda h, b: Canned(delay_s=2)
+    [o] = env.run(keys(KEY_FB), index=fb_index, fallback_envs=("svil",)).outcomes
+    assert o.status == "failed" and o.http_status is None and o.attempts == 1
+    assert len(env.server.requests) == 1
+
+
+def test_an_fdi_target_never_falls_back(env: Env, fb_index):
+    env.server.route = refuse_dossiers("DA1109")
+    [o] = env.run(targets_from_fdis([FDI_A]), index=fb_index, fallback_envs=("svil",)).outcomes
+    assert o.status == "failed" and o.attempts == 1

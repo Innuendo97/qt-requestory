@@ -17,6 +17,11 @@ Version 3 added ``entries.header_len`` (raw bytes of the header line): the
 header check in ``read_body`` tolerates trailing blanks and needs to know how
 long the line really was.
 
+Version 4 changes no DDL: ``parse_entry_name`` learned the ``test-<KEY>_<KEY>``
+shape, and the rows written by version 3 hold the wrong key for those entries
+(``ENERGY_X_MOD_ENERGY_X`` instead of ``MOD_ENERGY_X``). Bumping the version is
+how every existing index gets rebuilt with the right keys.
+
 Two processes may open an old index at the same time (the hourly ``--sync``
 and the UI). The migration therefore runs inside ``BEGIN IMMEDIATE`` and
 re-reads the version once it holds the write lock: whoever comes second finds
@@ -26,7 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Drop order: children first. ``entry_documents`` stays in the list although
 #: version 2 no longer creates it — that is how an index.sqlite written by

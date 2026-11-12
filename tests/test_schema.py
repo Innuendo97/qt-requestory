@@ -28,8 +28,8 @@ def test_fresh_open_creates_schema_with_wal(tmp_path: Path):
         assert path.exists()  # parent dirs created
         assert _names(conn, "table") == EXPECTED_TABLES
         assert _names(conn, "index") == EXPECTED_INDEXES
-        assert schema_version(conn) == SCHEMA_VERSION == 3
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert schema_version(conn) == SCHEMA_VERSION == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

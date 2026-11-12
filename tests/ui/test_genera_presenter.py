@@ -110,6 +110,12 @@ def test_keys_mode_builds_targets_with_elenco_packages(presenter, tmp_path):
     assert request.destination == tmp_path / "dest"
     assert request.header_rows == tuple(presenter.header_rows)
     assert (request.save_html, request.make_zip) == (False, False)
+    assert request.fallback_envs == ("coll",)  # a key refused or missing in svil tries coll
+
+
+def test_fallback_envs_put_the_generator_logs_first(presenter):
+    presenter.set_source_env("coll")
+    assert presenter.build_request().fallback_envs == ("svil",)
 
 
 def test_elenco_mode_uses_only_checked_packages(presenter, tmp_path):
